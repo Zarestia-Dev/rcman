@@ -35,7 +35,7 @@ dirs = "6.0"
 serde_json = "1.0"
 
 # Derive macro (optional)
-rcman-derive = { path = "./rcman-derive", optional = true }
+rcman-derive = { version = "0.1.0", optional = true }
 
 # Backup (optional, default)
 zip = { version = "7.0", default-features = false, features = ["deflate", "time", "aes-crypto"], optional = true }
