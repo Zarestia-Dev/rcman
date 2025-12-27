@@ -5,7 +5,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use rcman::SettingsSchema;
 //!
 //! #[derive(SettingsSchema, Default, Serialize, Deserialize)]

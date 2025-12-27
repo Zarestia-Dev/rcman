@@ -428,7 +428,11 @@ fn test_restore_large_backup() {
     let backup_path = fixture
         .manager
         .backup()
-        .create(BackupOptions::new().output_dir(backup_dir.path()))
+        .create(
+            BackupOptions::new()
+                .output_dir(backup_dir.path())
+                .include_sub_settings("remotes"),
+        )
         .unwrap();
 
     // Clear data

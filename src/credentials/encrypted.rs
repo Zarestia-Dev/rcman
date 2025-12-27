@@ -72,8 +72,15 @@ impl EncryptedFileBackend {
     /// - If file is new, generates a random salt
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// use std::path::PathBuf;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use rcman::credentials::EncryptedFileBackend;
+    ///
+    /// let path = PathBuf::from("/tmp/credentials.enc.json");
     /// let backend = EncryptedFileBackend::with_password(path, "user_password")?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn with_password(path: PathBuf, password: &str) -> Result<Self> {
         let salt = Self::read_salt(&path)?.unwrap_or_else(Self::generate_salt);

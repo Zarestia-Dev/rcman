@@ -255,7 +255,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// Get the event manager for registering change listeners and validators
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// // Watch all changes
     /// manager.events().on_change(|key, old, new| {
     ///     println!("Changed {}: {:?} -> {:?}", key, old, new);
@@ -343,7 +343,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let settings: MySettings = manager.load_startup::<MySettings>()?;
     /// ```
     pub fn load_startup<T: SettingsSchema>(&self) -> Result<T> {
@@ -467,7 +467,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// manager.save_setting::<MySettings>("ui", "theme", json!("dark"))?;
     /// ```
     pub fn save_setting<T: SettingsSchema>(
@@ -685,7 +685,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// manager.register_sub_settings(SubSettingsConfig::new("remotes"));
     /// manager.register_sub_settings(SubSettingsConfig::new("profiles"));
     /// ```
@@ -710,7 +710,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let remotes = manager.sub_settings("remotes")?;
     /// remotes.set("gdrive", &json!({"type": "drive"}))?;
     /// let config = remotes.get_value("gdrive")?;
@@ -741,7 +741,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// // Instead of:
     /// let items = manager.sub_settings("remotes")?.list()?;
     ///
@@ -780,7 +780,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// - External configs (each registered external file)
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```text
     /// let categories = manager.get_export_categories();
     /// for cat in categories {
     ///     println!("{}: {:?}", cat.name, cat.category_type);

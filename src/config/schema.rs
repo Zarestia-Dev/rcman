@@ -512,8 +512,9 @@ pub fn opt(value: impl Into<String>, label: impl Into<String>) -> SettingOption 
 /// Macro for building settings metadata HashMap more cleanly
 ///
 /// # Example
-/// ```rust,ignore
-/// use rcman::{settings, SettingMetadata};
+/// ```rust,compile_fail
+/// use rcman::{settings, SettingsSchema, SettingMetadata, opt};
+/// use std::collections::HashMap;
 ///
 /// impl SettingsSchema for MySettings {
 ///     fn get_metadata() -> HashMap<String, SettingMetadata> {

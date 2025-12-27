@@ -123,7 +123,9 @@ impl BackupOptions {
     /// Create new backup options with default values
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```rust
+    /// use rcman::BackupOptions;
+    ///
     /// let options = BackupOptions::new()
     ///     .output_dir("backups/")
     ///     .password("secret")
@@ -179,9 +181,11 @@ impl BackupOptions {
     /// Include specific items from a sub-settings category
     ///
     /// # Example
-    /// ```rust,ignore
-    /// BackupOptions::new()
-    ///     .include_sub_settings_items("remotes", &["gdrive", "s3"])
+    /// ```rust
+    /// use rcman::BackupOptions;
+    ///
+    /// let options = BackupOptions::new()
+    ///     .include_sub_settings_items("remotes", &["gdrive", "s3"]);
     /// ```
     #[must_use]
     pub fn include_sub_settings_items(
@@ -261,7 +265,9 @@ impl RestoreOptions {
     /// Create restore options from a backup file path
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```rust
+    /// use rcman::RestoreOptions;
+    ///
     /// let options = RestoreOptions::from_path("backups/my-backup.rcman")
     ///     .password("secret")
     ///     .dry_run(true);

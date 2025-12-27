@@ -79,10 +79,13 @@ impl SettingsManagerBuilder {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// use rcman::SettingsManager;
+    ///
     /// let manager = SettingsManager::builder("my-app", "1.0.0")
     ///     .with_env_prefix("MYAPP")
-    ///     .build()?;
+    ///     .build()
+    ///     .unwrap();
     ///
     /// // Now MYAPP_UI_THEME=dark will override the "ui.theme" setting
     /// ```
@@ -117,11 +120,14 @@ impl SettingsManagerBuilder {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
+    /// use rcman::{SettingsManager, SubSettingsConfig};
+    ///
     /// let manager = SettingsManager::builder("my-app", "1.0.0")
     ///     .with_sub_settings(SubSettingsConfig::new("remotes"))
     ///     .with_sub_settings(SubSettingsConfig::new("backends").single_file())
-    ///     .build()?;
+    ///     .build()
+    ///     .unwrap();
     /// ```
     pub fn with_sub_settings(mut self, config: SubSettingsConfig) -> Self {
         self.sub_settings.push(config);

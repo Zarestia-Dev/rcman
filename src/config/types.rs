@@ -161,7 +161,9 @@ impl SettingsConfigBuilder {
     /// that can be included in backups.
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```rust
+    /// use rcman::{SettingsConfig, ExternalConfig};
+    ///
     /// let config = SettingsConfig::builder("my-app", "1.0.0")
     ///     .with_external_config(ExternalConfig::new("rclone", "/path/to/rclone.conf")
     ///         .display_name("Rclone Configuration"))
@@ -179,7 +181,9 @@ impl SettingsConfigBuilder {
     /// The format is: `{PREFIX}_{CATEGORY}_{KEY}` (all uppercase, dots become underscores)
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```rust
+    /// use rcman::SettingsConfig;
+    ///
     /// let config = SettingsConfig::builder("my-app", "1.0.0")
     ///     .with_env_prefix("MYAPP")
     ///     .build();
@@ -197,7 +201,9 @@ impl SettingsConfigBuilder {
     /// Enable this for Docker/CI environments where secrets are passed via env.
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```rust
+    /// use rcman::SettingsConfig;
+    ///
     /// let config = SettingsConfig::builder("my-app", "1.0.0")
     ///     .with_env_prefix("MYAPP")
     ///     .env_overrides_secrets(true)  // MYAPP_API_KEY will override keychain
