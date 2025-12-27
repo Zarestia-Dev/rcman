@@ -2,14 +2,14 @@
 # See https://embarkstudios.github.io/cargo-deny/
 
 [advisories]
-# Lint level for unmaintained crates: deny | warn | allow
-unmaintained = "warn"
-
 # Lint level for yanked versions: deny | warn | allow
 yanked = "warn"
 
-# Specific advisories to ignore (optional)
-ignore = []
+# Ignore advisories that use CVSS 4.0 (not yet supported by cargo-deny)
+# https://github.com/EmbarkStudios/cargo-deny/issues/635
+ignore = [
+    "RUSTSEC-2024-0445",  # cap-primitives: uses CVSS 4.0 format
+]
 
 [licenses]
 # Licenses explicitly allowed; everything else is denied by default
