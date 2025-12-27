@@ -45,6 +45,7 @@ fn create_manager_with_credentials() -> (TempDir, SettingsManager) {
 // =============================================================================
 
 #[test]
+#[ignore] // Requires Secret Service daemon (not available in CI)
 fn test_secret_not_in_json_file() {
     let (temp_dir, manager) = create_manager_with_credentials();
 
@@ -67,6 +68,7 @@ fn test_secret_not_in_json_file() {
 }
 
 #[test]
+#[ignore] // Requires Secret Service daemon (not available in CI)
 fn test_secret_retrieved_correctly() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
@@ -91,6 +93,7 @@ fn test_secret_retrieved_correctly() {
 // =============================================================================
 
 #[test]
+#[ignore] // Requires Secret Service daemon (not available in CI)
 fn test_reset_secret_clears_value() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
@@ -119,6 +122,7 @@ fn test_reset_secret_clears_value() {
 }
 
 #[test]
+#[ignore] // Requires Secret Service daemon (not available in CI)
 fn test_reset_all_clears_secrets() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
@@ -144,6 +148,7 @@ fn test_reset_all_clears_secrets() {
 // =============================================================================
 
 #[test]
+#[ignore] // Requires Secret Service daemon (not available in CI)
 fn test_secret_default_not_stored() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
@@ -170,6 +175,7 @@ fn test_secret_default_not_stored() {
 // =============================================================================
 
 #[test]
+#[ignore] // Requires Secret Service daemon (not available in CI)
 fn test_multiple_secrets() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
@@ -232,6 +238,7 @@ fn test_credentials_not_available_when_disabled() {
 // =============================================================================
 
 #[test]
+#[ignore] // Requires Secret Service daemon (not available in CI)
 fn test_secret_persists_across_sessions() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().to_path_buf();
