@@ -204,6 +204,7 @@ fn format_type(t: &SettingType) -> &'static str {
         SettingType::Textarea => "Multi-line Text",
         SettingType::Password => "Password",
         SettingType::Info => "Info (Read-only)",
+        SettingType::List => "List (Strings)",
     }
 }
 

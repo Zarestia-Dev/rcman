@@ -58,6 +58,8 @@ pub enum SettingType {
     Password,
     /// Read-only display
     Info,
+    /// List of strings
+    List,
 }
 
 /// Metadata for a single setting
@@ -287,6 +289,16 @@ impl SettingMetadata {
             setting_type: SettingType::Info,
             label: label.into(),
             default,
+            ..Default::default()
+        }
+    }
+
+    /// Create a list setting (Vec<String>)
+    pub fn list(label: impl Into<String>, default: Vec<String>) -> Self {
+        Self {
+            setting_type: SettingType::List,
+            label: label.into(),
+            default: json!(default),
             ..Default::default()
         }
     }
@@ -675,5 +687,42 @@ mod tests {
         );
         // File type doesn't need special validation
         assert!(setting.validate(&Value::from("/any/file.txt")).is_ok());
+    }
+
+    #[test]
+    fn test_list_setting() {
+        let default_items = vec!["item1".to_string(), "item2".to_string()];
+        let setting = SettingMetadata::list("Tags", default_items.clone())
+            .description("List of tags")
+            .category("metadata");
+
+        assert_eq!(setting.setting_type, SettingType::List);
+        assert_eq!(setting.default, json!(default_items));
+        assert_eq!(setting.label, "Tags");
+        assert_eq!(setting.description, Some("List of tags".into()));
+        assert_eq!(setting.category, Some("metadata".into()));
+    }
+
+    #[test]
+    fn test_list_setting_empty() {
+        let setting = SettingMetadata::list("Empty List", vec![]);
+
+        assert_eq!(setting.setting_type, SettingType::List);
+        assert_eq!(setting.default, json!(Vec::<String>::new()));
+    }
+
+    #[test]
+    fn test_list_validation() {
+        let setting = SettingMetadata::list("Items", vec!["default".to_string()]);
+
+        // Valid list values
+        assert!(setting
+            .validate(&json!(vec!["one".to_string(), "two".to_string()]))
+            .is_ok());
+        assert!(setting.validate(&json!(Vec::<String>::new())).is_ok());
+        assert!(setting.validate(&json!(vec!["single"])).is_ok());
+
+        // List type doesn't enforce specific validation beyond JSON structure
+        // (arrays of strings are the expected format)
     }
 }

@@ -407,6 +407,7 @@ fn generate_setting_type(
     field_name: &syn::Ident,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     if let Type::Path(path) = ty {
+        // Handle common primitive types
         if let Some(ident) = path.path.get_ident() {
             let name = ident.to_string();
             match name.as_str() {
@@ -435,6 +436,19 @@ fn generate_setting_type(
                     );
                 }
                 _ => {}
+            }
+        }
+
+        // Handle Vec<String> for List type
+        // This is a bit rough but works for standard usage
+        if let Some(seg) = path.path.segments.last() {
+            if seg.ident.to_string() == "Vec" {
+                // We could inspect generic args here to ensure it's String,
+                // but for now we'll assume Vec<String> maps to list.
+                return (
+                    quote! { rcman::SettingMetadata::list(#label, defaults.#field_name.clone()) },
+                    quote! { defaults.#field_name.clone() },
+                );
             }
         }
     }

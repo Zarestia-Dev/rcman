@@ -79,6 +79,12 @@ pub struct NetworkSettings {
 
     #[setting(label = "Proxy URL", description = "HTTP proxy URL", advanced)]
     pub proxy_url: String,
+
+    #[setting(
+        label = "Allowed IPs",
+        description = "List of IP addresses allowed to connect"
+    )]
+    pub allowed_ips: Vec<String>,
 }
 
 impl Default for NetworkSettings {
@@ -87,6 +93,7 @@ impl Default for NetworkSettings {
             port: 8080,
             proxy_enabled: false,
             proxy_url: String::new(),
+            allowed_ips: vec!["127.0.0.1".to_string(), "::1".to_string()],
         }
     }
 }
@@ -129,6 +136,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app: AppSettings = manager.load_startup()?;
     println!("✅ Theme reset to: {}", app.ui.theme);
+
+    // Working with list settings
+    println!("\n📋 List Settings Example:");
+    println!("Current allowed IPs: {:?}", app.network.allowed_ips);
+
+    println!("\n🔧 Adding new IP to allowed list...");
+    let mut new_ips = app.network.allowed_ips.clone();
+    new_ips.push("192.168.1.1".to_string());
+    manager.save_setting::<AppSettings>("network", "allowed_ips", json!(new_ips))?;
+
+    let app: AppSettings = manager.load_startup()?;
+    println!("✅ Updated allowed IPs: {:?}", app.network.allowed_ips);
 
     println!(
         "\n💾 Config location: {:?}",

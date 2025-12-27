@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `File` setting type for file path selection (distinct from `Path`)
+- `List` setting type for managing arrays of strings (`Vec<String>`)
+  - Constructor: `SettingMetadata::list(label, default)` for creating list settings
+  - Automatic support in derive macro for `Vec<String>` fields
+  - Example usage in `examples/list_settings.rs`, `examples/basic_usage.rs`, and `examples/derive_usage.rs`
 - Edge case testing for type validation, concurrent operations, and special values
 
 **Development Infrastructure**

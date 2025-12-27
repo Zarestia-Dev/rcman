@@ -32,6 +32,12 @@ impl SettingsSchema for AppSettings {
                 .max(65535.0)
                 .category("Network"),
 
+            "network.allowed_origins" => SettingMetadata::list("Allowed Origins", vec![
+                "http://localhost:3000".to_string(),
+            ])
+                .description("CORS allowed origins")
+                .category("Network"),
+
             "advanced.debug" => SettingMetadata::toggle("Debug Mode", false)
                 .description("Enable debug logging")
                 .category("Advanced")
@@ -66,6 +72,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔄 Resetting theme to default...");
     let default_theme = manager.reset_setting::<AppSettings>("app", "theme")?;
     println!("✅ Theme reset to: {}\n", default_theme);
+
+    // Working with list settings
+    println!("📋 Working with List Settings:");
+
+    // Load settings with metadata to see current values
+    let settings_meta = manager.load_settings::<AppSettings>()?;
+    if let Some(meta) = settings_meta.get("network.allowed_origins") {
+        if let Some(value) = &meta.value {
+            println!("Current allowed origins: {}", value);
+        }
+    }
+
+    println!("\n🔧 Adding new origin...");
+    manager.save_setting::<AppSettings>(
+        "network",
+        "allowed_origins",
+        json!(["http://localhost:3000", "https://example.com"]),
+    )?;
+
+    // Load settings with metadata to see the change
+    let updated = manager.load_settings::<AppSettings>()?;
+    if let Some(meta) = updated.get("network.allowed_origins") {
+        if let Some(value) = &meta.value {
+            println!("✅ Updated allowed origins: {}\n", value);
+        }
+    }
 
     println!(
         "💾 Settings file location: {:?}",

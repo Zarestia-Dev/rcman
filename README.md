@@ -122,6 +122,11 @@ impl SettingsSchema for AppSettings {
             // Secret (auto-stored in keychain!)
             "api.key" => SettingMetadata::password("API Key", "")
                 .secret(),
+
+            // List of strings
+            "network.allowed_ips" => SettingMetadata::list("Allowed IPs", vec!["127.0.0.1".to_string()])
+                .description("IP addresses allowed to connect")
+                .category("network"),
         }
     }
 }
@@ -129,17 +134,18 @@ impl SettingsSchema for AppSettings {
 
 ### Available Constructors
 
-| Constructor                       | Description    |
-| --------------------------------- | -------------- |
-| `text(label, default)`            | Text input     |
-| `password(label, default)`        | Password input |
-| `number(label, default)`          | Number input   |
-| `toggle(label, default)`          | Boolean toggle |
-| `select(label, default, options)` | Dropdown       |
-| `color(label, default)`           | Color picker   |
-| `path(label, default)`            | Directory path |
-| `file(label, default)`            | File path      |
-| `info(label, default)`            | Read-only      |
+| Constructor                       | Description       |
+| --------------------------------- | ----------------- |
+| `text(label, default)`            | Text input        |
+| `password(label, default)`        | Password input    |
+| `number(label, default)`          | Number input      |
+| `toggle(label, default)`          | Boolean toggle    |
+| `select(label, default, options)` | Dropdown          |
+| `color(label, default)`           | Color picker      |
+| `path(label, default)`            | Directory path    |
+| `file(label, default)`            | File path         |
+| `list(label, default)`            | List of strings   |
+| `info(label, default)`            | Read-only display |
 
 ### Chainable Setters
 
