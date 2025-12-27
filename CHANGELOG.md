@@ -8,13 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-**Testing & Quality**
-- Comprehensive test suite with 143 tests total
-  - 50 unit tests covering all core functionality
-  - 70 integration tests for real-world workflows
-  - 27 edge case tests (invalid inputs, concurrent access, corrupted files)
-  - 11 performance/stress tests (1000+ entity operations, high concurrency)
-  - 18 doctests with runnable examples
 - `File` setting type for file path selection (distinct from `Path`)
 - Edge case testing for type validation, concurrent operations, and special values
 

@@ -1,46 +1,52 @@
 name: CI
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+            - name: Install system dependencies (Linux)
+              if: runner.os == 'Linux'
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y libdbus-1-dev pkg-config
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            - name: Setup Rust
+              uses: dtolnay/rust-toolchain@stable
 
-      - name: Format check
-        run: cargo fmt --all -- --check
+            - name: Cache cargo
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      target
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+            - name: Format check
+              run: cargo fmt --all -- --check
 
-      - name: Test
-        run: cargo test --all --all-features --quiet
+            - name: Clippy
+              run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Install cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v1
+            - name: Test
+              run: cargo test --all --all-features --quiet
 
-      - name: Cargo deny
-        run: cargo deny check
+            - name: Install cargo-deny
+              uses: EmbarkStudios/cargo-deny-action@v1
 
-      - name: Build docs (docsrs cfg)
-        env:
-          RUSTDOCFLAGS: "--cfg docsrs"
-        run: cargo doc --all-features --no-deps
+            - name: Cargo deny
+              run: cargo deny check
+
+            - name: Build docs (docsrs cfg)
+              env:
+                  RUSTDOCFLAGS: "--cfg docsrs"
+              run: cargo doc --all-features --no-deps
