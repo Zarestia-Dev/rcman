@@ -41,10 +41,12 @@ jobs:
               run: cargo test --all --all-features --quiet
 
             - name: Install cargo-deny
-              uses: EmbarkStudios/cargo-deny-action@v1
+              run: cargo install cargo-deny --locked
 
-            - name: Cargo deny
-              run: cargo deny check
+            - name: Cargo deny (licenses and bans)
+              # Note: advisories check disabled until cargo-deny supports CVSS 4.0
+              # https://github.com/EmbarkStudios/cargo-deny/issues/635
+              run: cargo deny check licenses bans
 
             - name: Build docs (docsrs cfg)
               env:
