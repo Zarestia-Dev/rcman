@@ -43,7 +43,10 @@ impl EventManager {
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
     {
-        let mut guard = self.global_listeners.write().unwrap();
+        let mut guard = self
+            .global_listeners
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         guard.push(Arc::new(callback));
     }
 
@@ -56,7 +59,10 @@ impl EventManager {
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
     {
-        let mut listeners = self.key_listeners.write().unwrap();
+        let mut listeners = self
+            .key_listeners
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         listeners
             .entry(key.to_string())
             .or_default()
@@ -71,7 +77,7 @@ impl EventManager {
     where
         F: Fn(&Value) -> Result<(), String> + Send + Sync + 'static,
     {
-        let mut validators = self.validators.write().unwrap();
+        let mut validators = self.validators.write().unwrap_or_else(|e| e.into_inner());
         validators
             .entry(key.to_string())
             .or_default()
@@ -82,7 +88,7 @@ impl EventManager {
     ///
     /// Returns Ok(()) if all validators pass, or Err with the first error message.
     pub fn validate(&self, key: &str, value: &Value) -> Result<(), String> {
-        let guard = self.validators.read().unwrap();
+        let guard = self.validators.read().unwrap_or_else(|e| e.into_inner());
         if let Some(validators) = guard.get(key) {
             for validator in validators {
                 validator(value)?;
@@ -95,7 +101,10 @@ impl EventManager {
     pub fn notify(&self, key: &str, old_value: &Value, new_value: &Value) {
         // Call global listeners
         {
-            let guard = self.global_listeners.read().unwrap();
+            let guard = self
+                .global_listeners
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
             for callback in guard.iter() {
                 callback(key, old_value, new_value);
             }
@@ -103,7 +112,7 @@ impl EventManager {
 
         // Call key-specific listeners
         {
-            let guard = self.key_listeners.read().unwrap();
+            let guard = self.key_listeners.read().unwrap_or_else(|e| e.into_inner());
             if let Some(listeners) = guard.get(key) {
                 for callback in listeners {
                     callback(key, old_value, new_value);
@@ -114,14 +123,23 @@ impl EventManager {
 
     /// Remove all listeners for a specific key
     pub fn unwatch(&self, key: &str) {
-        let mut guard = self.key_listeners.write().unwrap();
+        let mut guard = self
+            .key_listeners
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         guard.remove(key);
     }
 
     /// Clear all listeners
     pub fn clear(&self) {
-        self.global_listeners.write().unwrap().clear();
-        self.key_listeners.write().unwrap().clear();
+        self.global_listeners
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.key_listeners
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 }
 

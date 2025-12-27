@@ -69,6 +69,21 @@ pub trait StorageBackend: Clone + Send + Sync {
 // =============================================================================
 
 /// JSON storage backend (default)
+///
+/// # Example
+///
+/// ```
+/// use rcman::{JsonStorage, StorageBackend};
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Serialize, Deserialize)]
+/// struct Config { name: String }
+///
+/// let storage = JsonStorage::new();
+/// let data = Config { name: "test".into() };
+/// let json = storage.serialize(&data).unwrap();
+/// assert!(json.contains("test"));
+/// ```
 #[derive(Clone, Default)]
 pub struct JsonStorage {
     /// Pretty print JSON output

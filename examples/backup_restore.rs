@@ -35,7 +35,6 @@ impl SettingsSchema for AppSettings {
 }
 
 #[cfg(feature = "backup")]
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = SettingsConfig::builder("backup-example", "1.0.0")
         .config_dir("./example_config")

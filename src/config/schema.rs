@@ -48,8 +48,10 @@ pub enum SettingType {
     Select,
     /// Color picker
     Color,
-    /// File path selector
+    /// Directory path selector
     Path,
+    /// File path selector
+    File,
     /// Multi-line text
     Textarea,
     /// Password/sensitive input
@@ -59,6 +61,27 @@ pub enum SettingType {
 }
 
 /// Metadata for a single setting
+///
+/// # Example
+///
+/// ```
+/// use rcman::{SettingMetadata, opt};
+///
+/// // Toggle setting
+/// let dark_mode = SettingMetadata::toggle("Dark Mode", false)
+///     .description("Enable dark theme")
+///     .category("appearance");
+///
+/// // Number with range
+/// let font_size = SettingMetadata::number("Font Size", 14.0)
+///     .min(8.0).max(32.0).step(1.0);
+///
+/// // Select with options
+/// let theme = SettingMetadata::select("Theme", "dark", vec![
+///     opt("light", "Light"),
+///     opt("dark", "Dark"),
+/// ]);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingMetadata {
     /// Type of setting (for UI rendering)
@@ -238,10 +261,20 @@ impl SettingMetadata {
         }
     }
 
-    /// Create a path selector setting
+    /// Create a directory path selector setting
     pub fn path(label: impl Into<String>, default: impl Into<String>) -> Self {
         Self {
             setting_type: SettingType::Path,
+            label: label.into(),
+            default: Value::String(default.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a file path selector setting
+    pub fn file(label: impl Into<String>, default: impl Into<String>) -> Self {
+        Self {
+            setting_type: SettingType::File,
             label: label.into(),
             default: Value::String(default.into()),
             ..Default::default()
@@ -394,7 +427,7 @@ impl SettingMetadata {
                     }
                 }
             }
-            _ => {} // Toggle, Color, Path, Info don't need special validation
+            _ => {} // Toggle, Color, Path, File, Info don't need special validation
         }
         Ok(())
     }
@@ -606,5 +639,40 @@ mod tests {
 
         // Invalid option
         assert!(setting.validate(&Value::from("invalid")).is_err());
+    }
+
+    #[test]
+    fn test_path_setting() {
+        let setting = SettingMetadata::path("Config Directory", "/home/user/.config")
+            .description("Directory for configuration files");
+
+        assert_eq!(setting.setting_type, SettingType::Path);
+        assert_eq!(setting.default, Value::String("/home/user/.config".into()));
+        assert_eq!(setting.label, "Config Directory");
+        assert_eq!(
+            setting.description,
+            Some("Directory for configuration files".into())
+        );
+        // Path type doesn't need special validation
+        assert!(setting.validate(&Value::from("/any/path")).is_ok());
+    }
+
+    #[test]
+    fn test_file_setting() {
+        let setting = SettingMetadata::file("Config File", "/etc/app/config.json")
+            .description("Path to the configuration file");
+
+        assert_eq!(setting.setting_type, SettingType::File);
+        assert_eq!(
+            setting.default,
+            Value::String("/etc/app/config.json".into())
+        );
+        assert_eq!(setting.label, "Config File");
+        assert_eq!(
+            setting.description,
+            Some("Path to the configuration file".into())
+        );
+        // File type doesn't need special validation
+        assert!(setting.validate(&Value::from("/any/file.txt")).is_ok());
     }
 }

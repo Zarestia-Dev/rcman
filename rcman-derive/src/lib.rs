@@ -339,11 +339,11 @@ fn parse_field_attrs(attrs: &[Attribute]) -> FieldAttrs {
                                         if let Expr::Tuple(tuple) = item {
                                             if tuple.elems.len() == 2 {
                                                 let mut vals = tuple.elems.iter();
-                                                if let (Some(Expr::Lit(v)), Some(Expr::Lit(l))) = 
-                                                    (vals.next(), vals.next()) 
+                                                if let (Some(Expr::Lit(v)), Some(Expr::Lit(l))) =
+                                                    (vals.next(), vals.next())
                                                 {
-                                                    if let (Lit::Str(val), Lit::Str(label)) = 
-                                                        (&v.lit, &l.lit) 
+                                                    if let (Lit::Str(val), Lit::Str(label)) =
+                                                        (&v.lit, &l.lit)
                                                     {
                                                         result.options.push((val.value(), label.value()));
                                                     }

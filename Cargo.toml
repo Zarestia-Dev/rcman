@@ -12,6 +12,7 @@ repository = "https://github.com/Zarestia-Dev/rcman"
 readme = "README.md"
 keywords = ["settings", "config", "backup", "preferences", "schema"]
 categories = ["config", "filesystem"]
+rust-version = "1.70"
 
 [features]
 default = ["json", "backup"]
@@ -62,3 +63,24 @@ keyring = { version = "3.6", features = ["apple-native"], optional = true }
 tempfile = "3.14"
 env_logger = "0.11.8"
 eframe = "0.33.3"
+
+# Example declarations with required features
+[[example]]
+name = "derive_usage"
+required-features = ["derive"]
+
+[[example]]
+name = "secret_settings"
+required-features = ["keychain"]
+
+[[example]]
+name = "encrypted_storage"
+required-features = ["encrypted-file"]
+
+[[example]]
+name = "backup_restore"
+required-features = ["backup"]
+
+[[example]]
+name = "gui_demo"
+required-features = ["backup"]

@@ -3,8 +3,12 @@
 [![Crates.io](https://img.shields.io/crates/v/rcman.svg)](https://crates.io/crates/rcman)
 [![Documentation](https://docs.rs/rcman/badge.svg)](https://docs.rs/rcman)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/Zarestia-Dev/rcman/workflows/CI/badge.svg)](https://github.com/Zarestia-Dev/rcman/actions)
+[![MSRV](https://img.shields.io/badge/MSRV-1.70-blue)](https://github.com/rust-lang/rust/releases/tag/1.70.0)
 
 A generic, **framework-agnostic** Rust library for managing application settings with backup/restore, sub-settings, and credential management.
+
+> **Built with modern Rust best practices** — Comprehensive test coverage (143 tests), CI-enforced quality gates (fmt, clippy, cargo-deny), and production-ready error handling.
 
 ## Quick Links
 
@@ -12,18 +16,19 @@ A generic, **framework-agnostic** Rust library for managing application settings
 - [📦 Crates.io](https://crates.io/crates/rcman)
 - [💡 Examples](./examples)
 - [📝 Changelog](./CHANGELOG.md)
+- [🤝 Contributing](./CONTRIBUTING.md)
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| **Settings Management** | Load/save with rich schema metadata for UI rendering |
-| **Sub-Settings** | Per-entity configs (e.g., one JSON per remote) |
-| **Backup & Restore** | Encrypted ZIP backups with AES-256 |
-| **Secret Settings** | Auto-routes secrets to OS keychain |
-| **Env Var Overrides** | Override settings via environment variables (Docker/K8s) |
-| **Atomic Writes** | Crash-safe file writes (temp file + rename) |
-| **Cross-Platform** | Pure Rust - Windows, macOS, Linux, Android |
+| Feature                 | Description                                              |
+| ----------------------- | -------------------------------------------------------- |
+| **Settings Management** | Load/save with rich schema metadata for UI rendering     |
+| **Sub-Settings**        | Per-entity configs (e.g., one JSON per remote)           |
+| **Backup & Restore**    | Encrypted ZIP backups with AES-256                       |
+| **Secret Settings**     | Auto-routes secrets to OS keychain                       |
+| **Env Var Overrides**   | Override settings via environment variables (Docker/K8s) |
+| **Atomic Writes**       | Crash-safe file writes (temp file + rename)              |
+| **Cross-Platform**      | Pure Rust - Windows, macOS, Linux, Android               |
 
 ---
 
@@ -36,16 +41,17 @@ rcman = "0.1"
 
 ### Feature Flags
 
-| Feature | Description | Default? |
-|---------|-------------|----------|
-| `json` | JSON storage | ✅ |
-| `backup` | Backup/restore (zip) | ✅ |
-| `derive` | `#[derive(SettingsSchema)]` macro | ❌ |
-| `keychain` | OS keychain support | ❌ |
-| `encrypted-file` | AES-256 encrypted file | ❌ |
-| `full` | All features | ❌ |
+| Feature          | Description                       | Default? |
+| ---------------- | --------------------------------- | -------- |
+| `json`           | JSON storage                      | ✅       |
+| `backup`         | Backup/restore (zip)              | ✅       |
+| `derive`         | `#[derive(SettingsSchema)]` macro | ❌       |
+| `keychain`       | OS keychain support               | ❌       |
+| `encrypted-file` | AES-256 encrypted file            | ❌       |
+| `full`           | All features                      | ❌       |
 
 **Examples:**
+
 ```toml
 # Default (settings + backup)
 rcman = "0.1"
@@ -123,16 +129,17 @@ impl SettingsSchema for AppSettings {
 
 ### Available Constructors
 
-| Constructor | Description |
-|-------------|-------------|
-| `text(label, default)` | Text input |
-| `password(label, default)` | Password input |
-| `number(label, default)` | Number input |
-| `toggle(label, default)` | Boolean toggle |
-| `select(label, default, options)` | Dropdown |
-| `color(label, default)` | Color picker |
-| `path(label, default)` | File path |
-| `info(label, default)` | Read-only |
+| Constructor                       | Description    |
+| --------------------------------- | -------------- |
+| `text(label, default)`            | Text input     |
+| `password(label, default)`        | Password input |
+| `number(label, default)`          | Number input   |
+| `toggle(label, default)`          | Boolean toggle |
+| `select(label, default, options)` | Dropdown       |
+| `color(label, default)`           | Color picker   |
+| `path(label, default)`            | Directory path |
+| `file(label, default)`            | File path      |
+| `info(label, default)`            | Read-only      |
 
 ### Chainable Setters
 
@@ -165,6 +172,7 @@ struct GeneralSettings {
 ```
 
 **Available field attributes:**
+
 - `label`, `description`, `category`
 - `min`, `max`, `step` (for numbers)
 - `options((...))` (for selects)
@@ -198,10 +206,10 @@ remotes.delete("onedrive")?;
 
 **Storage Modes:**
 
-| Mode | Files Created | Use Case |
-|------|---------------|----------|
-| Multi-file (default) | `remotes/gdrive.json`, `remotes/s3.json` | Large configs, many entities |
-| Single-file | `backends.json` | Small collections, simpler file structure |
+| Mode                 | Files Created                            | Use Case                                  |
+| -------------------- | ---------------------------------------- | ----------------------------------------- |
+| Multi-file (default) | `remotes/gdrive.json`, `remotes/s3.json` | Large configs, many entities              |
+| Single-file          | `backends.json`                          | Small collections, simpler file structure |
 
 ---
 
@@ -220,8 +228,9 @@ manager.save_setting::<MySettings>("api", "key", json!("sk-123"))?;
 ```
 
 **Backends:**
+
 - macOS: Keychain
-- Windows: Credential Manager  
+- Windows: Credential Manager
 - Linux: Secret Service (via libsecret)
 - **Fallback:** Encrypted file with Argon2id + AES-256-GCM
 
@@ -296,21 +305,23 @@ let config = SettingsConfig::builder("my-app", "1.0.0")
 
 **Format:** `{PREFIX}_{CATEGORY}_{KEY}` (all uppercase)
 
-| Setting Key | Environment Variable |
-|-------------|---------------------|
-| `ui.theme` | `MYAPP_UI_THEME=dark` |
-| `core.port` | `MYAPP_CORE_PORT=9090` |
+| Setting Key     | Environment Variable       |
+| --------------- | -------------------------- |
+| `ui.theme`      | `MYAPP_UI_THEME=dark`      |
+| `core.port`     | `MYAPP_CORE_PORT=9090`     |
 | `general.debug` | `MYAPP_GENERAL_DEBUG=true` |
 
 **Priority:** Env Var > Stored Value > Default
 
 **Type Parsing:**
+
 - `true`/`false` → boolean
 - Numbers → i64/f64
 - JSON → parsed as JSON
 - Everything else → string
 
 **UI Detection:**
+
 ```rust
 let settings = manager.load_settings::<MySettings>()?;
 for (key, meta) in settings {
@@ -322,6 +333,7 @@ for (key, meta) in settings {
 
 > **Note:** Secret settings (stored in keychain) are NOT affected by env var overrides by default.
 > To enable, use `.env_overrides_secrets(true)`:
+>
 > ```rust
 > SettingsConfig::builder("my-app", "1.0.0")
 >     .with_env_prefix("MYAPP")
@@ -364,6 +376,7 @@ rcman/
 - **Zero-Copy Reads**: Uses `RwLock` for concurrent read access without cloning
 
 **Benchmarks** (typical desktop app with 50 settings):
+
 - First load: ~2ms (disk read + parse)
 - Cached load: ~50μs (memory access)
 - Save setting: ~1-3ms (validation + disk write)
@@ -382,6 +395,41 @@ match manager.save_setting::<MySettings>("ui", "theme", json!("dark")) {
     Err(Error::InvalidSettingValue { reason, .. }) => println!("Invalid: {}", reason),
     Err(e) => println!("Error: {}", e),
 }
+```
+
+---
+
+## Development
+
+This project follows modern Rust library best practices. See [CONTRIBUTING.md](./CONTRIBUTING.md) for development guidelines.
+
+### Quick Commands
+
+```bash
+# Run all checks (CI equivalent)
+just fmt clippy test deny
+
+# Individual commands
+just fmt      # Format code
+just clippy   # Run linter
+just test     # Run tests
+just docs     # Build docs
+just deny     # Check dependencies
+```
+
+### Quality Standards
+
+- **MSRV**: Rust 1.70+
+- **Code Quality**: `clippy -D warnings` enforced in CI
+- **Test Coverage**: 143 tests (120 passing + 13 performance + 10 environment)
+- **Documentation**: Comprehensive doctests and API docs
+- **Dependencies**: Audited via `cargo-deny` (licenses, advisories, duplicates)
+
+### Pre-commit Hook (Optional)
+
+```bash
+git config core.hooksPath .githooks
+chmod +x .githooks/pre-commit
 ```
 
 ---

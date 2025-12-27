@@ -1,0 +1,48 @@
+# cargo-deny configuration
+# See https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Where to clone advisory DBs (optional)
+# db-path = "$CARGO_HOME/advisory-dbs"
+# db-urls = ["https://github.com/RustSec/advisory-db"]
+
+# Scope for unmaintained advisories: all | workspace | transitive | none
+unmaintained = "workspace"
+
+# Lint level for yanked versions: deny | warn | allow
+yanked = "warn"
+
+# Specific advisories or yanked versions to ignore (optional)
+ignore = []
+
+[licenses]
+# Licenses explicitly allowed; everything else is denied by default
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-3-Clause",
+  "BSD-2-Clause",
+  "ISC",
+  "Zlib",
+  "MPL-2.0",
+  "Unicode-3.0",
+]
+
+# Emit warnings for allowed licenses that aren’t used
+unused-allowed-license = "warn"
+
+# Minimum matching confidence when inferring from LICENSE files
+confidence-threshold = 0.9
+
+[bans]
+# Treat multiple versions of the same crate as errors/warnings/allowed
+multiple-versions = "warn"
+
+# Warn on wildcard dependency versions
+wildcards = "warn"
+
+[bans.workspace-dependencies]
+# Handle workspace dependency hygiene
+duplicates = "deny"
+include-path-dependencies = true
+unused = "deny"

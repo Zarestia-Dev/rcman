@@ -293,6 +293,9 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
         }
 
         // Verify encryption status by inspecting the actual data.zip
+        // WARNING: optimizing this to not read the full file into RAM
+        // requires refactoring archive.rs to support streaming reads.
+        // For now, at least strictly limit the size or warn.
         let data_bytes = super::archive::read_file_from_zip(path, "data.zip")?;
         let temp_dir = tempfile::tempdir().map_err(|e| Error::BackupFailed(e.to_string()))?;
         let data_archive_path = temp_dir.path().join("data.zip");

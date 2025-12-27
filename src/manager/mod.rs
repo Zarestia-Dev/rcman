@@ -44,9 +44,47 @@ use std::sync::RwLock;
 /// let manager = SettingsManager::new(config).unwrap();
 /// ```
 ///
+/// # Complete workflow
+///
+/// ```rust,no_run
+/// use rcman::{SettingsManager, SettingsSchema, SettingMetadata, settings};
+/// use serde::{Deserialize, Serialize};
+/// use serde_json::json;
+/// use std::collections::HashMap;
+///
+/// #[derive(Default, Serialize, Deserialize)]
+/// struct AppSettings {
+///     theme: String,
+/// }
+///
+/// impl SettingsSchema for AppSettings {
+///     fn get_metadata() -> HashMap<String, SettingMetadata> {
+///         settings! {
+///             "ui.theme" => SettingMetadata::text("Theme", "dark")
+///         }
+///     }
+/// }
+///
+/// let manager = SettingsManager::builder("my-app", "1.0.0")
+///     .config_dir("/tmp/my-app-config")
+///     .build()
+///     .unwrap();
+///
+/// // Load settings (creates file with defaults if missing)
+/// manager.load_settings::<AppSettings>().unwrap();
+///
+/// // Save a setting
+/// manager.save_setting::<AppSettings>("ui", "theme", json!("light")).unwrap();
+///
+/// // Load settings again to verify
+/// let metadata = manager.load_settings::<AppSettings>().unwrap();
+/// let theme_value = metadata.get("ui.theme").unwrap().value.as_ref().unwrap();
+/// assert_eq!(theme_value.as_str(), Some("light"));
+/// ```
+///
 /// # Type Parameters
 ///
-/// * `S` - Storage backend implementation (defaults to [`JsonStorage`](crate::JsonStorage))
+/// * `S`: The storage backend to use (defaults to `JsonStorage`).
 pub struct SettingsManager<S: StorageBackend + 'static = crate::storage::JsonStorage> {
     /// Configuration
     config: SettingsConfig<S>,
@@ -256,6 +294,44 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         debug!("🗑️ Settings cache invalidated");
     }
 
+    /// Internal helper to get settings from cache or load from disk safely.
+    /// Implements double-checked locking for thread safety.
+    fn get_stored_settings(&self) -> Result<Value> {
+        // 1. Fast path: Try with read lock
+        {
+            let cache = self.settings_cache.read().unwrap();
+            if let Some(cached) = cache.as_ref() {
+                return Ok(cached.clone());
+            }
+        } // Drop read lock
+
+        // 2. Slow path: Acquire write lock
+        let mut cache = self.settings_cache.write().unwrap();
+
+        // 3. Double-check: Did another thread populate it while we waited?
+        if let Some(cached) = cache.as_ref() {
+            return Ok(cached.clone());
+        }
+
+        // 4. Actually load from disk
+        let path = self.config.settings_path();
+        let stored = match self.storage.read(&path) {
+            Ok(v) => v,
+            Err(Error::FileRead { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                json!({})
+            }
+            Err(e) => return Err(e),
+        };
+
+        // 5. Populate cache
+        *cache = Some(stored.clone());
+        debug!("📦 Settings cache populated from disk");
+
+        Ok(stored)
+    }
+
     /// Load settings synchronously (for startup initialization).
     ///
     /// This merges stored settings with defaults from the schema and populates
@@ -271,26 +347,8 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// let settings: MySettings = manager.load_startup::<MySettings>()?;
     /// ```
     pub fn load_startup<T: SettingsSchema>(&self) -> Result<T> {
-        let path = self.config.settings_path();
-
-        // Load stored settings or use empty object
-        // Load stored settings or use empty object
-        let stored: Value = match self.storage.read(&path) {
-            Ok(v) => v,
-            Err(Error::FileRead { source, .. })
-                if source.kind() == std::io::ErrorKind::NotFound =>
-            {
-                json!({})
-            }
-            Err(e) => return Err(e),
-        };
-
-        // Populate cache
-        // Use try_write to avoid blocking - if locked, skip cache update
-        if let Ok(mut cache) = self.settings_cache.try_write() {
-            *cache = Some(stored.clone());
-            debug!("📦 Settings cache populated");
-        }
+        // Use the safe helper instead of duplicating logic
+        let stored = self.get_stored_settings()?;
 
         // Get defaults
         let default = T::default();
@@ -319,35 +377,8 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// Returns metadata map with current values populated.
     /// Uses in-memory cache when available.
     pub fn load_settings<T: SettingsSchema>(&self) -> Result<HashMap<String, SettingMetadata>> {
-        // Try to use cache first
-        let stored: Value = {
-            let cache = self.settings_cache.read().unwrap();
-            if let Some(cached) = cache.as_ref() {
-                debug!("📦 Using cached settings");
-                cached.clone()
-            } else {
-                drop(cache); // Release read lock before acquiring write lock
-
-                // Cache miss - load from disk
-                let path = self.config.settings_path();
-                let from_disk: Value = match self.storage.read(&path) {
-                    Ok(v) => v,
-                    Err(Error::FileRead { source, .. })
-                        if source.kind() == std::io::ErrorKind::NotFound =>
-                    {
-                        json!({})
-                    }
-                    Err(e) => return Err(e),
-                };
-
-                // Populate cache
-                let mut cache = self.settings_cache.write().unwrap();
-                *cache = Some(from_disk.clone());
-                debug!("📦 Settings cache populated from disk");
-
-                from_disk
-            }
-        };
+        // Use the safe helper
+        let stored = self.get_stored_settings()?;
 
         // Get metadata and populate values + cache defaults
         let mut metadata = T::get_metadata();
@@ -523,6 +554,15 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
         // We need metadata for validation, so fetch it directly
         let validator = metadata.get(&metadata_key);
+
+        // Ensure setting exists in schema
+        if validator.is_none() {
+            return Err(Error::SettingNotFound {
+                category: category.to_string(),
+                key: key.to_string(),
+            });
+        }
+
         let default_value = validator.map(|m| m.default.clone()).unwrap_or(Value::Null);
 
         // Validate value
@@ -621,7 +661,16 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         // Write empty object
         self.storage.write(&path, &json!({}))?;
 
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        if let Some(ref creds) = self.credentials {
+            creds.clear()?;
+            info!("🔐 All credentials cleared");
+        }
+
         info!("✅ All settings reset to defaults");
+
+        self.invalidate_cache();
+
         Ok(())
     }
 

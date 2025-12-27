@@ -306,7 +306,7 @@ impl DemoApp {
             Some(self.backup_note.clone())
         };
 
-        match {
+        let res = {
             let mut options = BackupOptions::new().output_dir("./example_config/backups");
             if let Some(pw) = password {
                 options = options.password(pw);
@@ -315,7 +315,8 @@ impl DemoApp {
                 options = options.note(n);
             }
             manager.backup().create(options)
-        } {
+        };
+        match res {
             Ok(path) => {
                 let encrypted = if self.use_encryption && !self.backup_password.is_empty() {
                     " (encrypted)"
@@ -353,7 +354,7 @@ impl DemoApp {
             None
         };
 
-        match {
+        let res = {
             let mut options = RestoreOptions::from_path(&backup_path)
                 .overwrite(true)
                 .verify_checksum(true);
@@ -361,7 +362,8 @@ impl DemoApp {
                 options = options.password(pw);
             }
             manager.backup().restore(options)
-        } {
+        };
+        match res {
             Ok(_) => {
                 self.status_message = "✅ Backup restored successfully!".to_string();
                 self.reload_settings();
@@ -507,7 +509,7 @@ impl DemoApp {
 
     fn save_setting(&mut self, category: &str, key: &str, value: Value) {
         let manager = self.manager.clone();
-        match { manager.save_setting::<DemoSettings>(category, key, value) } {
+        match manager.save_setting::<DemoSettings>(category, key, value) {
             Ok(_) => {
                 self.status_message = format!("✅ Saved {}.{}", category, key);
             }
@@ -520,7 +522,7 @@ impl DemoApp {
 
     fn reset_setting(&mut self, category: &str, key: &str) {
         let manager = self.manager.clone();
-        match { manager.reset_setting::<DemoSettings>(category, key) } {
+        match manager.reset_setting::<DemoSettings>(category, key) {
             Ok(default_value) => {
                 self.status_message = format!(
                     "🔄 Reset {}.{} to default: {}",

@@ -7,6 +7,7 @@ license = "MIT"
 repository = "https://github.com/Zarestia-Dev/rcman"
 keywords = ["settings", "config", "derive", "macro"]
 categories = ["config", "development-tools::procedural-macro-helpers"]
+rust-version = "1.70"
 
 [lib]
 proc-macro = true

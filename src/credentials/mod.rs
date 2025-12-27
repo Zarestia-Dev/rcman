@@ -13,8 +13,10 @@ mod memory;
 mod types;
 
 #[cfg(feature = "encrypted-file")]
+#[cfg_attr(docsrs, doc(cfg(feature = "encrypted-file")))]
 pub use encrypted::EncryptedFileBackend;
 #[cfg(feature = "keychain")]
+#[cfg_attr(docsrs, doc(cfg(feature = "keychain")))]
 pub use keychain::KeychainBackend;
 pub use memory::MemoryBackend;
 pub use types::*;
@@ -60,6 +62,7 @@ pub struct CredentialManager {
 impl CredentialManager {
     /// Create a new credential manager with keychain backend
     #[cfg(feature = "keychain")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "keychain")))]
     pub fn new(service_name: impl Into<String>) -> Self {
         let service = service_name.into();
         Self {
@@ -77,6 +80,10 @@ impl CredentialManager {
 
     /// Create with automatic fallback to encrypted file
     #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(feature = "keychain", feature = "encrypted-file")))
+    )]
     pub fn with_fallback(
         service_name: impl Into<String>,
         fallback_path: std::path::PathBuf,
@@ -194,6 +201,40 @@ impl CredentialManager {
         }
 
         false
+    }
+
+    /// Clear all credentials for this service
+    pub fn clear(&self) -> Result<()> {
+        let prefix = format!("{}:", self.service_name);
+        let mut keys_to_remove = std::collections::HashSet::new();
+
+        if let Ok(keys) = self.primary.list_keys() {
+            for key in keys {
+                if key.starts_with(&prefix) {
+                    keys_to_remove.insert(key);
+                }
+            }
+        }
+
+        if let Some(ref fallback) = self.fallback {
+            if let Ok(keys) = fallback.list_keys() {
+                for key in keys {
+                    if key.starts_with(&prefix) {
+                        keys_to_remove.insert(key);
+                    }
+                }
+            }
+        }
+
+        for full_key in keys_to_remove {
+            // Remove directly from backends using full key to avoid reconstruction overhead
+            let _ = self.primary.remove(&full_key);
+            if let Some(ref fallback) = self.fallback {
+                let _ = fallback.remove(&full_key);
+            }
+        }
+
+        Ok(())
     }
 
     /// Get service name
