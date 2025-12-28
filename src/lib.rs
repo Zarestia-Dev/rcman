@@ -150,7 +150,6 @@ mod sub_settings;
 pub mod config;
 
 #[cfg(feature = "backup")]
-#[cfg_attr(docsrs, doc(cfg(feature = "backup")))]
 pub mod backup;
 
 // Credentials always available (for SecretStorage type), backends are feature-gated
@@ -177,7 +176,6 @@ pub use config::{
 
 // Backup re-exports (feature-gated)
 #[cfg(feature = "backup")]
-#[cfg_attr(docsrs, doc(cfg(feature = "backup")))]
 pub use backup::{
     BackupAnalysis, BackupContents, BackupManager, BackupManifest, BackupOptions, ExportCategory,
     ExportCategoryType, ExportType, ExternalConfig, ExternalConfigProvider, RestoreOptions,
@@ -187,10 +185,6 @@ pub use backup::{
 // Credential re-exports (always available: SecretStorage; feature-gated: CredentialManager)
 /// Credential Manager (requires `keychain` or `encrypted-file` feature)
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(any(feature = "keychain", feature = "encrypted-file")))
-)]
 pub use credentials::CredentialManager;
 pub use credentials::SecretStorage;
 
@@ -213,5 +207,4 @@ pub use credentials::SecretStorage;
 /// }
 /// ```
 #[cfg(feature = "derive")]
-#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use rcman_derive::SettingsSchema as DeriveSettingsSchema;
