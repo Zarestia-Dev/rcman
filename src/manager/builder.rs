@@ -103,6 +103,20 @@ impl SettingsManagerBuilder {
         self
     }
 
+    /// Set a migration function for schema changes (lazy migration).
+    ///
+    /// The migrator function is called automatically when loading settings.
+    /// If the function modifies the value, the migrated version is saved back.
+    ///
+    /// Use this to upgrade old data formats to new ones transparently.
+    pub fn with_migrator<F>(mut self, migrator: F) -> Self
+    where
+        F: Fn(serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
+    {
+        self.config_builder = self.config_builder.with_migrator(migrator);
+        self
+    }
+
     /// Register an external configuration file for backup.
     ///
     /// External configs are files managed outside of rcman (like rclone.conf)

@@ -82,6 +82,9 @@ pub struct BackupOptions {
     /// External configs to include (by id)
     pub include_external_configs: Vec<String>,
 
+    /// Custom filename suffix (e.g. "remotes" -> "app_timestamp_remotes.rcman")
+    pub filename_suffix: Option<String>,
+
     /// Progress callback (processed bytes, total bytes)
     pub on_progress: Option<ProgressCallback>,
 }
@@ -114,6 +117,7 @@ impl Default for BackupOptions {
             include_sub_settings: Vec::new(),
             include_sub_settings_items: std::collections::HashMap::new(),
             include_external_configs: Vec::new(),
+            filename_suffix: None,
             on_progress: None,
         }
     }
@@ -203,6 +207,13 @@ impl BackupOptions {
     #[must_use]
     pub fn include_external(mut self, id: impl Into<String>) -> Self {
         self.include_external_configs.push(id.into());
+        self
+    }
+
+    /// Set a custom filename suffix
+    #[must_use]
+    pub fn filename_suffix(mut self, suffix: impl Into<String>) -> Self {
+        self.filename_suffix = Some(suffix.into());
         self
     }
 
@@ -343,65 +354,232 @@ impl RestoreOptions {
     }
 }
 
-/// External configuration file managed by the app
+// =============================================================================
+// Dynamic External Config Sources
+// =============================================================================
+
+/// How to get data for backup export
 ///
-/// Use this to register external files (like rclone.conf) that should
-/// be available for backup export.
+/// This defines where the content comes from when creating a backup.
+#[derive(Debug, Clone)]
+pub enum ExportSource {
+    /// Read content from a file on disk
+    File(PathBuf),
+    /// Run a command and capture its stdout
+    Command { program: String, args: Vec<String> },
+    /// Use provided bytes directly (for API responses, computed data)
+    Content(Vec<u8>),
+}
+
+/// How to restore data from a backup
 ///
-/// # Example
+/// This defines what happens when restoring the config from a backup.
+#[derive(Clone)]
+pub enum ImportTarget {
+    /// Write content to a file
+    File(PathBuf),
+    /// Pipe content to a command's stdin
+    Command { program: String, args: Vec<String> },
+    /// Custom handler function for complex restore logic
+    #[allow(clippy::type_complexity)]
+    Handler(std::sync::Arc<dyn Fn(&[u8]) -> crate::error::Result<()> + Send + Sync>),
+    /// Read-only export (cannot be restored, e.g., system diagnostics)
+    ReadOnly,
+}
+
+impl std::fmt::Debug for ImportTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ImportTarget::File(p) => f.debug_tuple("File").field(p).finish(),
+            ImportTarget::Command { program, args } => f
+                .debug_struct("Command")
+                .field("program", program)
+                .field("args", args)
+                .finish(),
+            ImportTarget::Handler(_) => f.debug_tuple("Handler").field(&"<fn>").finish(),
+            ImportTarget::ReadOnly => write!(f, "ReadOnly"),
+        }
+    }
+}
+
+/// External configuration managed by the app
 ///
+/// Use this to register external files, command outputs, or dynamic data
+/// that should be available for backup export and restore.
+///
+/// # Examples
+///
+/// ## File-based config (traditional)
 /// ```rust
 /// use rcman::ExternalConfig;
 ///
 /// let config = ExternalConfig::new("rclone_config", "/path/to/rclone.conf")
-///     .display_name("Rclone Configuration")
-///     .description("Main rclone remote configurations");
+///     .display_name("Rclone Configuration");
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// ## Command output
+/// ```rust
+/// use rcman::ExternalConfig;
+///
+/// let config = ExternalConfig::from_command("rclone_dump", "rclone_dump.json")
+///     .export_command("rclone", &["config", "dump"])
+///     .import_read_only() // Cannot restore command output directly
+///     .display_name("Rclone Config Dump");
+/// ```
+///
+/// ## In-memory content
+/// ```rust
+/// use rcman::ExternalConfig;
+///
+/// let api_data = b"{ \"key\": \"value\" }".to_vec();
+/// let config = ExternalConfig::from_content("cloud_config", "cloud.json", api_data)
+///     .display_name("Cloud Settings");
+/// ```
+#[derive(Debug, Clone)]
 pub struct ExternalConfig {
     /// Unique identifier for referencing in BackupOptions
     pub id: String,
 
-    /// Path to the config file or directory
-    pub path: PathBuf,
+    /// Filename used inside the backup archive
+    pub archive_filename: String,
 
     /// Human-readable name for display
     pub display_name: String,
 
     /// Description of what this config contains
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
+    /// How to get the data for export
+    pub export_source: ExportSource,
+
+    /// How to restore the data on import
+    pub import_target: ImportTarget,
+
     /// Whether this config contains sensitive data
-    #[serde(default)]
     pub is_sensitive: bool,
 
     /// Whether this config is optional for export (default: false)
-    #[serde(default)]
     pub optional: bool,
 
-    /// Whether this is a directory (default: false = file)
-    #[serde(default)]
+    /// Whether this is a directory (for File source, default: false)
     pub is_directory: bool,
 }
 
 impl ExternalConfig {
-    /// Create a new external config registration
+    /// Create a new file-based external config (backward compatible)
+    ///
+    /// This is the traditional way to register a config file.
+    /// Both export and import will use the same file path.
     ///
     /// # Arguments
     /// * `id` - Unique identifier (used in BackupOptions::include_external)
     /// * `path` - Path to the file or directory
     pub fn new(id: impl Into<String>, path: impl Into<PathBuf>) -> Self {
         let id = id.into();
+        let path = path.into();
+        let archive_filename = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("{}.dat", id));
+
         Self {
             display_name: id.clone(),
             id,
-            path: path.into(),
+            archive_filename,
+            export_source: ExportSource::File(path.clone()),
+            import_target: ImportTarget::File(path),
             description: None,
             is_sensitive: false,
             optional: false,
             is_directory: false,
         }
+    }
+
+    /// Create a config that exports from a command's stdout
+    ///
+    /// # Arguments
+    /// * `id` - Unique identifier
+    /// * `archive_filename` - Filename to use inside the backup archive
+    pub fn from_command(id: impl Into<String>, archive_filename: impl Into<String>) -> Self {
+        let id = id.into();
+        Self {
+            display_name: id.clone(),
+            id,
+            archive_filename: archive_filename.into(),
+            export_source: ExportSource::Command {
+                program: String::new(),
+                args: Vec::new(),
+            },
+            import_target: ImportTarget::ReadOnly,
+            description: None,
+            is_sensitive: false,
+            optional: false,
+            is_directory: false,
+        }
+    }
+
+    /// Create a config from in-memory content
+    ///
+    /// # Arguments
+    /// * `id` - Unique identifier
+    /// * `archive_filename` - Filename to use inside the backup archive
+    /// * `content` - The bytes to include in the backup
+    pub fn from_content(
+        id: impl Into<String>,
+        archive_filename: impl Into<String>,
+        content: Vec<u8>,
+    ) -> Self {
+        let id = id.into();
+        Self {
+            display_name: id.clone(),
+            id,
+            archive_filename: archive_filename.into(),
+            export_source: ExportSource::Content(content),
+            import_target: ImportTarget::ReadOnly,
+            description: None,
+            is_sensitive: false,
+            optional: false,
+            is_directory: false,
+        }
+    }
+
+    /// Set the export command (for Command source)
+    pub fn export_command(mut self, program: impl Into<String>, args: &[&str]) -> Self {
+        self.export_source = ExportSource::Command {
+            program: program.into(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+        };
+        self
+    }
+
+    /// Set import to write to a file
+    pub fn import_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.import_target = ImportTarget::File(path.into());
+        self
+    }
+
+    /// Set import to pipe to a command's stdin
+    pub fn import_command(mut self, program: impl Into<String>, args: &[&str]) -> Self {
+        self.import_target = ImportTarget::Command {
+            program: program.into(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+        };
+        self
+    }
+
+    /// Set import to use a custom handler
+    pub fn import_handler<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&[u8]) -> crate::error::Result<()> + Send + Sync + 'static,
+    {
+        self.import_target = ImportTarget::Handler(std::sync::Arc::new(handler));
+        self
+    }
+
+    /// Mark import as read-only (cannot be restored)
+    pub fn import_read_only(mut self) -> Self {
+        self.import_target = ImportTarget::ReadOnly;
+        self
     }
 
     /// Set a human-readable display name
@@ -428,15 +606,19 @@ impl ExternalConfig {
         self
     }
 
-    /// Mark this as a directory instead of a file
+    /// Mark this as a directory instead of a file (only for File source)
     pub fn directory(mut self) -> Self {
         self.is_directory = true;
         self
     }
 
-    /// Check if the file/directory exists
+    /// Check if the source exists (only meaningful for File source)
     pub fn exists(&self) -> bool {
-        self.path.exists()
+        match &self.export_source {
+            ExportSource::File(path) => path.exists(),
+            ExportSource::Command { .. } => true, // Commands are assumed to work
+            ExportSource::Content(_) => true,     // Content is always present
+        }
     }
 }
 
@@ -539,20 +721,58 @@ pub struct BackupIntegrity {
     pub compressed_size_bytes: Option<u64>,
 }
 
+/// Manifest entry for sub-settings (can be single file or list of items)
+///
+/// This supports the "Enterprise" polymorphic schema:
+/// - Single-file settings (e.g. "backend") -> stores filename string "backend.json"
+/// - Multi-file settings (e.g. "remotes") -> stores list of items ["gdrive", "s3"]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum SubSettingsManifestEntry {
+    /// Single file (stored as filename string)
+    SingleFile(String),
+    /// Multiple files (stored as list of item names)
+    MultiFile(Vec<String>),
+}
+
 /// What's included in the backup
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BackupContents {
     /// Main settings.json included
     pub settings: bool,
 
-    /// Sub-settings included (category -> list of item names, empty vec means all items)
-    pub sub_settings: std::collections::HashMap<String, Vec<String>>,
+    /// Sub-settings included (category -> entry info)
+    ///
+    /// The value is polymorphic:
+    /// - `String`: Filename for single-file settings
+    /// - `Vec<String>`: List of items for multi-file settings
+    pub sub_settings: std::collections::HashMap<String, SubSettingsManifestEntry>,
 
     /// External configs included (by id)
     pub external_configs: Vec<String>,
 
     /// Total file count
     pub file_count: u32,
+}
+
+impl BackupContents {
+    /// Convert manifest entries to a simple HashMap for processing
+    ///
+    /// This is used during restore to get a list of (type, items) to process.
+    /// For SingleFile entries, returns an empty vec (meaning "all items").
+    /// For MultiFile entries, returns the list of item names.
+    pub fn sub_settings_list(&self) -> std::collections::HashMap<String, Vec<String>> {
+        self.sub_settings
+            .iter()
+            .map(|(k, v)| {
+                let items = match v {
+                    SubSettingsManifestEntry::SingleFile(_) => Vec::new(), // Empty = all items
+                    SubSettingsManifestEntry::MultiFile(items) => items.clone(),
+                };
+                (k.clone(), items)
+            })
+            .collect()
+    }
 }
 
 /// Result of analyzing a backup file

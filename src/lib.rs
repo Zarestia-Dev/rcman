@@ -1,3 +1,5 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! # rcman - Rust Config Manager
 //!
 //! A generic, framework-agnostic Rust library for managing application settings
@@ -181,7 +183,7 @@ pub use config::{
 pub use backup::{
     BackupAnalysis, BackupContents, BackupManager, BackupManifest, BackupOptions, ExportCategory,
     ExportCategoryType, ExportType, ExternalConfig, ExternalConfigProvider, RestoreOptions,
-    RestoreResult,
+    RestoreResult, SubSettingsManifestEntry,
 };
 
 // Credential re-exports (always available: SecretStorage; feature-gated: CredentialManager)

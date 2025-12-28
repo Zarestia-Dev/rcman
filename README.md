@@ -24,8 +24,10 @@ A generic, **framework-agnostic** Rust library for managing application settings
 | ----------------------- | -------------------------------------------------------- |
 | **Settings Management** | Load/save with rich schema metadata for UI rendering     |
 | **Sub-Settings**        | Per-entity configs (e.g., one JSON per remote)           |
+| **Schema Migration**    | Lazy migration for transparent data upgrades             |
 | **Backup & Restore**    | Encrypted ZIP backups with AES-256                       |
 | **Secret Settings**     | Auto-routes secrets to OS keychain                       |
+| **External Configs**    | Include external files/commands in backups               |
 | **Env Var Overrides**   | Override settings via environment variables (Docker/K8s) |
 | **Atomic Writes**       | Crash-safe file writes (temp file + rename)              |
 | **Cross-Platform**      | Pure Rust - Windows, macOS, Linux, Android               |
@@ -79,6 +81,18 @@ let manager = SettingsManager::builder("my-app", "1.0.0")
     .with_credentials()      // Enable automatic secret storage
     .with_env_prefix("MYAPP") // Enable env var overrides (MYAPP_UI_THEME=dark)
     .with_sub_settings(SubSettingsConfig::new("remotes"))  // Per-entity config
+    .with_migrator(|mut value| {
+        // Transparent schema upgrades (runs once on first load)
+        if let Some(obj) = value.as_object_mut() {
+            // Example: rename old field to new field
+            if let Some(ui) = obj.get_mut("ui").and_then(|v| v.as_object_mut()) {
+                if let Some(color) = ui.remove("color") {
+                    ui.insert("theme".to_string(), color);
+                }
+            }
+        }
+        value
+    })
     .build()?;
 ```
 
@@ -219,7 +233,68 @@ remotes.delete("onedrive")?;
 
 ---
 
-### 3. Secret Settings (Automatic Keychain Storage)
+### 3. Schema Migration
+
+Automatically upgrade old data formats when loading settings:
+
+```rust
+use rcman::{SettingsManager, SubSettingsConfig};
+use serde_json::json;
+
+// Main settings migration
+let manager = SettingsManager::builder("my-app", "2.0.0")
+    .with_migrator(|mut value| {
+        // Upgrade v1 -> v2: rename "color" to "theme"
+        if let Some(obj) = value.as_object_mut() {
+            if let Some(ui) = obj.get_mut("ui").and_then(|v| v.as_object_mut()) {
+                if let Some(color) = ui.remove("color") {
+                    ui.insert("theme".to_string(), color);
+                }
+            }
+        }
+        value
+    })
+    .build()?;
+
+// Sub-settings migration (per-entry for multi-file mode)
+let remotes_config = SubSettingsConfig::new("remotes")
+    .with_migrator(|mut value| {
+        // Add version field to each remote
+        if let Some(obj) = value.as_object_mut() {
+            if !obj.contains_key("version") {
+                obj.insert("version".into(), json!(2));
+            }
+        }
+        value
+    });
+
+// Sub-settings migration (whole-file for single-file mode)
+let backends_config = SubSettingsConfig::new("backends")
+    .single_file()
+    .with_migrator(|mut value| {
+        // Migrate all backends at once
+        if let Some(obj) = value.as_object_mut() {
+            for (_name, backend) in obj.iter_mut() {
+                if let Some(b) = backend.as_object_mut() {
+                    b.insert("migrated".into(), json!(true));
+                }
+            }
+        }
+        value
+    });
+```
+
+**How it works:**
+
+1. Migrator runs automatically on first load after app update
+2. If data changes, it's immediately written back to disk
+3. Subsequent loads skip migration (no performance impact)
+4. **Multi-file mode**: Migrator runs per-entry (each remote.json)
+5. **Single-file mode**: Migrator runs on whole file (all entries at once)
+
+---
+
+### 4. Secret Settings (Automatic Keychain Storage)
 
 Settings marked with `.secret()` are automatically stored in the OS keychain:
 
@@ -242,19 +317,30 @@ manager.save_setting::<MySettings>("api", "key", json!("sk-123"))?;
 
 ---
 
-### 4. Backup & Restore
+### 5. Backup & Restore
 
 Create, analyze, and restore encrypted backups using the builder pattern:
 
 ```rust
 use rcman::{BackupOptions, RestoreOptions};
 
-// Create backup with builder pattern
+// Create full backup with builder pattern
 let backup_path = manager.backup()
     .create(BackupOptions::new()
         .output_dir("./backups")
         .password("backup_password")
-        .note("Weekly backup"))
+        .note("Weekly backup")
+        .filename_suffix("full"))  // Custom filename: app_timestamp_full.rcman
+    ?;
+
+// Create partial backup (only specific sub-settings)
+let remotes_backup = manager.backup()
+    .create(BackupOptions::new()
+        .output_dir("./backups")
+        .export_type(ExportType::SettingsOnly)
+        .include_settings(false)  // Don't include main settings
+        .include_sub_settings("remotes")  // Only backup remotes
+        .filename_suffix("remotes"))  // Creates: app_timestamp_remotes.rcman
     ?;
 
 // Analyze a backup before restoring (inspect contents, check encryption)
@@ -276,7 +362,7 @@ manager.backup()
 
 ---
 
-### 5. Default Value Behavior
+### 6. Default Value Behavior
 
 When you save a setting that equals its default, rcman **removes it from storage**:
 
@@ -298,7 +384,7 @@ manager.reset_setting::<S>("ui", "theme")?;
 
 ---
 
-### 6. Environment Variable Overrides
+### 7. Environment Variable Overrides
 
 Override settings via environment variables for Docker/Kubernetes deployments:
 

@@ -38,6 +38,12 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage> {
     /// External configuration files registered for backup
     #[cfg(feature = "backup")]
     pub external_configs: Vec<ExternalConfig>,
+
+    /// Optional migration function for schema changes (lazy migration)
+    /// The migrator function is called automatically when loading settings.
+    /// If the function modifies the value, the migrated version is saved back.
+    pub migrator:
+        Option<std::sync::Arc<dyn Fn(serde_json::Value) -> serde_json::Value + Send + Sync>>,
 }
 
 impl Default for SettingsConfig<JsonStorage> {
@@ -53,6 +59,7 @@ impl Default for SettingsConfig<JsonStorage> {
             env_overrides_secrets: false,
             #[cfg(feature = "backup")]
             external_configs: Vec::new(),
+            migrator: None,
         }
     }
 }
@@ -84,7 +91,7 @@ impl SettingsConfig<JsonStorage> {
 }
 
 /// Builder for creating SettingsConfig with a fluent API
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SettingsConfigBuilder {
     config_dir: Option<PathBuf>,
     settings_file: String,
@@ -96,6 +103,28 @@ pub struct SettingsConfigBuilder {
     env_overrides_secrets: bool,
     #[cfg(feature = "backup")]
     external_configs: Vec<ExternalConfig>,
+    migrator: Option<std::sync::Arc<dyn Fn(serde_json::Value) -> serde_json::Value + Send + Sync>>,
+}
+
+impl std::fmt::Debug for SettingsConfigBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("SettingsConfigBuilder");
+        debug
+            .field("config_dir", &self.config_dir)
+            .field("settings_file", &self.settings_file)
+            .field("app_name", &self.app_name)
+            .field("app_version", &self.app_version)
+            .field("pretty_json", &self.pretty_json)
+            .field("enable_credentials", &self.enable_credentials)
+            .field("env_prefix", &self.env_prefix)
+            .field("env_overrides_secrets", &self.env_overrides_secrets);
+
+        #[cfg(feature = "backup")]
+        debug.field("external_configs", &self.external_configs);
+
+        debug.field("migrator", &self.migrator.as_ref().map(|_| "Some(Fn)"));
+        debug.finish()
+    }
 }
 
 impl SettingsConfigBuilder {
@@ -112,6 +141,7 @@ impl SettingsConfigBuilder {
             env_overrides_secrets: false,
             #[cfg(feature = "backup")]
             external_configs: Vec::new(),
+            migrator: None,
         }
     }
 
@@ -214,6 +244,41 @@ impl SettingsConfigBuilder {
         self
     }
 
+    /// Set a migration function for schema changes (lazy migration)
+    ///
+    /// The migrator function is called automatically when loading settings.
+    /// If the function modifies the value, the migrated version is saved back.
+    ///
+    /// Use this to upgrade old data formats to new ones transparently.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use rcman::SettingsConfig;
+    /// use serde_json::json;
+    ///
+    /// let config = SettingsConfig::builder("my-app", "1.0.0")
+    ///     .with_migrator(|mut value| {
+    ///         // Migrate v1 to v2: rename "color" to "theme"
+    ///         if let Some(obj) = value.as_object_mut() {
+    ///             if let Some(ui) = obj.get_mut("ui").and_then(|v| v.as_object_mut()) {
+    ///                 if let Some(color) = ui.remove("color") {
+    ///                     ui.insert("theme".to_string(), color);
+    ///                 }
+    ///             }
+    ///         }
+    ///         value
+    ///     })
+    ///     .build();
+    /// ```
+    pub fn with_migrator<F>(mut self, migrator: F) -> Self
+    where
+        F: Fn(serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
+    {
+        self.migrator = Some(std::sync::Arc::new(migrator));
+        self
+    }
+
     /// Build the SettingsConfig
     ///
     /// If `config_dir` is not set, uses the system config directory for the app.
@@ -242,6 +307,7 @@ impl SettingsConfigBuilder {
             env_overrides_secrets: self.env_overrides_secrets,
             #[cfg(feature = "backup")]
             external_configs: self.external_configs,
+            migrator: self.migrator,
         }
     }
 }

@@ -5,6 +5,8 @@
 
 #[cfg(feature = "backup")]
 use crate::backup::BackupManager;
+#[cfg(feature = "backup")]
+use crate::backup::ExternalConfigProvider;
 use crate::config::SettingsConfig;
 use crate::config::{SettingMetadata, SettingsSchema};
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -110,6 +112,10 @@ pub struct SettingsManager<S: StorageBackend + 'static = crate::storage::JsonSto
     /// Credential manager for secret settings (optional, requires keychain or encrypted-file feature)
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     credentials: Option<CredentialManager>,
+
+    /// External config providers for backups
+    #[cfg(feature = "backup")]
+    pub(crate) external_providers: Arc<RwLock<Vec<Box<dyn ExternalConfigProvider>>>>,
 }
 
 // =============================================================================
@@ -203,6 +209,8 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
             save_mutex: std::sync::Mutex::new(()),
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             credentials,
+            #[cfg(feature = "backup")]
+            external_providers: Arc::new(RwLock::new(Vec::new())),
         })
     }
 
@@ -323,6 +331,24 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
                 json!({})
             }
             Err(e) => return Err(e),
+        };
+
+        // 4a. Apply migration if configured
+        let stored = if let Some(migrator) = &self.config.migrator {
+            let original = stored.clone();
+            let migrated = migrator(stored);
+
+            // If migration changed the value, persist it immediately
+            if migrated != original {
+                debug!("🔄 Migrated main settings structure");
+                // Acquire write lock for storage to prevent race conditions
+                let _save_guard = self.save_mutex.lock().unwrap();
+                self.storage.write(&path, &migrated)?;
+                info!("💾 Saved migrated main settings to disk");
+            }
+            migrated
+        } else {
+            stored
         };
 
         // 5. Populate cache
@@ -753,6 +779,15 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         sub.list()
     }
 
+    /// Register an external config provider for backups.
+    ///
+    /// This allows dynamic registration of external files to be included in backups.
+    #[cfg(feature = "backup")]
+    pub fn register_external_provider(&self, provider: Box<dyn ExternalConfigProvider>) {
+        let mut providers = self.external_providers.write().unwrap();
+        providers.push(provider);
+    }
+
     // =========================================================================
     // Backup Manager Access
     // =========================================================================
@@ -899,6 +934,7 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
+            migrator: None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -929,6 +965,7 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
+            migrator: None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -953,6 +990,7 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
+            migrator: None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -982,6 +1020,7 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
+            migrator: None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1012,6 +1051,7 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
+            migrator: None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1043,6 +1083,7 @@ mod tests {
             env_prefix: Some("RCMAN_TEST".to_string()),
             env_overrides_secrets: false,
             external_configs: Vec::new(),
+            migrator: None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1092,6 +1133,7 @@ mod tests {
             env_prefix: Some("RCMAN_TEST2".to_string()),
             env_overrides_secrets: false,
             external_configs: Vec::new(),
+            migrator: None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1122,6 +1164,7 @@ mod tests {
             env_prefix: Some("RCMAN_TEST3".to_string()),
             env_overrides_secrets: false,
             external_configs: Vec::new(),
+            migrator: None,
         };
 
         let manager = SettingsManager::new(config).unwrap();

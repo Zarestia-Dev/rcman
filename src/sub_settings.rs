@@ -71,23 +71,52 @@ impl SubSettingsConfig {
 
     /// Set a migration function for schema changes (lazy migration)
     ///
-    /// The migrator function is called automatically when loading an entry.
-    /// If the function modifies the value, the migrated version is saved back.
+    /// The migrator function is called automatically when loading.
     ///
-    /// Use this to upgrade old data formats to new ones transparently.
+    /// # MultiFile Mode
+    /// The migrator is called for each entry when loaded.
+    /// `value` is the content of the entry.
     ///
-    /// # Example
+    /// # SingleFile Mode
+    /// The migrator is called for the ENTIRE file when loaded.
+    /// `value` is the root JSON object containing all entries.
+    /// Use this to migrate the file structure or iterate over entries to migrate them.
+    ///
+    /// # Example (MultiFile Mode)
     ///
     /// ```rust
     /// use rcman::SubSettingsConfig;
     /// use serde_json::json;
     ///
-    /// // Migrate old schema: add "version" field if missing
+    /// // Migrate individual remote configs
     /// let config = SubSettingsConfig::new("remotes")
     ///     .with_migrator(|mut value| {
+    ///         // Add version field if missing
     ///         if let Some(obj) = value.as_object_mut() {
     ///             if !obj.contains_key("version") {
     ///                 obj.insert("version".into(), json!(2));
+    ///             }
+    ///         }
+    ///         value
+    ///     });
+    /// ```
+    ///
+    /// # Example (SingleFile Mode)
+    ///
+    /// ```rust
+    /// use rcman::SubSettingsConfig;
+    /// use serde_json::json;
+    ///
+    /// // Migrate the entire backends file
+    /// let config = SubSettingsConfig::new("backends")
+    ///     .single_file()
+    ///     .with_migrator(|mut value| {
+    ///         // Iterate and update each backend
+    ///         if let Some(obj) = value.as_object_mut() {
+    ///             for (_name, backend) in obj.iter_mut() {
+    ///                 if let Some(b) = backend.as_object_mut() {
+    ///                     b.insert("migrated".into(), json!(true));
+    ///                 }
     ///             }
     ///         }
     ///         value
@@ -187,7 +216,7 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Check if we're in single-file mode
-    fn is_single_file(&self) -> bool {
+    pub fn is_single_file(&self) -> bool {
         matches!(self.config.mode, SubSettingsMode::SingleFile)
     }
 
@@ -208,52 +237,69 @@ impl<S: StorageBackend> SubSettings<S> {
         }
     }
 
+    /// Helper to read the single file, applying any file-level migrations
+    fn read_single_file(&self) -> Result<Value> {
+        let path = self.single_file_path();
+
+        // Check file presence (convert any error to FileRead)
+        if let Err(e) = std::fs::metadata(&path) {
+            return Err(Error::FileRead {
+                path: path.display().to_string(),
+                source: e,
+            });
+        }
+
+        let mut file_data: Value = self.storage.read(&path)?;
+
+        // Apply migration if configured (for SingleFile, this applies to the WHOLE file)
+        if let Some(migrator) = &self.config.migrator {
+            let original = file_data.clone();
+            file_data = migrator(file_data);
+
+            // If migration changed the value, persist it immediately
+            if file_data != original {
+                debug!("🔄 Migrated sub-settings file: {}", self.config.name);
+                // Acquire lock to prevent concurrent writes during migration
+                let _save_guard = self.save_mutex.lock().unwrap();
+                self.storage.write(&path, &file_data)?;
+            }
+        }
+
+        Ok(file_data)
+    }
+
     /// Load an entry (returns raw JSON Value)
     pub fn get_value(&self, name: &str) -> Result<Value> {
         if self.is_single_file() {
             // Single-file mode: read from a key within the single file
-            let path = self.single_file_path();
-
-            // Check file presence strictly
-            if let Err(e) = std::fs::metadata(&path) {
-                if e.kind() == std::io::ErrorKind::NotFound {
+            // We use read_single_file to ensure migration happens
+            let file_data = match self.read_single_file() {
+                Ok(data) => data,
+                Err(Error::FileRead { source, path: _ })
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
                     return Err(Error::SubSettingsEntryNotFound {
                         settings_type: self.config.name.clone(),
                         name: name.to_string(),
                     });
                 }
-                return Err(Error::FileRead {
-                    path: path.display().to_string(),
-                    source: e,
-                });
-            }
+                Err(e) => return Err(e),
+            };
 
-            let file_data: Value = self.storage.read(&path)?;
             let obj = file_data.as_object().ok_or_else(|| {
                 Error::InvalidBackup("Single-file sub-settings is not a JSON object".to_string())
             })?;
 
-            let mut value =
-                obj.get(name)
-                    .cloned()
-                    .ok_or_else(|| Error::SubSettingsEntryNotFound {
-                        settings_type: self.config.name.clone(),
-                        name: name.to_string(),
-                    })?;
+            let value = obj
+                .get(name)
+                .cloned()
+                .ok_or_else(|| Error::SubSettingsEntryNotFound {
+                    settings_type: self.config.name.clone(),
+                    name: name.to_string(),
+                })?;
 
-            // Apply migration if configured
-            if let Some(migrator) = &self.config.migrator {
-                let original = value.clone();
-                value = migrator(value);
-
-                // If migration changed the value, persist it
-                if value != original {
-                    debug!("Migrated sub-settings entry: {}", name);
-                    let mut new_obj = obj.clone();
-                    new_obj.insert(name.to_string(), value.clone());
-                    self.storage.write(&path, &Value::Object(new_obj))?;
-                }
-            }
+            // NOTE: In SingleFile mode, migrator is applied to the WHOLE file in read_single_file.
+            // We do NOT apply it again to individual entries here.
 
             Ok(value)
         } else {

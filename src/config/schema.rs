@@ -293,7 +293,7 @@ impl SettingMetadata {
         }
     }
 
-    /// Create a list setting (Vec<String>)
+    /// Create a list setting (`Vec<String>`)
     pub fn list(label: impl Into<String>, default: Vec<String>) -> Self {
         Self {
             setting_type: SettingType::List,

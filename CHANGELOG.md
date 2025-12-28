@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Lazy Migration System** for transparent schema upgrades
+  - `with_migrator()` on `SettingsConfig` for main settings migration
+  - `with_migrator()` on `SubSettingsConfig` for sub-settings migration
+  - Automatic detection and persistence of migrated data
+  - Supports both single-file and multi-file sub-settings modes
+  - Example: Rename fields, add version numbers, restructure data transparently
+- **Enhanced External Config System** for flexible backup/restore
+  - `ExportSource` enum: Export from `File`, `Command` output, or `Content` (in-memory)
+  - `ImportTarget` enum: Restore to `File`, pipe to `Command`, use custom `Handler`, or `ReadOnly`
+  - `from_command()` and `from_content()` constructors for `ExternalConfig`
+  - Command-based exports (e.g., `rclone config dump`)
+  - Custom restore handlers for complex logic
+  - Read-only configs for diagnostics and logs
+- **Polymorphic Backup Manifest** for sub-settings
+  - `SubSettingsManifestEntry` enum: `SingleFile(String)` or `MultiFile(Vec<String>)`
+  - Proper handling of single-file vs multi-file sub-settings in backups
+  - `sub_settings_list()` helper method on `BackupContents`
+- **Custom Backup Filenames**
+  - `filename_suffix` option in `BackupOptions` for custom naming
+  - Smart inference: single sub-setting exports use category name
+  - Format: `{app}_{timestamp}_{suffix}.rcman`
 - `File` setting type for file path selection (distinct from `Path`)
 - `List` setting type for managing arrays of strings (`Vec<String>`)
   - Constructor: `SettingMetadata::list(label, default)` for creating list settings

@@ -112,16 +112,15 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
 
         // 2. Restore sub-settings
         let sub_settings_to_restore = if options.restore_sub_settings.is_empty() {
-            analysis.manifest.contents.sub_settings.clone()
+            // Convert manifest entries to basic HashMap for processing
+            analysis.manifest.contents.sub_settings_list()
         } else {
             options.restore_sub_settings.clone()
         };
 
         for (sub_type, items_filter) in sub_settings_to_restore {
             let sub_src_dir = extract_dir.join(&sub_type);
-            if !sub_src_dir.exists() {
-                continue;
-            }
+            let sub_single_file_src = extract_dir.join(format!("{}.json", sub_type));
 
             // Get sub-settings handler
             let sub = match self.manager.sub_settings(&sub_type) {
@@ -135,34 +134,69 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                 }
             };
 
-            // Iterate through files in the backup
-            for entry in fs::read_dir(&sub_src_dir).map_err(|e| Error::FileRead {
-                path: sub_src_dir.display().to_string(),
-                source: e,
-            })? {
-                let entry = entry.map_err(|e| Error::FileRead {
+            // Collect entries to restore from either directory or single file
+            let mut entries_to_restore: Vec<(String, serde_json::Value)> = Vec::new();
+
+            if sub_single_file_src.exists() {
+                // Restore from single file
+                let content =
+                    fs::read_to_string(&sub_single_file_src).map_err(|e| Error::FileRead {
+                        path: sub_single_file_src.display().to_string(),
+                        source: e,
+                    })?;
+
+                let file_data: serde_json::Value =
+                    serde_json::from_str(&content).map_err(|e| Error::Parse(e.to_string()))?;
+
+                if let Some(obj) = file_data.as_object() {
+                    for (key, value) in obj {
+                        entries_to_restore.push((key.clone(), value.clone()));
+                    }
+                }
+            } else if sub_src_dir.exists() {
+                // Restore from directory
+                for entry in fs::read_dir(&sub_src_dir).map_err(|e| Error::FileRead {
                     path: sub_src_dir.display().to_string(),
                     source: e,
-                })?;
+                })? {
+                    let entry = entry.map_err(|e| Error::FileRead {
+                        path: sub_src_dir.display().to_string(),
+                        source: e,
+                    })?;
 
-                let file_name = entry.file_name();
-                let name_str = file_name.to_string_lossy();
+                    let file_name = entry.file_name();
+                    let name_str = file_name.to_string_lossy();
 
-                if !name_str.ends_with(".json") {
-                    continue;
+                    if !name_str.ends_with(".json") {
+                        continue;
+                    }
+
+                    let entry_name = name_str.trim_end_matches(".json").to_string();
+
+                    let content =
+                        fs::read_to_string(entry.path()).map_err(|e| Error::FileRead {
+                            path: entry.path().display().to_string(),
+                            source: e,
+                        })?;
+
+                    let value: serde_json::Value = serde_json::from_str(&content)?;
+                    entries_to_restore.push((entry_name, value));
                 }
+            } else {
+                continue; // Nothing found for this type
+            }
 
-                let entry_name = name_str.trim_end_matches(".json");
-
+            // Process the collected entries
+            for (entry_name, value) in entries_to_restore {
                 // Filter by items if specified
-                if !items_filter.is_empty() && !items_filter.contains(&entry_name.to_string()) {
+                if !items_filter.is_empty() && !items_filter.contains(&entry_name) {
                     continue;
                 }
 
                 let entry_id = format!("{}/{}", sub_type, entry_name);
 
                 // Check if exists
-                if !options.overwrite_existing && sub.exists(entry_name)? {
+                if !options.overwrite_existing && sub.exists(&entry_name)? {
                     result.skipped.push(entry_id);
                     continue;
                 }
@@ -173,14 +207,7 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                     continue;
                 }
 
-                // Load and save
-                let content = fs::read_to_string(entry.path()).map_err(|e| Error::FileRead {
-                    path: entry.path().display().to_string(),
-                    source: e,
-                })?;
-
-                let value: serde_json::Value = serde_json::from_str(&content)?;
-                sub.set(entry_name, &value)?;
+                sub.set(&entry_name, &value)?;
 
                 result.restored.push(entry_id.clone());
                 debug!("✅ Restored {}", entry_id);
@@ -199,11 +226,126 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                         continue;
                     }
 
-                    let src = external_dir.join(config_name);
-                    if src.exists() {
-                        // External configs need to be handled by the application
-                        // We just track them here
-                        result.external_pending.push(config_name.clone());
+                    match self.resolve_external_config(config_name) {
+                        Some(external_config) => {
+                            // Read data from backup
+                            let src = external_dir.join(&external_config.archive_filename);
+                            let data = fs::read(&src).map_err(|e| Error::FileRead {
+                                path: src.display().to_string(),
+                                source: e,
+                            })?;
+
+                            // Handle different import targets
+                            match &external_config.import_target {
+                                super::types::ImportTarget::ReadOnly => {
+                                    debug!(
+                                        "⏭️ Skipping read-only external config: {}",
+                                        config_name
+                                    );
+                                    result.skipped.push(config_name.clone());
+                                    continue;
+                                }
+                                super::types::ImportTarget::File(dest_path) => {
+                                    if dest_path.exists() && !options.overwrite_existing {
+                                        result.skipped.push(config_name.clone());
+                                        debug!(
+                                            "{}⚠️ Skipping external {} (exists)",
+                                            mode_str, config_name
+                                        );
+                                    } else if options.dry_run {
+                                        result.restored.push(config_name.clone());
+                                        debug!(
+                                            "{}📋 Would restore external {}",
+                                            mode_str, config_name
+                                        );
+                                    } else {
+                                        if let Some(parent) = dest_path.parent() {
+                                            fs::create_dir_all(parent).map_err(|e| {
+                                                Error::FileWrite {
+                                                    path: parent.display().to_string(),
+                                                    source: e,
+                                                }
+                                            })?;
+                                        }
+                                        fs::write(dest_path, &data).map_err(|e| {
+                                            Error::FileWrite {
+                                                path: dest_path.display().to_string(),
+                                                source: e,
+                                            }
+                                        })?;
+                                        result.restored.push(config_name.clone());
+                                        debug!("✅ Restored external {}", config_name);
+                                    }
+                                }
+                                super::types::ImportTarget::Command { program, args } => {
+                                    if options.dry_run {
+                                        result.restored.push(config_name.clone());
+                                        debug!("{}📋 Would pipe to command: {}", mode_str, program);
+                                    } else {
+                                        use std::io::Write;
+                                        use std::process::{Command, Stdio};
+
+                                        let mut child = Command::new(program)
+                                            .args(args)
+                                            .stdin(Stdio::piped())
+                                            .spawn()
+                                            .map_err(|e| {
+                                                Error::BackupFailed(format!(
+                                                    "Failed to spawn command '{}': {}",
+                                                    program, e
+                                                ))
+                                            })?;
+
+                                        if let Some(mut stdin) = child.stdin.take() {
+                                            stdin.write_all(&data).map_err(|e| {
+                                                Error::BackupFailed(format!(
+                                                    "Failed to write to command stdin: {}",
+                                                    e
+                                                ))
+                                            })?;
+                                        }
+
+                                        let status = child.wait().map_err(|e| {
+                                            Error::BackupFailed(format!(
+                                                "Command '{}' failed: {}",
+                                                program, e
+                                            ))
+                                        })?;
+
+                                        if !status.success() {
+                                            return Err(Error::BackupFailed(format!(
+                                                "Command '{}' exited with code {:?}",
+                                                program,
+                                                status.code()
+                                            )));
+                                        }
+
+                                        result.restored.push(config_name.clone());
+                                        debug!("✅ Restored external {} via command", config_name);
+                                    }
+                                }
+                                super::types::ImportTarget::Handler(handler) => {
+                                    if options.dry_run {
+                                        result.restored.push(config_name.clone());
+                                        debug!(
+                                            "{}📋 Would call custom handler for {}",
+                                            mode_str, config_name
+                                        );
+                                    } else {
+                                        handler(&data)?;
+                                        result.restored.push(config_name.clone());
+                                        debug!("✅ Restored external {} via handler", config_name);
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            result.external_pending.push(config_name.clone());
+                            warn!(
+                                "⚠️ Unknown external config ID: {}, requires manual restore",
+                                config_name
+                            );
+                        }
                     }
                 }
             }
@@ -247,6 +389,33 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
             path: config_path.display().to_string(),
             source: e,
         })
+    }
+
+    /// Helper to resolve external config from ID using registered providers
+    fn resolve_external_config(&self, id: &str) -> Option<super::types::ExternalConfig> {
+        // Check static configs in settings first
+        if let Some(cfg) = self
+            .manager
+            .config()
+            .external_configs
+            .iter()
+            .find(|c| c.id == id)
+        {
+            return Some(cfg.clone());
+        }
+
+        // Check dynamic providers
+        if let Ok(providers) = self.manager.external_providers.read() {
+            for provider in providers.iter() {
+                for cfg in provider.get_configs() {
+                    if cfg.id == id {
+                        return Some(cfg);
+                    }
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -315,6 +484,7 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
+            migrator: None,
         };
 
         fs::create_dir_all(&config.config_dir).unwrap();
@@ -352,6 +522,7 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
+            migrator: None,
         };
 
         let manager2 = SettingsManager::new(config2).unwrap();
@@ -392,6 +563,7 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
+            migrator: None,
         };
 
         fs::create_dir_all(&config.config_dir).unwrap();

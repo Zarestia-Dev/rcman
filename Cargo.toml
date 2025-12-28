@@ -14,6 +14,10 @@ keywords = ["settings", "config", "backup", "preferences", "schema"]
 categories = ["config", "filesystem"]
 rust-version = "1.70"
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = ["json", "backup"]
 full = ["json", "backup", "keychain", "encrypted-file", "derive"]

@@ -9,31 +9,22 @@ use chrono::Utc;
 use log::{debug, info};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::RwLock;
 
 /// Backup manager for creating and analyzing backups
 pub struct BackupManager<'a, S: StorageBackend + 'static> {
     /// Reference to the settings manager
     pub(crate) manager: &'a SettingsManager<S>,
-
-    /// Registered external config providers
-    external_providers: Arc<RwLock<Vec<Box<dyn ExternalConfigProvider>>>>,
 }
 
 impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
     /// Create a new backup manager
     pub fn new(manager: &'a SettingsManager<S>) -> Self {
-        Self {
-            manager,
-            external_providers: Arc::new(RwLock::new(Vec::new())),
-        }
+        Self { manager }
     }
 
     /// Register an external config provider
     pub fn register_external_provider(&self, provider: Box<dyn ExternalConfigProvider>) {
-        let mut providers = self.external_providers.write().unwrap();
-        providers.push(provider);
+        self.manager.register_external_provider(provider);
     }
 
     /// Create a backup
@@ -94,26 +85,45 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
 
         // Generate output filename
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
-        let filename = match &options.export_type {
-            ExportType::Full => format!(
-                "{}_{}_full.rcman",
+        let filename = if let Some(suffix) = &options.filename_suffix {
+            format!(
+                "{}_{}_{}.rcman",
                 self.manager.config().app_name,
-                timestamp
-            ),
-            ExportType::SettingsOnly => {
-                format!(
-                    "{}_{}_settings.rcman",
+                timestamp,
+                sanitize_filename(suffix)
+            )
+        } else {
+            match &options.export_type {
+                ExportType::Full => format!(
+                    "{}_{}_full.rcman",
                     self.manager.config().app_name,
                     timestamp
-                )
-            }
-            ExportType::Single { name, .. } => {
-                format!(
-                    "{}_{}_{}.rcman",
-                    self.manager.config().app_name,
-                    sanitize_filename(name),
-                    timestamp
-                )
+                ),
+                ExportType::SettingsOnly => {
+                    // Try to infer a better suffix than "settings"
+                    let suffix =
+                        if !options.include_settings && options.include_sub_settings.len() == 1 {
+                            // If exporting exactly one sub-setting (e.g. "remotes"), use that as suffix
+                            &options.include_sub_settings[0]
+                        } else {
+                            "settings"
+                        };
+
+                    format!(
+                        "{}_{}_{}.rcman",
+                        self.manager.config().app_name,
+                        timestamp,
+                        suffix
+                    )
+                }
+                ExportType::Single { name, .. } => {
+                    format!(
+                        "{}_{}_{}.rcman",
+                        self.manager.config().app_name,
+                        sanitize_filename(name),
+                        timestamp
+                    )
+                }
             }
         };
 
@@ -147,7 +157,15 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
         let mut total_size = 0u64;
 
         // 1. Main settings
-        if !matches!(options.export_type, ExportType::Single { .. }) {
+        // Includes settings if:
+        // - explicitly requested (options.include_settings)
+        // - OR it's a Full export (unless explicitly disabled, but ExportType::Full typically implies everything)
+        // - AND it's not a Single export (which is exclusive)
+        let include_settings = (options.include_settings
+            || matches!(options.export_type, ExportType::Full))
+            && !matches!(options.export_type, ExportType::Single { .. });
+
+        if include_settings {
             let settings_path = self.manager.config().settings_path();
             if settings_path.exists() {
                 let dest = export_dir.join("settings.json");
@@ -164,8 +182,9 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
 
         // 2. Sub-settings
         let sub_settings_to_backup = match &options.export_type {
-            ExportType::Full => options.include_sub_settings.clone(),
-            ExportType::SettingsOnly => Vec::new(),
+            // For Full OR SettingsOnly, we respect the include_sub_settings list
+            // This allows creating "partial" backups (e.g. settings=false, sub_settings=["backend"])
+            ExportType::Full | ExportType::SettingsOnly => options.include_sub_settings.clone(),
             ExportType::Single {
                 settings_type,
                 name,
@@ -187,9 +206,10 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
                     })?;
                     total_size += json.len() as u64;
                     contents.file_count += 1;
-                    contents
-                        .sub_settings
-                        .insert(settings_type.clone(), vec![name.to_string()]);
+                    contents.sub_settings.insert(
+                        settings_type.clone(),
+                        SubSettingsManifestEntry::MultiFile(vec![name.to_string()]),
+                    );
                     debug!("📄 Added single entry: {}/{}", settings_type, name);
                 }
                 Vec::new() // Don't process further
@@ -199,55 +219,127 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
         for sub_type in sub_settings_to_backup {
             if let Ok(sub) = self.manager.sub_settings(&sub_type) {
                 let sub_export_dir = export_dir.join(&sub_type);
-                fs::create_dir_all(&sub_export_dir).map_err(|e| Error::DirectoryCreate {
-                    path: sub_export_dir.display().to_string(),
-                    source: e,
-                })?;
 
-                for name in sub.list()? {
-                    if let Ok(value) = sub.get_value(&name) {
-                        let dest = sub_export_dir.join(format!("{}.json", name));
-                        let json = serde_json::to_string_pretty(&value)?;
-                        fs::write(&dest, &json).map_err(|e| Error::FileWrite {
-                            path: dest.display().to_string(),
-                            source: e,
-                        })?;
-                        total_size += json.len() as u64;
-                        contents.file_count += 1;
+                // Handle single-file mode differently
+                if sub.is_single_file() {
+                    // In single-file mode, we just copy the single file as {sub_type}.json
+                    // But we still list items in the manifest for granular restore awareness
+                    if let Some(path) = sub.file_path() {
+                        if path.exists() {
+                            let dest = export_dir.join(format!("{}.json", sub_type));
+                            fs::copy(&path, &dest).map_err(|e| Error::FileRead {
+                                path: path.display().to_string(),
+                                source: e,
+                            })?;
+                            total_size += fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                            contents.file_count += 1;
+
+                            // For single-file mode, we use SingleFile manifest entry with filename
+                            contents.sub_settings.insert(
+                                sub_type.clone(),
+                                SubSettingsManifestEntry::SingleFile(format!("{}.json", sub_type)),
+                            );
+                            debug!("📄 Added single-file sub-settings: {}", sub_type);
+                        }
                     }
-                }
+                } else {
+                    // Multi-file mode: create directory and copy individuals
+                    fs::create_dir_all(&sub_export_dir).map_err(|e| Error::DirectoryCreate {
+                        path: sub_export_dir.display().to_string(),
+                        source: e,
+                    })?;
 
-                contents.sub_settings.insert(sub_type.clone(), vec![]); // Empty vec means all items
-                debug!("📄 Added sub-settings: {}", sub_type);
+                    let mut items = Vec::new();
+
+                    for name in sub.list()? {
+                        if let Ok(value) = sub.get_value(&name) {
+                            let dest = sub_export_dir.join(format!("{}.json", name));
+                            let json = serde_json::to_string_pretty(&value)?;
+                            fs::write(&dest, &json).map_err(|e| Error::FileWrite {
+                                path: dest.display().to_string(),
+                                source: e,
+                            })?;
+                            total_size += json.len() as u64;
+                            contents.file_count += 1;
+                            items.push(name);
+                        }
+                    }
+
+                    contents
+                        .sub_settings
+                        .insert(sub_type.clone(), SubSettingsManifestEntry::MultiFile(items));
+                    debug!("📄 Added sub-settings directory: {}", sub_type);
+                }
             }
         }
 
         // 3. External configs
-        if !options.include_external_configs.is_empty()
-            && !matches!(options.export_type, ExportType::Single { .. })
-        {
-            let providers = self.external_providers.read().unwrap();
+        if !options.include_external_configs.is_empty() {
+            let providers = self.manager.external_providers.read().unwrap();
             let external_dir = export_dir.join("external");
 
             for provider in providers.iter() {
                 for config in provider.get_configs() {
-                    if config.path.exists() {
-                        fs::create_dir_all(&external_dir).map_err(|e| Error::DirectoryCreate {
-                            path: external_dir.display().to_string(),
-                            source: e,
-                        })?;
-
-                        let dest = external_dir.join(&config.id);
-                        fs::copy(&config.path, &dest).map_err(|e| Error::FileRead {
-                            path: config.path.display().to_string(),
-                            source: e,
-                        })?;
-
-                        total_size += fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-                        contents.file_count += 1;
-                        contents.external_configs.push(config.id.clone());
-                        debug!("📄 Added external config: {}", config.id);
+                    if !options.include_external_configs.contains(&config.id) {
+                        continue;
                     }
+
+                    if !config.exists() {
+                        debug!("⏭️ Skipping non-existent external config: {}", config.id);
+                        continue;
+                    }
+
+                    fs::create_dir_all(&external_dir).map_err(|e| Error::DirectoryCreate {
+                        path: external_dir.display().to_string(),
+                        source: e,
+                    })?;
+
+                    let dest = external_dir.join(&config.archive_filename);
+
+                    // Handle different export sources
+                    match &config.export_source {
+                        super::types::ExportSource::File(path) => {
+                            fs::copy(path, &dest).map_err(|e| Error::FileRead {
+                                path: path.display().to_string(),
+                                source: e,
+                            })?;
+                        }
+                        super::types::ExportSource::Command { program, args } => {
+                            let output = std::process::Command::new(program)
+                                .args(args)
+                                .output()
+                                .map_err(|e| {
+                                    Error::BackupFailed(format!(
+                                        "Failed to run command '{}': {}",
+                                        program, e
+                                    ))
+                                })?;
+
+                            if !output.status.success() {
+                                return Err(Error::BackupFailed(format!(
+                                    "Command '{}' failed with exit code {:?}",
+                                    program,
+                                    output.status.code()
+                                )));
+                            }
+
+                            fs::write(&dest, &output.stdout).map_err(|e| Error::FileWrite {
+                                path: dest.display().to_string(),
+                                source: e,
+                            })?;
+                        }
+                        super::types::ExportSource::Content(bytes) => {
+                            fs::write(&dest, bytes).map_err(|e| Error::FileWrite {
+                                path: dest.display().to_string(),
+                                source: e,
+                            })?;
+                        }
+                    }
+
+                    total_size += fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                    contents.file_count += 1;
+                    contents.external_configs.push(config.id.clone());
+                    debug!("📄 Added external config: {}", config.id);
                 }
             }
         }
@@ -376,6 +468,7 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
+            migrator: None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -423,6 +516,7 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
+            migrator: None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -453,7 +547,73 @@ mod tests {
         assert!(validate_password(Some("   ".into())).is_err());
         assert!(validate_password(Some("abc".into())).is_err()); // Too short
     }
+    #[test]
+    fn test_partial_backup_logic() {
+        let temp = tempdir().unwrap();
+        let config = SettingsConfig {
+            config_dir: temp.path().to_path_buf(),
+            settings_file: "settings.json".into(),
+            app_name: "test-app".into(),
+            app_version: "1.0.0".into(),
+            storage: JsonStorage::new(),
+            enable_credentials: false,
+            external_configs: Vec::new(),
+            env_prefix: None,
+            env_overrides_secrets: false,
+            migrator: None,
+        };
 
+        let manager = SettingsManager::new(config).unwrap();
+
+        // Create settings
+        fs::write(
+            temp.path().join("settings.json"),
+            r#"{"general": {"theme": "dark"}}"#,
+        )
+        .unwrap();
+
+        // Register and populate sub-settings
+        manager.register_sub_settings(SubSettingsConfig::new("profiles"));
+        let profiles = manager.sub_settings("profiles").unwrap();
+        profiles
+            .set("default", &json!({"name": "Default"}))
+            .unwrap();
+
+        // Create PARTIAL backup: No settings, only profiles
+        let backup_dir = temp.path().join("backups");
+        let backup = manager.backup();
+        let backup_path = backup
+            .create(BackupOptions {
+                output_dir: backup_dir.clone(),
+                export_type: ExportType::SettingsOnly,
+                include_settings: false, // EXPLICITLY DISABLED
+                include_sub_settings: vec!["profiles".into()], // EXPLICITLY INCLUDED
+                ..Default::default()
+            })
+            .unwrap();
+
+        // Analyze it
+        let analysis = backup.analyze(&backup_path).unwrap();
+
+        // Assertions
+        assert!(analysis.is_valid);
+        assert!(
+            !analysis.manifest.contents.settings,
+            "Should NOT include settings.json"
+        );
+        assert!(
+            analysis
+                .manifest
+                .contents
+                .sub_settings
+                .contains_key("profiles"),
+            "Should include profiles"
+        );
+
+        // Verify physical file content
+        // Note: Analysis reads manifest, but let's check archive if possible or trust manifest + extraction test
+        // Since we don't have easy extraction helper in test utils without zip dep, rely on manifest which reflects gather_files actions.
+    }
     #[test]
     fn test_sanitize_filename() {
         assert_eq!(sanitize_filename("normal"), "normal");
