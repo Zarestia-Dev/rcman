@@ -1,5 +1,3 @@
-#![cfg_attr(docsrs, feature(doc_cfg))]
-
 //! # rcman - Rust Config Manager
 //!
 //! A generic, framework-agnostic Rust library for managing application settings
