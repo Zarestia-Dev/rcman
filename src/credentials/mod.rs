@@ -13,10 +13,8 @@ mod memory;
 mod types;
 
 #[cfg(feature = "encrypted-file")]
-#[cfg_attr(docsrs, doc(cfg(feature = "encrypted-file")))]
 pub use encrypted::EncryptedFileBackend;
 #[cfg(feature = "keychain")]
-#[cfg_attr(docsrs, doc(cfg(feature = "keychain")))]
 pub use keychain::KeychainBackend;
 pub use memory::MemoryBackend;
 pub use types::*;
@@ -62,7 +60,6 @@ pub struct CredentialManager {
 impl CredentialManager {
     /// Create a new credential manager with keychain backend
     #[cfg(feature = "keychain")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "keychain")))]
     pub fn new(service_name: impl Into<String>) -> Self {
         let service = service_name.into();
         Self {
@@ -80,10 +77,6 @@ impl CredentialManager {
 
     /// Create with automatic fallback to encrypted file
     #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(all(feature = "keychain", feature = "encrypted-file")))
-    )]
     pub fn with_fallback(
         service_name: impl Into<String>,
         fallback_path: std::path::PathBuf,
