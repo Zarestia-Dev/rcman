@@ -1,4 +1,25 @@
-//! Archive handling utilities
+//! Archive handling utilities for backup/restore operations.
+//!
+//! This module provides low-level archive operations for the backup system:
+//!
+//! - **ZIP Creation**: [`create_zip_archive`] - Create compressed archives with optional AES-256 encryption
+//! - **ZIP Extraction**: [`extract_zip_archive`] - Extract archives with password support
+//! - **File Reading**: [`read_file_from_zip`] - Read individual files from archives
+//! - **Container Creation**: [`create_rcman_container`] - Create the outer `.rcman` backup format
+//! - **Hashing**: [`calculate_file_hash`] - SHA-256 checksums for integrity verification
+//! - **Encryption Detection**: [`is_zip_encrypted`] - Check if an archive is encrypted
+//!
+//! # Backup Format
+//!
+//! The `.rcman` format is a nested ZIP structure:
+//! ```text
+//! backup.rcman (outer ZIP, uncompressed)
+//! ├── manifest.json    # Metadata, checksums, version info
+//! └── data.zip         # Inner archive (compressed, optionally encrypted)
+//!     ├── settings.json
+//!     ├── remotes/
+//!     └── ...
+//! ```
 
 use super::types::ProgressCallback;
 use crate::error::{Error, Result};

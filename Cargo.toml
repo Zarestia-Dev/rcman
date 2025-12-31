@@ -87,3 +87,7 @@ required-features = ["backup"]
 [[example]]
 name = "gui_demo"
 required-features = ["backup"]
+
+[[test]]
+name = "derive_macro_test"
+required-features = ["derive"]

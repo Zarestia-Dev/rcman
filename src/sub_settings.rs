@@ -152,6 +152,8 @@ impl SubSettingsConfig {
     }
 }
 
+use std::collections::HashMap;
+
 /// Handler for a single sub-settings type
 pub struct SubSettings<S: StorageBackend> {
     /// Configuration
@@ -165,6 +167,11 @@ pub struct SubSettings<S: StorageBackend> {
 
     /// Mutex to serialize save operations (prevents race conditions)
     save_mutex: std::sync::Mutex<()>,
+
+    /// In-memory cache
+    /// - None: not loaded (lazy load)
+    /// - Some(map): loaded
+    cache: RwLock<Option<HashMap<String, Value>>>,
 
     /// Callback for change notifications
     #[allow(clippy::type_complexity)]
@@ -194,6 +201,7 @@ impl<S: StorageBackend> SubSettings<S> {
             base_dir,
             storage,
             save_mutex: std::sync::Mutex::new(()),
+            cache: RwLock::new(None),
             on_change: RwLock::new(None),
         }
     }
@@ -220,6 +228,16 @@ impl<S: StorageBackend> SubSettings<S> {
         matches!(self.config.mode, SubSettingsMode::SingleFile)
     }
 
+    /// Invalidate the internal cache
+    ///
+    /// This forces the next read operation to reload from disk.
+    /// Useful if external processes might modify the files.
+    pub fn invalidate_cache(&self) {
+        if let Ok(mut cache) = self.cache.write() {
+            *cache = None;
+        }
+    }
+
     /// Set a callback for change notifications
     pub fn set_on_change<F>(&self, callback: F)
     where
@@ -237,104 +255,128 @@ impl<S: StorageBackend> SubSettings<S> {
         }
     }
 
-    /// Helper to read the single file, applying any file-level migrations
-    fn read_single_file(&self) -> Result<Value> {
-        let path = self.single_file_path();
+    /// Ensure cache is populated (loads from disk if needed)
+    fn ensure_cache_populated(&self) -> Result<()> {
+        // Fast path: check read lock
+        if self.cache.read().unwrap().is_some() {
+            return Ok(());
+        }
 
-        // Check file presence (convert any error to FileRead)
+        let mut cache_guard = self.cache.write().unwrap();
+        if cache_guard.is_some() {
+            return Ok(());
+        }
+
+        if self.is_single_file() {
+            let path = self.single_file_path();
+            let mut file_data = match std::fs::metadata(&path) {
+                Ok(_) => self.storage.read::<Value>(&path)?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Start with empty cache
+                    *cache_guard = Some(HashMap::new());
+                    return Ok(());
+                }
+                Err(e) => {
+                    return Err(Error::FileRead {
+                        path: path.display().to_string(),
+                        source: e,
+                    })
+                }
+            };
+
+            // Apply migration and persist if changed
+            if let Some(migrator) = &self.config.migrator {
+                // Optimization: Use hash or just clone if needed.
+                // Since we need to write back, we need to know if it changed.
+                // Cloning is safe here as it happens only once per load.
+                let original = file_data.clone();
+                file_data = migrator(file_data);
+
+                if file_data != original {
+                    debug!("🔄 Migrated sub-settings file: {}", self.config.name);
+                    let _save_guard = self.save_mutex.lock().unwrap();
+                    self.storage.write(&path, &file_data)?;
+                }
+            }
+
+            let obj = file_data.as_object().ok_or_else(|| {
+                Error::InvalidBackup("Single-file sub-settings is not a JSON object".to_string())
+            })?;
+
+            // Populate cache with all entries
+            *cache_guard = Some(obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        } else {
+            // MultiFile: just init empty map
+            *cache_guard = Some(HashMap::new());
+        }
+
+        Ok(())
+    }
+
+    /// Load an entry (returns raw JSON Value)
+    pub fn get_value(&self, name: &str) -> Result<Value> {
+        self.ensure_cache_populated()?;
+
+        // Check cache first
+        {
+            let cache = self.cache.read().unwrap();
+            // Cache must be Some(_) because of ensure_cache_populated
+            if let Some(map) = cache.as_ref() {
+                if let Some(val) = map.get(name) {
+                    return Ok(val.clone());
+                }
+            }
+        }
+
+        if self.is_single_file() {
+            // In SingleFile mode, if not in cache (and cache is populated), it doesn't exist
+            return Err(Error::SubSettingsEntryNotFound {
+                settings_type: self.config.name.clone(),
+                name: name.to_string(),
+            });
+        }
+
+        // Multi-file mode: read from individual file
+        let path = self.entry_path(name);
+
         if let Err(e) = std::fs::metadata(&path) {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Err(Error::SubSettingsEntryNotFound {
+                    settings_type: self.config.name.clone(),
+                    name: name.to_string(),
+                });
+            }
             return Err(Error::FileRead {
                 path: path.display().to_string(),
                 source: e,
             });
         }
 
-        let mut file_data: Value = self.storage.read(&path)?;
+        let mut value: Value = self.storage.read(&path)?;
 
-        // Apply migration if configured (for SingleFile, this applies to the WHOLE file)
+        // Apply migration if configured
         if let Some(migrator) = &self.config.migrator {
-            let original = file_data.clone();
-            file_data = migrator(file_data);
+            let original = value.clone();
+            value = migrator(value);
 
-            // If migration changed the value, persist it immediately
-            if file_data != original {
-                debug!("🔄 Migrated sub-settings file: {}", self.config.name);
-                // Acquire lock to prevent concurrent writes during migration
+            // If migration changed the value, persist it
+            // We use save_mutex to protect the file write
+            if value != original {
+                debug!("Migrated sub-settings entry: {}", name);
                 let _save_guard = self.save_mutex.lock().unwrap();
-                self.storage.write(&path, &file_data)?;
+                self.storage.write(&path, &value)?;
             }
         }
 
-        Ok(file_data)
-    }
-
-    /// Load an entry (returns raw JSON Value)
-    pub fn get_value(&self, name: &str) -> Result<Value> {
-        if self.is_single_file() {
-            // Single-file mode: read from a key within the single file
-            // We use read_single_file to ensure migration happens
-            let file_data = match self.read_single_file() {
-                Ok(data) => data,
-                Err(Error::FileRead { source, path: _ })
-                    if source.kind() == std::io::ErrorKind::NotFound =>
-                {
-                    return Err(Error::SubSettingsEntryNotFound {
-                        settings_type: self.config.name.clone(),
-                        name: name.to_string(),
-                    });
-                }
-                Err(e) => return Err(e),
-            };
-
-            let obj = file_data.as_object().ok_or_else(|| {
-                Error::InvalidBackup("Single-file sub-settings is not a JSON object".to_string())
-            })?;
-
-            let value = obj
-                .get(name)
-                .cloned()
-                .ok_or_else(|| Error::SubSettingsEntryNotFound {
-                    settings_type: self.config.name.clone(),
-                    name: name.to_string(),
-                })?;
-
-            // NOTE: In SingleFile mode, migrator is applied to the WHOLE file in read_single_file.
-            // We do NOT apply it again to individual entries here.
-
-            Ok(value)
-        } else {
-            // Multi-file mode: read from individual file
-            let path = self.entry_path(name);
-
-            if let Err(e) = std::fs::metadata(&path) {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    return Err(Error::SubSettingsEntryNotFound {
-                        settings_type: self.config.name.clone(),
-                        name: name.to_string(),
-                    });
-                }
-                return Err(Error::FileRead {
-                    path: path.display().to_string(),
-                    source: e,
-                });
+        // Update cache
+        {
+            let mut cache = self.cache.write().unwrap();
+            if let Some(map) = cache.as_mut() {
+                map.insert(name.to_string(), value.clone());
             }
-
-            let mut value: Value = self.storage.read(&path)?;
-
-            // Apply migration if configured
-            if let Some(migrator) = &self.config.migrator {
-                let original = value.clone();
-                value = migrator(value);
-
-                // If migration changed the value, persist it
-                if value != original {
-                    debug!("Migrated sub-settings entry: {}", name);
-                    self.storage.write(&path, &value)?;
-                }
-            }
-
-            Ok(value)
         }
+
+        Ok(value)
     }
 
     /// Load a typed entry
@@ -345,37 +387,37 @@ impl<S: StorageBackend> SubSettings<S> {
 
     /// Save an entry
     pub fn set<T: Serialize + Sync>(&self, name: &str, value: &T) -> Result<()> {
-        // Acquire save mutex to prevent race conditions (especially for single-file mode)
-        let _save_guard = self.save_mutex.lock().unwrap();
+        // Ensure cache structure is initialized
+        self.ensure_cache_populated()?;
 
         let json_value = serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
 
-        let exists: bool;
+        // Acquire save mutex to prevent race conditions
+        let _save_guard = self.save_mutex.lock().unwrap();
+
+        let exists = {
+            let mut cache = self.cache.write().unwrap();
+            if let Some(map) = cache.as_mut() {
+                map.insert(name.to_string(), json_value.clone()).is_some()
+            } else {
+                false // Should not happen due to ensure_cache_populated
+            }
+        };
 
         if self.is_single_file() {
-            // Single-file mode: update key in the single file
+            // Single-file mode: Write the current cache state to disk
+            // We rely on the cache being the source of truth
             let path = self.single_file_path();
 
-            // Read existing data or create empty object
-            let mut file_data = match std::fs::metadata(&path) {
-                Ok(_) => self.storage.read::<Value>(&path)?,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Reconstruct the full object from cache
+            let full_obj = {
+                let cache = self.cache.read().unwrap();
+                if let Some(map) = cache.as_ref() {
+                    Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                } else {
                     Value::Object(serde_json::Map::new())
                 }
-                Err(e) => {
-                    return Err(Error::FileRead {
-                        path: path.display().to_string(),
-                        source: e,
-                    })
-                }
             };
-
-            let obj = file_data.as_object_mut().ok_or_else(|| {
-                Error::InvalidBackup("Single-file sub-settings is not a JSON object".to_string())
-            })?;
-
-            exists = obj.contains_key(name);
-            obj.insert(name.to_string(), json_value);
 
             // Ensure base directory exists
             if !self.base_dir.exists() {
@@ -385,20 +427,10 @@ impl<S: StorageBackend> SubSettings<S> {
                 })?;
             }
 
-            self.storage.write(&path, &file_data)?;
+            self.storage.write(&path, &full_obj)?;
         } else {
             // Multi-file mode: write to individual file
             let path = self.entry_path(name);
-            exists = match std::fs::metadata(&path) {
-                Ok(_) => true,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-                Err(e) => {
-                    return Err(Error::FileRead {
-                        path: path.display().to_string(),
-                        source: e,
-                    })
-                }
-            };
 
             // Ensure directory exists
             std::fs::create_dir_all(&self.base_dir).map_err(|e| Error::DirectoryCreate {
@@ -432,33 +464,26 @@ impl<S: StorageBackend> SubSettings<S> {
 
     /// Delete an entry
     pub fn delete(&self, name: &str) -> Result<()> {
-        // Acquire save mutex to prevent race conditions (especially for single-file mode)
+        self.ensure_cache_populated()?;
+
+        // Acquire save mutex to prevent race conditions
         let _save_guard = self.save_mutex.lock().unwrap();
 
-        if self.is_single_file() {
-            // Single-file mode: remove key from the single file
-            let path = self.single_file_path();
-
-            if let Err(e) = std::fs::metadata(&path) {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    warn!(
-                        "⚠️ Sub-settings file '{}' not found, nothing to delete",
-                        self.config.name
-                    );
-                    return Ok(());
-                }
-                return Err(Error::FileRead {
-                    path: path.display().to_string(),
-                    source: e,
-                });
+        // Remove from cache
+        let existed = {
+            let mut cache = self.cache.write().unwrap();
+            if let Some(map) = cache.as_mut() {
+                map.remove(name).is_some()
+            } else {
+                false
             }
+        };
 
-            let mut file_data: Value = self.storage.read(&path)?;
-            let obj = file_data.as_object_mut().ok_or_else(|| {
-                Error::InvalidBackup("Single-file sub-settings is not a JSON object".to_string())
-            })?;
+        // Even if not in cache (MultiFile), verify file existence later
+        // But for SingleFile, cache is source of truth.
 
-            if obj.remove(name).is_none() {
+        if self.is_single_file() {
+            if !existed {
                 warn!(
                     "⚠️ Sub-settings entry '{}' not found in {}, nothing to delete",
                     name, self.config.name
@@ -466,29 +491,46 @@ impl<S: StorageBackend> SubSettings<S> {
                 return Ok(());
             }
 
-            self.storage.write(&path, &file_data)?;
+            // Single-file mode: Write the current cache state to disk
+            let path = self.single_file_path();
+
+            // Reconstruct the full object from cache
+            let full_obj = {
+                let cache = self.cache.read().unwrap();
+                if let Some(map) = cache.as_ref() {
+                    Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                } else {
+                    Value::Object(serde_json::Map::new())
+                }
+            };
+
+            self.storage.write(&path, &full_obj)?;
         } else {
             // Multi-file mode: delete individual file
             let path = self.entry_path(name);
 
             if let Err(e) = std::fs::metadata(&path) {
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    warn!(
-                        "⚠️ Sub-settings entry '{}' not found in {}, nothing to delete",
-                        name, self.config.name
-                    );
-                    return Ok(());
+                    if !existed {
+                        warn!(
+                            "⚠️ Sub-settings entry '{}' not found in {}, nothing to delete",
+                            name, self.config.name
+                        );
+                        return Ok(());
+                    }
+                    // If existed in cache but not disk, it's weird but cache is cleared now.
+                } else {
+                    return Err(Error::FileRead {
+                        path: path.display().to_string(),
+                        source: e,
+                    });
                 }
-                return Err(Error::FileRead {
+            } else {
+                std::fs::remove_file(&path).map_err(|e| Error::FileDelete {
                     path: path.display().to_string(),
                     source: e,
-                });
+                })?;
             }
-
-            std::fs::remove_file(&path).map_err(|e| Error::FileDelete {
-                path: path.display().to_string(),
-                source: e,
-            })?;
         }
 
         info!(
@@ -501,31 +543,21 @@ impl<S: StorageBackend> SubSettings<S> {
 
     /// List all entries
     pub fn list(&self) -> Result<Vec<String>> {
+        self.ensure_cache_populated()?;
+
         if self.is_single_file() {
-            // Single-file mode: return keys from the single file
-            let path = self.single_file_path();
-
-            // Check file presence strictly
-            if let Err(e) = std::fs::metadata(&path) {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    return Ok(Vec::new());
-                }
-                return Err(Error::FileRead {
-                    path: path.display().to_string(),
-                    source: e,
-                });
+            // Single-file mode: return keys from cache
+            let cache = self.cache.read().unwrap();
+            if let Some(map) = cache.as_ref() {
+                let mut entries: Vec<String> = map.keys().cloned().collect();
+                entries.sort();
+                Ok(entries)
+            } else {
+                Ok(Vec::new())
             }
-
-            let file_data: Value = self.storage.read(&path)?;
-            let obj = file_data.as_object().ok_or_else(|| {
-                Error::InvalidBackup("Single-file sub-settings is not a JSON object".to_string())
-            })?;
-
-            let mut entries: Vec<String> = obj.keys().cloned().collect();
-            entries.sort();
-            Ok(entries)
         } else {
             // Multi-file mode: list files in directory
+            // We can't rely on cache as it might be partial
             if let Err(e) = std::fs::metadata(&self.base_dir) {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     return Ok(Vec::new());
@@ -568,28 +600,24 @@ impl<S: StorageBackend> SubSettings<S> {
     /// Returns `Ok(true)` if exists, `Ok(false)` if not found.
     /// Returns `Err` for I/O errors (e.g., permission denied).
     pub fn exists(&self, name: &str) -> Result<bool> {
-        if self.is_single_file() {
-            // Single-file mode: check if key exists in the file
-            let path = self.single_file_path();
+        self.ensure_cache_populated()?;
 
-            // Check file presence strictly
-            match std::fs::metadata(&path) {
-                Ok(_) => {
-                    // File exists, check content
-                    let file_data: Value = self.storage.read(&path)?;
-                    Ok(file_data
-                        .as_object()
-                        .map(|obj| obj.contains_key(name))
-                        .unwrap_or(false))
+        // Check cache first
+        {
+            let cache = self.cache.read().unwrap();
+            if let Some(map) = cache.as_ref() {
+                if map.contains_key(name) {
+                    return Ok(true);
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-                Err(e) => Err(Error::FileRead {
-                    path: path.display().to_string(),
-                    source: e,
-                }),
             }
+        }
+
+        if self.is_single_file() {
+            // In SingleFile mode, cache is authoritative
+            Ok(false)
         } else {
             // Multi-file mode: check if file exists
+            // Since it wasn't in cache (or cache is partial), check disk
             let path = self.entry_path(name);
             match std::fs::metadata(&path) {
                 Ok(_) => Ok(true),

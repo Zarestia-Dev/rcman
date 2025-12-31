@@ -21,7 +21,7 @@ fn test_create_and_load_settings() {
     let fixture = TestFixture::new();
 
     // Load settings (should get defaults)
-    let settings = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let settings = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Verify defaults match schema
     assert_eq!(settings.ui.theme, "dark");
@@ -35,7 +35,7 @@ fn test_save_setting_updates_cache() {
     let fixture = TestFixture::new();
 
     // Load initial settings
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Save a new value
     fixture
@@ -61,7 +61,7 @@ fn test_save_and_reload_persists() {
             .build();
         let manager = rcman::SettingsManager::new(config).unwrap();
 
-        let _ = manager.load_startup::<TestSettings>().unwrap();
+        let _ = manager.settings::<TestSettings>().unwrap();
         manager
             .save_setting::<TestSettings>("ui", "font_size", json!(20.0))
             .unwrap();
@@ -74,7 +74,7 @@ fn test_save_and_reload_persists() {
             .build();
         let manager = rcman::SettingsManager::new(config).unwrap();
 
-        let settings = manager.load_startup::<TestSettings>().unwrap();
+        let settings = manager.settings::<TestSettings>().unwrap();
         assert_eq!(settings.ui.font_size, 20.0);
     }
 }
@@ -88,7 +88,7 @@ fn test_reset_single_setting() {
     let fixture = TestFixture::new();
 
     // Load and modify
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
     fixture
         .manager
         .save_setting::<TestSettings>("ui", "theme", json!("light"))
@@ -113,7 +113,7 @@ fn test_reset_all_settings() {
     let fixture = TestFixture::new();
 
     // Load and modify multiple settings
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
     fixture
         .manager
         .save_setting::<TestSettings>("ui", "theme", json!("light"))
@@ -131,7 +131,7 @@ fn test_reset_all_settings() {
     fixture.manager.reset_all().unwrap();
 
     // Verify all are back to defaults
-    let settings = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let settings = fixture.manager.settings::<TestSettings>().unwrap();
     assert_eq!(settings.ui.theme, "dark");
     assert_eq!(settings.ui.font_size, 14.0);
     assert_eq!(settings.general.language, "en");
@@ -146,7 +146,7 @@ fn test_default_value_not_stored_in_file() {
     let fixture = TestFixture::new();
 
     // Initially load settings
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Save a non-default value first
     fixture
@@ -179,7 +179,7 @@ fn test_only_non_defaults_stored() {
     let fixture = TestFixture::new();
 
     // Load settings
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Save one default and one non-default
     fixture
@@ -207,7 +207,7 @@ fn test_only_non_defaults_stored() {
 #[test]
 fn test_invalid_number_rejected() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Try to save a value outside the valid range (min=8, max=32)
     let result = fixture
@@ -222,7 +222,7 @@ fn test_invalid_number_rejected() {
 #[test]
 fn test_invalid_select_option_rejected() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Try to save an invalid option
     let result =
@@ -238,7 +238,7 @@ fn test_invalid_select_option_rejected() {
 #[test]
 fn test_setting_not_found_error() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Try to save a non-existent setting
     let result =
@@ -283,7 +283,7 @@ fn test_env_override_priority() {
             .build();
         let manager = rcman::SettingsManager::new(config).unwrap();
 
-        let _ = manager.load_startup::<TestSettings>().unwrap();
+        let _ = manager.settings::<TestSettings>().unwrap();
         manager
             .save_setting::<TestSettings>("ui", "theme", json!("light"))
             .unwrap();
@@ -317,7 +317,7 @@ fn test_invalidate_cache() {
     let fixture = TestFixture::new();
 
     // Load settings (populates cache)
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Modify file directly (simulating external change)
     let path = fixture.settings_path();
@@ -345,7 +345,7 @@ fn test_invalidate_cache() {
 #[test]
 fn test_path_and_file_settings() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Save directory path
     fixture

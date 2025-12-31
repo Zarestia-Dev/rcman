@@ -25,7 +25,7 @@ use std::time::Instant;
 #[ignore]
 fn test_rapid_sequential_saves() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     let start = Instant::now();
 
@@ -49,7 +49,7 @@ fn test_rapid_sequential_saves() {
 #[ignore]
 fn test_rapid_sequential_loads() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Save once
     fixture
@@ -75,7 +75,7 @@ fn test_rapid_sequential_loads() {
 #[ignore]
 fn test_mixed_read_write_workload() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     let start = Instant::now();
 
@@ -187,7 +187,7 @@ fn test_sub_settings_bulk_operations() {
 #[ignore]
 fn test_high_concurrency_reads() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     fixture
         .manager
@@ -227,7 +227,7 @@ fn test_high_concurrency_reads() {
 #[ignore]
 fn test_high_concurrency_writes() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     let mut handles = vec![];
 
@@ -272,7 +272,7 @@ fn test_high_concurrency_writes() {
 #[ignore]
 fn test_mixed_concurrent_operations() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     let mut handles = vec![];
 
@@ -374,7 +374,7 @@ fn test_backup_large_settings() {
     use tempfile::TempDir;
 
     let fixture = TestFixture::with_sub_settings();
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Create lots of data
     let remotes = fixture.manager.sub_settings("remotes").unwrap();
@@ -414,7 +414,7 @@ fn test_restore_large_backup() {
     use tempfile::TempDir;
 
     let fixture = TestFixture::with_sub_settings();
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
 
     // Create backup with data
     let remotes = fixture.manager.sub_settings("remotes").unwrap();

@@ -276,71 +276,82 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
         // 3. External configs
         if !options.include_external_configs.is_empty() {
             let providers = self.manager.external_providers.read().unwrap();
+            let mut all_configs = Vec::new();
+
+            // Add static configs from settings
+            all_configs.extend(self.manager.config().external_configs.clone());
+
+            // Add dynamic configs from providers
+            for provider in providers.iter() {
+                all_configs.extend(provider.get_configs());
+            }
+
+            // Using explicit variable type to help inference if needed
+            // (all_configs is Vec<ExternalConfig>)
+
             let external_dir = export_dir.join("external");
 
-            for provider in providers.iter() {
-                for config in provider.get_configs() {
-                    if !options.include_external_configs.contains(&config.id) {
-                        continue;
-                    }
-
-                    if !config.exists() {
-                        debug!("⏭️ Skipping non-existent external config: {}", config.id);
-                        continue;
-                    }
-
-                    fs::create_dir_all(&external_dir).map_err(|e| Error::DirectoryCreate {
-                        path: external_dir.display().to_string(),
-                        source: e,
-                    })?;
-
-                    let dest = external_dir.join(&config.archive_filename);
-
-                    // Handle different export sources
-                    match &config.export_source {
-                        super::types::ExportSource::File(path) => {
-                            fs::copy(path, &dest).map_err(|e| Error::FileRead {
-                                path: path.display().to_string(),
-                                source: e,
-                            })?;
-                        }
-                        super::types::ExportSource::Command { program, args } => {
-                            let output = std::process::Command::new(program)
-                                .args(args)
-                                .output()
-                                .map_err(|e| {
-                                    Error::BackupFailed(format!(
-                                        "Failed to run command '{}': {}",
-                                        program, e
-                                    ))
-                                })?;
-
-                            if !output.status.success() {
-                                return Err(Error::BackupFailed(format!(
-                                    "Command '{}' failed with exit code {:?}",
-                                    program,
-                                    output.status.code()
-                                )));
-                            }
-
-                            fs::write(&dest, &output.stdout).map_err(|e| Error::FileWrite {
-                                path: dest.display().to_string(),
-                                source: e,
-                            })?;
-                        }
-                        super::types::ExportSource::Content(bytes) => {
-                            fs::write(&dest, bytes).map_err(|e| Error::FileWrite {
-                                path: dest.display().to_string(),
-                                source: e,
-                            })?;
-                        }
-                    }
-
-                    total_size += fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-                    contents.file_count += 1;
-                    contents.external_configs.push(config.id.clone());
-                    debug!("📄 Added external config: {}", config.id);
+            for config in all_configs {
+                if !options.include_external_configs.contains(&config.id) {
+                    continue;
                 }
+
+                if !config.exists() {
+                    debug!("⏭️ Skipping non-existent external config: {}", config.id);
+                    continue;
+                }
+
+                fs::create_dir_all(&external_dir).map_err(|e| Error::DirectoryCreate {
+                    path: external_dir.display().to_string(),
+                    source: e,
+                })?;
+
+                let dest = external_dir.join(&config.archive_filename);
+
+                // Handle different export sources
+                match &config.export_source {
+                    super::types::ExportSource::File(path) => {
+                        fs::copy(path, &dest).map_err(|e| Error::FileRead {
+                            path: path.display().to_string(),
+                            source: e,
+                        })?;
+                    }
+                    super::types::ExportSource::Command { program, args } => {
+                        let output = std::process::Command::new(program)
+                            .args(args)
+                            .output()
+                            .map_err(|e| {
+                                Error::BackupFailed(format!(
+                                    "Failed to run command '{}': {}",
+                                    program, e
+                                ))
+                            })?;
+
+                        if !output.status.success() {
+                            return Err(Error::BackupFailed(format!(
+                                "Command '{}' failed with exit code {:?}",
+                                program,
+                                output.status.code()
+                            )));
+                        }
+
+                        fs::write(&dest, &output.stdout).map_err(|e| Error::FileWrite {
+                            path: dest.display().to_string(),
+                            source: e,
+                        })?;
+                    }
+                    super::types::ExportSource::Content(bytes) => {
+                        fs::write(&dest, bytes).map_err(|e| Error::FileWrite {
+                            path: dest.display().to_string(),
+                            source: e,
+                        })?;
+                    }
+                }
+
+                total_size += fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                contents.file_count += 1;
+                contents.external_configs.push(config.id.clone());
+                debug!("📄 Added external config: {}", config.id);
             }
         }
 

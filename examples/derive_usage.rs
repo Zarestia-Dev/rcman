@@ -127,14 +127,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     manager.save_setting::<AppSettings>("ui", "theme", json!("dark"))?;
 
     // Load startup settings as struct
-    let app: AppSettings = manager.load_startup()?;
+    let app: AppSettings = manager.settings()?;
     println!("✅ Theme is now: {}", app.ui.theme);
 
     // Reset to default
     println!("\n🔄 Resetting theme...");
     manager.reset_setting::<AppSettings>("ui", "theme")?;
 
-    let app: AppSettings = manager.load_startup()?;
+    let app: AppSettings = manager.settings()?;
     println!("✅ Theme reset to: {}", app.ui.theme);
 
     // Working with list settings
@@ -146,7 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     new_ips.push("192.168.1.1".to_string());
     manager.save_setting::<AppSettings>("network", "allowed_ips", json!(new_ips))?;
 
-    let app: AppSettings = manager.load_startup()?;
+    let app: AppSettings = manager.settings()?;
     println!("✅ Updated allowed IPs: {:?}", app.network.allowed_ips);
 
     println!(

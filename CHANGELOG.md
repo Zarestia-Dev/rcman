@@ -8,35 +8,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Efficient Settings Access API**
+    - `get<T>(key)` - Single value access by key path (e.g., `manager.get::<bool>("general.restrict")`)
+    - `get_value(key)` - Raw JSON value access by key path
+    - `settings<T>()` - Merged settings struct with caching (replaces `load_startup`)
+    - `merged_settings_cache` - Internal cache for merged settings to avoid repeated merge operations
+- **Cache Efficiency Improvements**
+    - In-place cache updates: `save_setting()` now updates merged cache in-place instead of invalidating
+    - Lazy defaults cache: Only populated on first access, not overwritten on every `load_settings()` call
+- **Sub-Settings Performance**
+    - **SingleFile Mode**: Loads entire file into memory once. `get`, `list`, `exists` are now in-memory operations (instant).
+    - **MultiFile Mode**: Lazily caches entries on access/write. Subsequent reads are instant.
+    - Optimized `set` and `delete` to update cache immediately, avoiding read-after-write.
+- **Documentation Improvements**
+    - Enhanced `backup/archive.rs` module with comprehensive docs and format explanation
+- **Testing Improvements**
+    - Added derive macro integration tests (`tests/derive_macro_test.rs`) with 7 test cases
 - **Lazy Migration System** for transparent schema upgrades
-  - `with_migrator()` on `SettingsConfig` for main settings migration
-  - `with_migrator()` on `SubSettingsConfig` for sub-settings migration
-  - Automatic detection and persistence of migrated data
-  - Supports both single-file and multi-file sub-settings modes
-  - Example: Rename fields, add version numbers, restructure data transparently
+    - `with_migrator()` on `SettingsConfig` for main settings migration
+    - `with_migrator()` on `SubSettingsConfig` for sub-settings migration
+    - Automatic detection and persistence of migrated data
+    - Supports both single-file and multi-file sub-settings modes
+    - Example: Rename fields, add version numbers, restructure data transparently
 - **Enhanced External Config System** for flexible backup/restore
-  - `ExportSource` enum: Export from `File`, `Command` output, or `Content` (in-memory)
-  - `ImportTarget` enum: Restore to `File`, pipe to `Command`, use custom `Handler`, or `ReadOnly`
-  - `from_command()` and `from_content()` constructors for `ExternalConfig`
-  - Command-based exports (e.g., `rclone config dump`)
-  - Custom restore handlers for complex logic
-  - Read-only configs for diagnostics and logs
+    - `ExportSource` enum: Export from `File`, `Command` output, or `Content` (in-memory)
+    - `ImportTarget` enum: Restore to `File`, pipe to `Command`, use custom `Handler`, or `ReadOnly`
+    - `from_command()` and `from_content()` constructors for `ExternalConfig`
+    - Command-based exports (e.g., `rclone config dump`)
+    - Custom restore handlers for complex logic
+    - Read-only configs for diagnostics and logs
 - **Polymorphic Backup Manifest** for sub-settings
-  - `SubSettingsManifestEntry` enum: `SingleFile(String)` or `MultiFile(Vec<String>)`
-  - Proper handling of single-file vs multi-file sub-settings in backups
-  - `sub_settings_list()` helper method on `BackupContents`
+    - `SubSettingsManifestEntry` enum: `SingleFile(String)` or `MultiFile(Vec<String>)`
+    - Proper handling of single-file vs multi-file sub-settings in backups
+    - `sub_settings_list()` helper method on `BackupContents`
 - **Custom Backup Filenames**
-  - `filename_suffix` option in `BackupOptions` for custom naming
-  - Smart inference: single sub-setting exports use category name
-  - Format: `{app}_{timestamp}_{suffix}.rcman`
+    - `filename_suffix` option in `BackupOptions` for custom naming
+    - Smart inference: single sub-setting exports use category name
+    - Format: `{app}_{timestamp}_{suffix}.rcman`
 - `File` setting type for file path selection (distinct from `Path`)
 - `List` setting type for managing arrays of strings (`Vec<String>`)
-  - Constructor: `SettingMetadata::list(label, default)` for creating list settings
-  - Automatic support in derive macro for `Vec<String>` fields
-  - Example usage in `examples/list_settings.rs`, `examples/basic_usage.rs`, and `examples/derive_usage.rs`
+    - Constructor: `SettingMetadata::list(label, default)` for creating list settings
+    - Automatic support in derive macro for `Vec<String>` fields
+    - Example usage in `examples/list_settings.rs`, `examples/basic_usage.rs`, and `examples/derive_usage.rs`
 - Edge case testing for type validation, concurrent operations, and special values
 
 **Development Infrastructure**
+
 - GitHub Actions CI/CD pipeline enforcing fmt, clippy -D warnings, tests, and cargo-deny
 - MSRV 1.70 declared with `rust-toolchain.toml` for consistent toolchain
 - `clippy.toml` with MSRV-aware linting configuration
@@ -47,12 +64,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Comprehensive `CONTRIBUTING.md` with development workflow guide
 
 **Documentation**
-- Feature-gated API documentation for docs.rs using `#[cfg_attr(docsrs, doc(cfg(...)))]`
+
 - Comprehensive doctests for `JsonStorage`, `SettingMetadata`, and `SettingsManager`
 - Module-level documentation improvements
 
 ### Changed
 
+- **BREAKING**: Removed `load_startup<T>()` method - use `settings<T>()` instead
 - `save_setting` now enforces strict schema validation (rejects undefined keys)
 - Event system now recovers from poisoned locks (`unwrap_or_else(|e| e.into_inner())`) to avoid panics in multi-threaded environments
 - All clippy warnings resolved across library, examples, and tests
@@ -71,12 +89,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Settings management with JSON storage and in-memory caching
 - Schema-based configuration with rich metadata for UI rendering
-  - Type-specific constructors: `text()`, `number()`, `toggle()`, `select()`, `password()`, `color()`, `path()`, `info()`
-  - Chainable setters: `description()`, `min()`, `max()`, `step()`, `category()`, `order()`, `advanced()`, `disabled()`, `secret()`
-  - Pattern validation with regex and `pattern_error()` for custom messages
+    - Type-specific constructors: `text()`, `number()`, `toggle()`, `select()`, `password()`, `color()`, `path()`, `info()`
+    - Chainable setters: `description()`, `min()`, `max()`, `step()`, `category()`, `order()`, `advanced()`, `disabled()`, `secret()`
+    - Pattern validation with regex and `pattern_error()` for custom messages
 - Sub-settings for per-entity configuration files
-  - Multi-file mode: `remotes/gdrive.json`, `remotes/s3.json`
-  - Single-file mode: `backends.json` with all entities as keys
+    - Multi-file mode: `remotes/gdrive.json`, `remotes/s3.json`
+    - Single-file mode: `backends.json` with all entities as keys
 - Event system for change notifications and validation hooks
 
 **Backup & Restore**

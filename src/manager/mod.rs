@@ -103,6 +103,9 @@ pub struct SettingsManager<S: StorageBackend + 'static = crate::storage::JsonSto
     /// In-memory cache of settings (populated on first load)
     settings_cache: RwLock<Option<Value>>,
 
+    /// Cache of merged settings (defaults + stored, ready for deserialization)
+    merged_settings_cache: RwLock<Option<Value>>,
+
     /// Cache of default values (key -> default) for quick lookup
     defaults_cache: RwLock<HashMap<String, Value>>,
 
@@ -205,6 +208,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
             sub_settings: RwLock::new(HashMap::new()),
             events: Arc::new(EventManager::new()),
             settings_cache: RwLock::new(None),
+            merged_settings_cache: RwLock::new(None),
             defaults_cache: RwLock::new(HashMap::new()),
             save_mutex: std::sync::Mutex::new(()),
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -299,7 +303,144 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     pub fn invalidate_cache(&self) {
         let mut cache = self.settings_cache.write().unwrap();
         *cache = None;
+        let mut merged = self.merged_settings_cache.write().unwrap();
+        *merged = None;
         debug!("🗑️ Settings cache invalidated");
+    }
+
+    // =========================================================================
+    // Fast Value Access Methods
+    // =========================================================================
+
+    /// Get a single setting value by key path.
+    ///
+    /// This is the most efficient way to read a single setting value.
+    /// Uses the merged settings cache when available.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - Setting key in "category.name" format (e.g., "general.restrict")
+    ///
+    /// # Example
+    ///
+    /// ```text
+    /// let restrict: bool = manager.get("general.restrict")?;
+    /// let theme: String = manager.get("ui.theme")?;
+    /// ```
+    pub fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<T> {
+        let value = self.get_value(key)?;
+        serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
+    }
+
+    /// Get raw JSON value for a setting key.
+    ///
+    /// Returns the value from merged settings cache, falling back to
+    /// defaults cache if the key isn't in stored settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - Setting key in "category.name" format
+    ///
+    /// # Example
+    ///
+    /// ```text
+    /// let value: Value = manager.get_value("core.rclone_path")?;
+    /// ```
+    pub fn get_value(&self, key: &str) -> Result<Value> {
+        let parts: Vec<&str> = key.split('.').collect();
+        if parts.len() != 2 {
+            return Err(Error::Config(
+                "Key must be in format 'category.setting'".into(),
+            ));
+        }
+        let category = parts[0];
+        let setting_name = parts[1];
+
+        // Try merged cache first (fastest path)
+        {
+            let cache = self.merged_settings_cache.read().unwrap();
+            if let Some(merged) = cache.as_ref() {
+                if let Some(value) = merged.get(category).and_then(|cat| cat.get(setting_name)) {
+                    return Ok(value.clone());
+                }
+            }
+        }
+
+        // Fall back to stored settings
+        let stored = self.get_stored_settings()?;
+        if let Some(value) = stored.get(category).and_then(|cat| cat.get(setting_name)) {
+            return Ok(value.clone());
+        }
+
+        // Fall back to defaults cache
+        {
+            let defaults = self.defaults_cache.read().unwrap();
+            if let Some(value) = defaults.get(key) {
+                return Ok(value.clone());
+            }
+        }
+
+        Err(Error::SettingNotFound {
+            category: category.to_string(),
+            key: setting_name.to_string(),
+        })
+    }
+
+    /// Get merged settings struct with caching.
+    ///
+    /// This method caches the merged result and skips re-merging on subsequent calls,
+    /// making it efficient for repeated access.
+    ///
+    /// # Example
+    ///
+    /// ```text
+    /// let settings: MySettings = manager.settings()?;
+    /// println!("Theme: {}", settings.ui.theme);
+    /// ```
+    pub fn settings<T: SettingsSchema>(&self) -> Result<T> {
+        // Fast path: check merged cache
+        {
+            let cache = self.merged_settings_cache.read().unwrap();
+            if let Some(merged) = cache.as_ref() {
+                return serde_json::from_value(merged.clone())
+                    .map_err(|e| Error::Parse(e.to_string()));
+            }
+        }
+
+        // Slow path: merge and cache
+        let merged = self.merge_with_defaults::<T>()?;
+
+        // Update merged cache
+        {
+            let mut cache = self.merged_settings_cache.write().unwrap();
+            *cache = Some(merged.clone());
+        }
+
+        serde_json::from_value(merged).map_err(|e| Error::Parse(e.to_string()))
+    }
+
+    /// Internal helper to merge stored settings with schema defaults.
+    fn merge_with_defaults<T: SettingsSchema>(&self) -> Result<Value> {
+        let stored = self.get_stored_settings()?;
+        let default = T::default();
+        let mut merged = serde_json::to_value(&default)?;
+
+        // Merge stored on top of defaults
+        if let (Some(merged_obj), Some(stored_obj)) = (merged.as_object_mut(), stored.as_object()) {
+            for (category, values) in stored_obj {
+                if let Some(merged_cat) = merged_obj.get_mut(category) {
+                    if let (Some(merged_cat_obj), Some(values_obj)) =
+                        (merged_cat.as_object_mut(), values.as_object())
+                    {
+                        for (key, val) in values_obj {
+                            merged_cat_obj.insert(key.clone(), val.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(merged)
     }
 
     /// Internal helper to get settings from cache or load from disk safely.
@@ -356,46 +497,6 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         debug!("📦 Settings cache populated from disk");
 
         Ok(stored)
-    }
-
-    /// Load settings synchronously (for startup initialization).
-    ///
-    /// This merges stored settings with defaults from the schema and populates
-    /// the in-memory cache.
-    ///
-    /// # Type Parameters
-    ///
-    /// * `T` - Your settings struct that implements [`SettingsSchema`]
-    ///
-    /// # Example
-    ///
-    /// ```text
-    /// let settings: MySettings = manager.load_startup::<MySettings>()?;
-    /// ```
-    pub fn load_startup<T: SettingsSchema>(&self) -> Result<T> {
-        // Use the safe helper instead of duplicating logic
-        let stored = self.get_stored_settings()?;
-
-        // Get defaults
-        let default = T::default();
-        let mut merged = serde_json::to_value(&default)?;
-
-        // Merge stored on top of defaults
-        if let (Some(merged_obj), Some(stored_obj)) = (merged.as_object_mut(), stored.as_object()) {
-            for (category, values) in stored_obj {
-                if let Some(merged_cat) = merged_obj.get_mut(category) {
-                    if let (Some(merged_cat_obj), Some(values_obj)) =
-                        (merged_cat.as_object_mut(), values.as_object())
-                    {
-                        for (key, val) in values_obj {
-                            merged_cat_obj.insert(key.clone(), val.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        serde_json::from_value(merged).map_err(|e| Error::Parse(e.to_string()))
     }
 
     /// Load settings with metadata (for UI)
@@ -463,14 +564,16 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
             }
         }
 
-        // Store defaults in cache
+        // Store defaults in cache only if not already populated (lazy init)
         {
             let mut defaults = self.defaults_cache.write().unwrap();
-            *defaults = defaults_to_cache;
-            debug!(
-                "📦 Defaults cache populated with {} entries",
-                defaults.len()
-            );
+            if defaults.is_empty() {
+                *defaults = defaults_to_cache;
+                debug!(
+                    "📦 Defaults cache populated with {} entries",
+                    defaults.len()
+                );
+            }
         }
 
         info!("✅ Settings loaded successfully");
@@ -649,10 +752,24 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         // Save to file
         self.storage.write(&path, &stored)?;
 
-        // Update cache
+        // Update raw settings cache
         {
             let mut cache = self.settings_cache.write().unwrap();
             *cache = Some(stored);
+        }
+
+        // Update merged cache in-place (if populated) instead of invalidating
+        {
+            let mut merged = self.merged_settings_cache.write().unwrap();
+            if let Some(ref mut merged_value) = *merged {
+                // Update the specific value in the merged cache
+                if let Some(cat_obj) = merged_value.get_mut(category) {
+                    if let Some(cat_map) = cat_obj.as_object_mut() {
+                        cat_map.insert(key.to_string(), value.clone());
+                    }
+                }
+            }
+            // If merged cache wasn't populated, leave it None - will be built on next access
         }
 
         info!("✅ Setting {}.{} saved", category, key);
@@ -922,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_startup_defaults() {
+    fn test_settings_defaults() {
         let dir = tempdir().unwrap();
         let config = SettingsConfig {
             config_dir: dir.path().to_path_buf(),
@@ -938,14 +1055,14 @@ mod tests {
         };
 
         let manager = SettingsManager::new(config).unwrap();
-        let settings: TestSettings = manager.load_startup().unwrap();
+        let settings: TestSettings = manager.settings().unwrap();
 
         assert_eq!(settings.general.language, "en");
         assert!(!settings.general.dark_mode);
     }
 
     #[test]
-    fn test_load_startup_with_stored() {
+    fn test_settings_with_stored() {
         let dir = tempdir().unwrap();
 
         // Write some stored settings
@@ -969,7 +1086,7 @@ mod tests {
         };
 
         let manager = SettingsManager::new(config).unwrap();
-        let settings: TestSettings = manager.load_startup().unwrap();
+        let settings: TestSettings = manager.settings().unwrap();
 
         // Stored value should override default
         assert_eq!(settings.general.language, "tr");

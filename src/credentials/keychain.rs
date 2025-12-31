@@ -99,7 +99,7 @@ impl CredentialBackend for KeychainBackend {
         Ok(self
             .known_keys
             .read()
-            .map(|k| k.clone())
+            .map(|guard| guard.clone())
             .unwrap_or_default())
     }
 

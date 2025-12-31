@@ -21,7 +21,7 @@ fn create_fixture_with_data() -> TestFixture {
     let fixture = TestFixture::with_sub_settings();
 
     // Load and set some non-default settings
-    let _ = fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings::<TestSettings>().unwrap();
     fixture
         .manager
         .save_setting::<TestSettings>("ui", "theme", json!("light"))
@@ -362,7 +362,7 @@ fn test_restore_skip_existing() {
 
     // Create a new fixture with different settings
     let new_fixture = TestFixture::new();
-    let _ = new_fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = new_fixture.manager.settings::<TestSettings>().unwrap();
     new_fixture
         .manager
         .save_setting::<TestSettings>("ui", "theme", json!("system"))
@@ -393,7 +393,7 @@ fn test_restore_overwrite_existing() {
 
     // Create a new fixture with different settings
     let new_fixture = TestFixture::new();
-    let _ = new_fixture.manager.load_startup::<TestSettings>().unwrap();
+    let _ = new_fixture.manager.settings::<TestSettings>().unwrap();
     new_fixture
         .manager
         .save_setting::<TestSettings>("ui", "theme", json!("system"))
