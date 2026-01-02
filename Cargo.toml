@@ -3,7 +3,7 @@ members = [".", "rcman-derive"]
 
 [package]
 name = "rcman"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Hakan"]
 description = "Framework-agnostic settings management with schema, backup/restore, secrets and derive macro support"

@@ -318,41 +318,45 @@ impl<S: StorageBackend> SubSettings<S> {
         self.ensure_cache_populated()?;
 
         // Check cache first
-        {
+        let mut value = {
             let cache = self.cache.read().unwrap();
             // Cache must be Some(_) because of ensure_cache_populated
-            if let Some(map) = cache.as_ref() {
-                if let Some(val) = map.get(name) {
-                    return Ok(val.clone());
-                }
-            }
-        }
+            cache
+                .as_ref()
+                .and_then(|map| map.get(name).cloned())
+        };
 
-        if self.is_single_file() {
-            // In SingleFile mode, if not in cache (and cache is populated), it doesn't exist
-            return Err(Error::SubSettingsEntryNotFound {
-                settings_type: self.config.name.clone(),
-                name: name.to_string(),
-            });
-        }
-
-        // Multi-file mode: read from individual file
-        let path = self.entry_path(name);
-
-        if let Err(e) = std::fs::metadata(&path) {
-            if e.kind() == std::io::ErrorKind::NotFound {
+        // If not in cache, read from file (for multi-file mode)
+        if value.is_none() {
+            if self.is_single_file() {
+                // In SingleFile mode, if not in cache (and cache is populated), it doesn't exist
                 return Err(Error::SubSettingsEntryNotFound {
                     settings_type: self.config.name.clone(),
                     name: name.to_string(),
                 });
             }
-            return Err(Error::FileRead {
-                path: path.display().to_string(),
-                source: e,
-            });
+
+            // Multi-file mode: read from individual file
+            let path = self.entry_path(name);
+
+            if let Err(e) = std::fs::metadata(&path) {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return Err(Error::SubSettingsEntryNotFound {
+                        settings_type: self.config.name.clone(),
+                        name: name.to_string(),
+                    });
+                }
+                return Err(Error::FileRead {
+                    path: path.display().to_string(),
+                    source: e,
+                });
+            }
+
+            value = Some(self.storage.read(&path)?);
         }
 
-        let mut value: Value = self.storage.read(&path)?;
+        // At this point, value should be Some(_)
+        let mut value = value.unwrap();
 
         // Apply migration if configured
         if let Some(migrator) = &self.config.migrator {
@@ -360,11 +364,37 @@ impl<S: StorageBackend> SubSettings<S> {
             value = migrator(value);
 
             // If migration changed the value, persist it
-            // We use save_mutex to protect the file write
             if value != original {
                 debug!("Migrated sub-settings entry: {}", name);
-                let _save_guard = self.save_mutex.lock().unwrap();
-                self.storage.write(&path, &value)?;
+
+                // Persist the migrated value
+                if self.is_single_file() {
+                    // Update cache and persist the whole file
+                    {
+                        let mut cache = self.cache.write().unwrap();
+                        if let Some(map) = cache.as_mut() {
+                            map.insert(name.to_string(), value.clone());
+                        }
+                    }
+
+                    let path = self.single_file_path();
+                    let full_obj = {
+                        let cache = self.cache.read().unwrap();
+                        if let Some(map) = cache.as_ref() {
+                            Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                        } else {
+                            Value::Object(serde_json::Map::new())
+                        }
+                    };
+
+                    let _save_guard = self.save_mutex.lock().unwrap();
+                    self.storage.write(&path, &full_obj)?;
+                } else {
+                    // Multi-file mode: write individual file
+                    let path = self.entry_path(name);
+                    let _save_guard = self.save_mutex.lock().unwrap();
+                    self.storage.write(&path, &value)?;
+                }
             }
         }
 
