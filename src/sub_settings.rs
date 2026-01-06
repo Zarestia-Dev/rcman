@@ -321,9 +321,7 @@ impl<S: StorageBackend> SubSettings<S> {
         let mut value = {
             let cache = self.cache.read().unwrap();
             // Cache must be Some(_) because of ensure_cache_populated
-            cache
-                .as_ref()
-                .and_then(|map| map.get(name).cloned())
+            cache.as_ref().and_then(|map| map.get(name).cloned())
         };
 
         // If not in cache, read from file (for multi-file mode)
