@@ -32,6 +32,13 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    #[error("Failed to read directory '{path}': {source}")]
+    DirectoryRead {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("Failed to delete file '{path}': {source}")]
     FileDelete {
         path: String,
@@ -122,6 +129,39 @@ pub enum Error {
     // -------------------------------------------------------------------------
     #[error("Credential error: {0}")]
     Credential(String),
+
+    // -------------------------------------------------------------------------
+    // Profile Errors (profiles feature)
+    // -------------------------------------------------------------------------
+    #[cfg(feature = "profiles")]
+    #[error("Profile '{0}' not found")]
+    ProfileNotFound(String),
+
+    #[cfg(feature = "profiles")]
+    #[error("Profile '{0}' already exists")]
+    ProfileAlreadyExists(String),
+
+    #[cfg(feature = "profiles")]
+    #[error("Cannot delete active profile '{0}'")]
+    CannotDeleteActiveProfile(String),
+
+    #[cfg(feature = "profiles")]
+    #[error("Cannot delete the last remaining profile")]
+    CannotDeleteLastProfile,
+
+    #[cfg(feature = "profiles")]
+    #[error("Invalid profile name '{name}': {reason}")]
+    InvalidProfileName { name: String, reason: String },
+
+    #[cfg(feature = "profiles")]
+    #[error("Profiles not enabled for '{0}'")]
+    ProfilesNotEnabled(String),
+
+    // -------------------------------------------------------------------------
+    // Concurrency Errors
+    // -------------------------------------------------------------------------
+    #[error("Internal lock was poisoned - possible thread panic. The operation may have left data in an inconsistent state.")]
+    LockPoisoned,
 }
 
 impl Error {

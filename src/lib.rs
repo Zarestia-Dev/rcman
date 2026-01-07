@@ -9,6 +9,7 @@
 //! - **Secret Settings**: Mark settings with `.secret()` to auto-store in OS keychain (requires `keychain` or `encrypted-file` feature)
 //! - **Sub-Settings**: Per-entity configuration files (e.g., one file per "remote")
 //! - **Backup & Restore**: Create and restore encrypted backups with AES-256
+//! - **Profiles**: Named configurations for switching between different setups (e.g., "work", "home")
 //! - **Schema Validation**: Regex patterns, numeric ranges, and option constraints
 //! - **Performance**: In-memory caching for fast access
 //!
@@ -92,6 +93,32 @@
 //! # }
 //! ```
 //!
+//! ## Profiles (Named Configurations)
+//!
+//! rcman supports creating multiple profiles (e.g., "default", "work", "home") and switching between them.
+//! Profiles are supported for both main settings and sub-settings.
+//!
+//! ```rust,no_run
+//! use rcman::{SettingsManager, SubSettingsConfig};
+//!
+//! # fn example() -> rcman::Result<()> {
+//! let manager = SettingsManager::builder("my-app", "1.0.0")
+//!     .with_profiles() // Enable profiles for main settings
+//!     .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles()) // Enable for sub-settings
+//!     .build()?;
+//!
+//! // Create and switch profiles
+//! manager.create_profile("work")?;
+//! manager.switch_profile("work")?;
+//!
+//! // Sub-settings automatically use the active profile
+//! let remotes = manager.sub_settings("remotes")?;
+//! // This will save to .../remotes/profiles/work/gdrive.json
+//! remotes.set("gdrive", &serde_json::json!({"type": "drive"}))?;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! ## Backup & Restore
 //!
 //! ```rust,no_run
@@ -145,12 +172,18 @@ mod events;
 mod manager;
 mod storage;
 mod sub_settings;
+mod sync;
+pub mod security;
 
 // Grouped modules
 pub mod config;
 
 #[cfg(feature = "backup")]
 pub mod backup;
+
+// Profiles module (feature-gated)
+#[cfg(feature = "profiles")]
+pub mod profiles;
 
 // Credentials always available (for SecretStorage type), backends are feature-gated
 pub mod credentials;
@@ -181,6 +214,10 @@ pub use backup::{
     ExportCategoryType, ExportType, ExternalConfig, ExternalConfigProvider, RestoreOptions,
     RestoreResult, SubSettingsManifestEntry,
 };
+
+// Profiles re-exports (feature-gated)
+#[cfg(feature = "profiles")]
+pub use profiles::{ProfileEvent, ProfileManager, ProfileManifest};
 
 // Credential re-exports (always available: SecretStorage; feature-gated: CredentialManager)
 /// Credential Manager (requires `keychain` or `encrypted-file` feature)

@@ -308,22 +308,35 @@ fn test_save_to_readonly_directory() {
     let manager = SettingsManager::new(config).unwrap();
 
     let _ = manager.settings::<TestSettings>().unwrap();
+    
+    // First save to create the file (use a non-default value so it actually writes)
+    manager.save_setting::<TestSettings>("ui", "theme", json!("light")).unwrap();
 
-    // Make directory readonly (on Unix systems)
+    // Test that write fails when directory is readonly (Unix only)
+    // Note: Making the file readonly doesn't prevent updates due to atomic write
+    // (temp file + rename), so we test directory readonly instead
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(temp_dir.path()).unwrap().permissions();
-        perms.set_mode(0o444); // Read-only
-        fs::set_permissions(temp_dir.path(), perms).unwrap();
+        let settings_path = temp_dir.path().join("settings.json");
+        
+        // Verify file exists and has secure permissions after save
+        assert!(settings_path.exists(), "Settings file should exist after save");
+        let perms = fs::metadata(&settings_path).unwrap().permissions();
+        assert_eq!(perms.mode() & 0o777, 0o600, "Settings file should have 0o600 permissions");
+        
+        // Make directory readonly - this will prevent temp file creation
+        let mut dir_perms = fs::metadata(temp_dir.path()).unwrap().permissions();
+        dir_perms.set_mode(0o555); // Read + execute only
+        fs::set_permissions(temp_dir.path(), dir_perms).unwrap();
 
-        let result = manager.save_setting::<TestSettings>("ui", "theme", json!("light"));
-        assert!(result.is_err());
+        let result = manager.save_setting::<TestSettings>("ui", "theme", json!("dark"));
+        assert!(result.is_err(), "Save should fail when directory is readonly");
 
         // Restore permissions for cleanup
-        let mut perms = fs::metadata(temp_dir.path()).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(temp_dir.path(), perms).unwrap();
+        let mut dir_perms = fs::metadata(temp_dir.path()).unwrap().permissions();
+        dir_perms.set_mode(0o755);
+        fs::set_permissions(temp_dir.path(), dir_perms).unwrap();
     }
 }
 

@@ -19,12 +19,13 @@ all-features = true
 
 [features]
 default = ["json", "backup"]
-full = ["json", "backup", "keychain", "encrypted-file", "derive"]
+full = ["json", "backup", "keychain", "encrypted-file", "derive", "profiles"]
 json = []
 backup = ["dep:zip", "dep:sha2", "dep:tempfile"]
 keychain = ["dep:keyring"]
 encrypted-file = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2"]
 derive = ["dep:rcman-derive"]
+profiles = []
 
 [dependencies]
 # Core (always included)
@@ -88,6 +89,14 @@ required-features = ["backup"]
 name = "gui_demo"
 required-features = ["backup"]
 
+[[example]]
+name = "profiles_usage"
+required-features = ["profiles"]
+
 [[test]]
 name = "derive_macro_test"
 required-features = ["derive"]
+
+[[test]]
+name = "profiles_test"
+required-features = ["profiles"]

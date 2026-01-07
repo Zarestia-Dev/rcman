@@ -5,10 +5,69 @@ use super::types::*;
 use crate::error::{Error, Result};
 use crate::manager::SettingsManager;
 use crate::storage::StorageBackend;
+use crate::sync::RwLockExt as _;
 use chrono::Utc;
 use log::{debug, info};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[cfg(feature = "profiles")]
+use crate::profiles::{MANIFEST_FILE, PROFILES_DIR};
+
+/// Helper to collect settings files for backup (handles both profiled and flat)
+/// Returns (source_path, relative_dest_path) pairs
+fn collect_settings_files(
+    config: &crate::config::SettingsConfig<impl StorageBackend>,
+    #[cfg_attr(not(feature = "profiles"), allow(unused_variables))]
+    options: &BackupOptions,
+) -> Result<Vec<(PathBuf, PathBuf)>> {
+    let mut files = Vec::new();
+
+    #[cfg(feature = "profiles")]
+    if config.profiles_enabled {
+        // Collect profile manifest
+        let manifest = config.config_dir.join(MANIFEST_FILE);
+        if manifest.exists() {
+            files.push((manifest, PathBuf::from(MANIFEST_FILE)));
+        }
+
+        // Collect profile settings
+        let profiles_dir = config.config_dir.join(PROFILES_DIR);
+        if let Ok(entries) = fs::read_dir(&profiles_dir) {
+            for entry in entries.flatten() {
+                let profile_name = entry.file_name().to_string_lossy().to_string();
+
+                // Filter profiles if specified
+                if !options.include_profiles.is_empty()
+                    && !options.include_profiles.contains(&profile_name)
+                {
+                    continue;
+                }
+
+                let settings_file = entry.path().join(&config.settings_file);
+                if settings_file.exists() {
+                    let dest = PathBuf::from(PROFILES_DIR)
+                        .join(&profile_name)
+                        .join(&config.settings_file);
+                    files.push((settings_file, dest));
+                }
+            }
+        }
+        return Ok(files);
+    }
+
+    // Non-profiled or feature disabled: just the single settings file
+    #[cfg(not(feature = "profiles"))]
+    let settings_path = config.settings_path();
+    #[cfg(feature = "profiles")]
+    let settings_path = config.settings_path();
+
+    if settings_path.exists() {
+        files.push((settings_path, PathBuf::from(&config.settings_file)));
+    }
+
+    Ok(files)
+}
 
 /// Backup manager for creating and analyzing backups
 pub struct BackupManager<'a, S: StorageBackend + 'static> {
@@ -166,18 +225,23 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
             && !matches!(options.export_type, ExportType::Single { .. });
 
         if include_settings {
-            let settings_path = self.manager.config().settings_path();
-            if settings_path.exists() {
-                let dest = export_dir.join("settings.json");
-                fs::copy(&settings_path, &dest).map_err(|e| Error::FileRead {
-                    path: settings_path.display().to_string(),
+            for (src, dest) in collect_settings_files(self.manager.config(), options)? {
+                let full_dest = export_dir.join(&dest);
+                if let Some(parent) = full_dest.parent() {
+                    fs::create_dir_all(parent).map_err(|e| Error::DirectoryCreate {
+                        path: parent.display().to_string(),
+                        source: e,
+                    })?;
+                }
+                fs::copy(&src, &full_dest).map_err(|e| Error::FileRead {
+                    path: src.display().to_string(),
                     source: e,
                 })?;
-                total_size += fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-                contents.settings = true;
+                total_size += fs::metadata(&full_dest).map(|m| m.len()).unwrap_or(0);
                 contents.file_count += 1;
-                debug!("📄 Added main settings");
+                debug!("📄 Added settings file: {}", dest.display());
             }
+            contents.settings = true;
         }
 
         // 2. Sub-settings
@@ -217,65 +281,168 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
         };
 
         for sub_type in sub_settings_to_backup {
+            #[cfg(feature = "profiles")]
+            let sub_export_dir = export_dir.join(&sub_type);
+            
             if let Ok(sub) = self.manager.sub_settings(&sub_type) {
-                let sub_export_dir = export_dir.join(&sub_type);
+                // Check for profiles
+                #[cfg(feature = "profiles")]
+                let profiles_enabled = sub.profiles_enabled();
+                #[cfg(not(feature = "profiles"))]
+                let profiles_enabled = false;
 
-                // Handle single-file mode differently
-                if sub.is_single_file() {
-                    // In single-file mode, we just copy the single file as {sub_type}.json
-                    // But we still list items in the manifest for granular restore awareness
-                    if let Some(path) = sub.file_path() {
-                        if path.exists() {
-                            let dest = export_dir.join(format!("{}.json", sub_type));
-                            fs::copy(&path, &dest).map_err(|e| Error::FileRead {
-                                path: path.display().to_string(),
+                if profiles_enabled {
+                    #[cfg(feature = "profiles")]
+                    {
+                        // Copy .profiles.json
+                        let root_path = sub.root_path();
+                        let profiles_manifest = root_path.join(MANIFEST_FILE);
+                        if profiles_manifest.exists() {
+                            let dest = sub_export_dir.join(MANIFEST_FILE);
+                            // Ensure sub_export_dir exists (we might not have created it yet)
+                            fs::create_dir_all(&sub_export_dir).map_err(|e| Error::DirectoryCreate {
+                                path: sub_export_dir.display().to_string(),
+                                source: e,
+                            })?;
+                            
+                            fs::copy(&profiles_manifest, &dest).map_err(|e| Error::FileRead {
+                                path: profiles_manifest.display().to_string(),
                                 source: e,
                             })?;
                             total_size += fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
                             contents.file_count += 1;
+                        }
 
-                            // For single-file mode, we use SingleFile manifest entry with filename
-                            contents.sub_settings.insert(
-                                sub_type.clone(),
-                                SubSettingsManifestEntry::SingleFile(format!("{}.json", sub_type)),
-                            );
-                            debug!("📄 Added single-file sub-settings: {}", sub_type);
+                        // Handle profiles folder
+                        let profiles_dir = root_path.join(PROFILES_DIR);
+                        if profiles_dir.exists() {
+                            let dest_profiles_dir = sub_export_dir.join(PROFILES_DIR);
+                            fs::create_dir_all(&dest_profiles_dir).map_err(|e| Error::DirectoryCreate {
+                                path: dest_profiles_dir.display().to_string(),
+                                source: e,
+                            })?;
+
+                            let mut profile_names = Vec::new();
+
+                            for entry in fs::read_dir(&profiles_dir).map_err(|e| Error::DirectoryRead {
+                                path: profiles_dir.display().to_string(),
+                                source: e,
+                            })? {
+                                let entry = entry.map_err(|e| Error::DirectoryRead {
+                                    path: profiles_dir.display().to_string(),
+                                    source: e,
+                                })?;
+                                
+                                let profile_name = entry.file_name().to_string_lossy().to_string();
+                                
+                                // Filter
+                                if !options.include_profiles.is_empty() 
+                                    && !options.include_profiles.contains(&profile_name) {
+                                    continue;
+                                }
+
+                                let profile_path = entry.path();
+                                let profile_export_dir = dest_profiles_dir.join(&profile_name);
+                                fs::create_dir_all(&profile_export_dir).map_err(|e| Error::DirectoryCreate {
+                                    path: profile_export_dir.display().to_string(),
+                                    source: e,
+                                })?;
+
+                                // Copy all JSON files from this profile
+                                if let Ok(profile_entries) = fs::read_dir(&profile_path) {
+                                    for item_entry in profile_entries.flatten() {
+                                        let path = item_entry.path();
+                                        if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                                            let dest = profile_export_dir.join(item_entry.file_name());
+                                            fs::copy(&path, &dest).map_err(|e| Error::FileRead {
+                                                path: path.display().to_string(),
+                                                source: e,
+                                            })?;
+                                            total_size += fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                                            contents.file_count += 1;
+                                        }
+                                    }
+                                    profile_names.push(profile_name);
+                                }
+                            }
+                            
+                            if !profile_names.is_empty() {
+                                contents.sub_settings.insert(
+                                    sub_type.clone(),
+                                    SubSettingsManifestEntry::Profiled {
+                                        profiles: profile_names,
+                                        single_file: sub.is_single_file(),
+                                    }
+                                );
+                            }
                         }
                     }
                 } else {
-                    // Multi-file mode: create directory and copy individuals
-                    fs::create_dir_all(&sub_export_dir).map_err(|e| Error::DirectoryCreate {
-                        path: sub_export_dir.display().to_string(),
-                        source: e,
-                    })?;
+                    let sub_export_dir = export_dir.join(&sub_type);
 
-                    let mut items = Vec::new();
+                    // Handle single-file mode differently
+                    if sub.is_single_file() {
+                        // In single-file mode, we just copy the single file as {sub_type}.json
+                        // But we still list items in the manifest for granular restore awareness
+                        if let Some(path) = sub.file_path() {
+                            if path.exists() {
+                                let dest = sub_export_dir.join(format!("{}.json", sub_type));
+                                // Ensure dir
+                                fs::create_dir_all(&sub_export_dir).map_err(|e| Error::DirectoryCreate {
+                                    path: sub_export_dir.display().to_string(),
+                                    source: e,
+                                })?;
+                                
+                                fs::copy(&path, &dest).map_err(|e| Error::FileRead {
+                                    path: path.display().to_string(),
+                                    source: e,
+                                })?;
+                                total_size += fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                                contents.file_count += 1;
 
-                    for name in sub.list()? {
-                        if let Ok(value) = sub.get_value(&name) {
-                            let dest = sub_export_dir.join(format!("{}.json", name));
-                            let json = serde_json::to_string_pretty(&value)?;
-                            fs::write(&dest, &json).map_err(|e| Error::FileWrite {
-                                path: dest.display().to_string(),
-                                source: e,
-                            })?;
-                            total_size += json.len() as u64;
-                            contents.file_count += 1;
-                            items.push(name);
+                                // For single-file mode, we use SingleFile manifest entry with filename
+                                contents.sub_settings.insert(
+                                    sub_type.clone(),
+                                    SubSettingsManifestEntry::SingleFile(format!("{}.json", sub_type)),
+                                );
+                                debug!("📄 Added single-file sub-settings: {}", sub_type);
+                            }
                         }
-                    }
+                    } else {
+                        // Multi-file mode: create directory and copy individuals
+                        fs::create_dir_all(&sub_export_dir).map_err(|e| Error::DirectoryCreate {
+                            path: sub_export_dir.display().to_string(),
+                            source: e,
+                        })?;
 
-                    contents
-                        .sub_settings
-                        .insert(sub_type.clone(), SubSettingsManifestEntry::MultiFile(items));
-                    debug!("📄 Added sub-settings directory: {}", sub_type);
+                        let mut items = Vec::new();
+
+                        for name in sub.list()? {
+                            if let Ok(value) = sub.get_value(&name) {
+                                let dest = sub_export_dir.join(format!("{}.json", name));
+                                let json = serde_json::to_string_pretty(&value)?;
+                                fs::write(&dest, &json).map_err(|e| Error::FileWrite {
+                                    path: dest.display().to_string(),
+                                    source: e,
+                                })?;
+                                total_size += json.len() as u64;
+                                contents.file_count += 1;
+                                items.push(name);
+                            }
+                        }
+
+                        contents
+                            .sub_settings
+                            .insert(sub_type.clone(), SubSettingsManifestEntry::MultiFile(items));
+                        debug!("📄 Added sub-settings directory: {}", sub_type);
+                    }
                 }
             }
         }
 
         // 3. External configs
         if !options.include_external_configs.is_empty() {
-            let providers = self.manager.external_providers.read().unwrap();
+            let providers = self.manager.external_providers.read_recovered()?;
             let mut all_configs = Vec::new();
 
             // Add static configs from settings
@@ -479,7 +646,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -527,7 +696,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -571,7 +742,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager = SettingsManager::new(config).unwrap();

@@ -4,6 +4,8 @@ use super::archive::{extract_zip_archive, read_file_from_zip};
 use super::types::*;
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
+#[cfg(feature = "profiles")]
+use crate::profiles::{MANIFEST_FILE, PROFILES_DIR};
 use log::{debug, info, warn};
 use std::fs;
 use std::path::Path;
@@ -85,27 +87,123 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
         )?;
 
         // 1. Restore main settings
-        if options.restore_settings && analysis.manifest.contents.settings {
-            let settings_src = extract_dir.join("settings.json");
-            if settings_src.exists() {
-                let settings_dest = self.manager.config().settings_path();
+        if options.restore_settings {
+            #[cfg_attr(not(feature = "profiles"), allow(unused_variables))]
+            let config = self.manager.config();
+            
+            #[cfg(feature = "profiles")]
+            let profiles_enabled = config.profiles_enabled;
+            #[cfg(not(feature = "profiles"))]
+            let profiles_enabled = false;
 
-                if settings_dest.exists() && !options.overwrite_existing {
-                    result.skipped.push("settings.json".into());
-                    warn!(
-                        "{}⚠️ Skipping settings.json (exists, overwrite disabled)",
-                        mode_str
-                    );
-                } else if options.dry_run {
-                    result.restored.push("settings.json".into());
-                    debug!("{}📋 Would restore settings.json", mode_str);
-                } else {
-                    fs::copy(&settings_src, &settings_dest).map_err(|e| Error::FileWrite {
-                        path: settings_dest.display().to_string(),
-                        source: e,
-                    })?;
-                    result.restored.push("settings.json".into());
-                    debug!("✅ Restored settings.json");
+            if profiles_enabled {
+                #[cfg(feature = "profiles")]
+                {
+                    // Restore .profiles.json
+                    let profiles_manifest = extract_dir.join(MANIFEST_FILE);
+                    let target_manifest = config.config_dir.join(MANIFEST_FILE);
+                    
+                    if profiles_manifest.exists() {
+                        if target_manifest.exists() && !options.overwrite_existing {
+                             result.skipped.push(MANIFEST_FILE.into());
+                             warn!("{}⚠️ Skipping {} (exists)", mode_str, MANIFEST_FILE);
+                        } else if options.dry_run {
+                             result.restored.push(MANIFEST_FILE.into());
+                             debug!("{}📋 Would restore {}", mode_str, MANIFEST_FILE);
+                        } else {
+                             fs::copy(&profiles_manifest, &target_manifest).map_err(|e| Error::FileWrite {
+                                 path: target_manifest.display().to_string(),
+                                 source: e,
+                             })?;
+                             result.restored.push(MANIFEST_FILE.into());
+                        }
+                    }
+
+                    // Restore profiles
+                    let profiles_src_dir = extract_dir.join(PROFILES_DIR);
+                    if profiles_src_dir.exists() {
+                        let target_profiles_dir = config.config_dir.join(PROFILES_DIR);
+                        
+                        // Handle single profile restore request
+                        let profiles_to_restore = if let Some(ref profile) = options.restore_profile {
+                             vec![profile.clone()]
+                        } else {
+                             // Restore all found in source
+                             fs::read_dir(&profiles_src_dir)
+                                 .ok() 
+                                 .map(|entries| {
+                                     entries.filter_map(|e| e.ok())
+                                        .map(|e| e.file_name().to_string_lossy().to_string())
+                                        .collect()
+                                 })
+                                 .unwrap_or_default()
+                        };
+
+                        for profile_name in profiles_to_restore {
+                             let src_profile_path = profiles_src_dir.join(&profile_name);
+                             if !src_profile_path.exists() {
+                                 warn!("⚠️ Profile '{}' not found in backup", profile_name);
+                                 continue;
+                             }
+
+                             // Determine target profile name (rename if requested)
+                             let target_profile_name = if options.restore_profile.is_some() {
+                                 options.restore_profile_as.as_ref().unwrap_or(&profile_name).clone()
+                             } else {
+                                 profile_name.clone()
+                             };
+
+                             let target_profile_path = target_profiles_dir.join(&target_profile_name);
+                             fs::create_dir_all(&target_profile_path).map_err(|e| Error::DirectoryCreate {
+                                 path: target_profile_path.display().to_string(),
+                                 source: e,
+                             })?;
+
+                             let src_settings = src_profile_path.join("settings.json");
+                             if src_settings.exists() {
+                                 let dest_settings = target_profile_path.join("settings.json");
+                                 if dest_settings.exists() && !options.overwrite_existing {
+                                     result.skipped.push(format!("profiles/{}/settings.json", target_profile_name));
+                                 } else if options.dry_run {
+                                     result.restored.push(format!("profiles/{}/settings.json", target_profile_name));
+                                     debug!("{}📋 Would restore settings for profile {}", mode_str, target_profile_name);
+                                 } else {
+                                     fs::copy(&src_settings, &dest_settings).map_err(|e| Error::FileWrite {
+                                         path: dest_settings.display().to_string(),
+                                         source: e,
+                                     })?;
+                                     result.restored.push(format!("profiles/{}/settings.json", target_profile_name));
+                                     debug!("✅ Restored settings for profile {}", target_profile_name);
+                                 }
+                             }
+                        }
+                    }
+                }
+            } else {
+                // Legacy behavior
+                if analysis.manifest.contents.settings {
+                    let settings_src = extract_dir.join("settings.json");
+                    if settings_src.exists() {
+                        let settings_dest = self.manager.config().settings_path();
+
+                        if settings_dest.exists() && !options.overwrite_existing {
+                            result.skipped.push("settings.json".into());
+                            warn!(
+                                "{}⚠️ Skipping settings.json (exists, overwrite disabled)",
+                                mode_str
+                            );
+                        } else if options.dry_run {
+                            result.restored.push("settings.json".into());
+                            debug!("{}📋 Would restore settings.json", mode_str);
+                        } else {
+                            fs::copy(&settings_src, &settings_dest).map_err(|e| Error::FileWrite {
+                                path: settings_dest.display().to_string(),
+                                source: e,
+                            })?;
+                            result.restored.push("settings.json".into());
+                            debug!("✅ Restored settings.json");
+                        }
+                    }
                 }
             }
         }
@@ -120,8 +218,7 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
 
         for (sub_type, items_filter) in sub_settings_to_restore {
             let sub_src_dir = extract_dir.join(&sub_type);
-            let sub_single_file_src = extract_dir.join(format!("{}.json", sub_type));
-
+            
             // Get sub-settings handler
             let sub = match self.manager.sub_settings(&sub_type) {
                 Ok(s) => s,
@@ -133,8 +230,160 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                     continue;
                 }
             };
+            
+            // Check if we are dealing with a profiled backup for this entry
+            #[cfg_attr(not(feature = "profiles"), allow(unused_variables))]
+            let manifest_entry = analysis.manifest.contents.sub_settings.get(&sub_type);
+            
+            #[cfg(feature = "profiles")]
+            let is_profiled_backup = matches!(manifest_entry, Some(SubSettingsManifestEntry::Profiled { .. }));
+            #[cfg(not(feature = "profiles"))]
+            let is_profiled_backup = false;
+            
+            #[cfg(feature = "profiles")]
+            let target_profiles_enabled = sub.profiles_enabled();
+            #[cfg(not(feature = "profiles"))]
+            let _target_profiles_enabled = false;
 
-            // Collect entries to restore from either directory or single file
+            if is_profiled_backup {
+                #[cfg(feature = "profiles")]
+                {
+                    // Restore .profiles.json if target supports it
+                    if target_profiles_enabled {
+                         let profiles_manifest = sub_src_dir.join(MANIFEST_FILE);
+                         let target_root = sub.root_path();
+                         let target_manifest = target_root.join(MANIFEST_FILE);
+
+                         if profiles_manifest.exists() {
+                             if target_manifest.exists() && !options.overwrite_existing {
+                                 // Skip
+                             } else if !options.dry_run {
+                                 fs::create_dir_all(&target_root).ok();
+                                 fs::copy(&profiles_manifest, &target_manifest).ok();
+                             }
+                         }
+
+                         // Iterate profiles
+                         let profiles_src_dir = sub_src_dir.join(PROFILES_DIR);
+                         let target_profiles_dir = target_root.join(PROFILES_DIR);
+                         
+                         if profiles_src_dir.exists() {
+                             let profiles_to_restore = if let Some(ref profile) = options.restore_profile {
+                                 vec![profile.clone()]
+                             } else {
+                                fs::read_dir(&profiles_src_dir)
+                                     .ok()
+                                     .map(|entries| {
+                                         entries.filter_map(|e| e.ok())
+                                            .map(|e| e.file_name().to_string_lossy().to_string())
+                                            .collect()
+                                     })
+                                     .unwrap_or_default()
+                             };
+
+                             for profile_name in profiles_to_restore {
+                                 let src_profile_path = profiles_src_dir.join(&profile_name);
+                                 if !src_profile_path.exists() { continue; }
+
+                                 let target_profile_name = if options.restore_profile.is_some() {
+                                     options.restore_profile_as.as_ref().unwrap_or(&profile_name).clone()
+                                 } else {
+                                     profile_name.clone()
+                                 };
+
+                                 let target_profile_dir = target_profiles_dir.join(&target_profile_name);
+                                 
+                                 // Restore content of profile (SingleFile or MultiFile)
+                                 // We scan src_profile_path for .json files
+                                 if let Ok(entries) = fs::read_dir(&src_profile_path) {
+                                     for entry in entries.filter_map(|e| e.ok()) {
+                                         let path = entry.path();
+                                         if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                                             let file_name = entry.file_name();
+                                             let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                                             
+                                             // Filter items
+                                             if !items_filter.is_empty() && !items_filter.contains(&stem) {
+                                                 continue;
+                                             }
+
+                                             // Target file
+                                             let dest = target_profile_dir.join(&file_name);
+                                             
+                                             if dest.exists() && !options.overwrite_existing {
+                                                 result.skipped.push(format!("{}/{}/{}", sub_type, target_profile_name, stem));
+                                             } else if options.dry_run {
+                                                 result.restored.push(format!("{}/{}/{}", sub_type, target_profile_name, stem));
+                                                 debug!("{}📋 Would restore {} to profile {}", mode_str, stem, target_profile_name);                                                 
+                                             } else {
+                                                 fs::create_dir_all(&target_profile_dir).map_err(|e| Error::DirectoryCreate {
+                                                      path: target_profile_dir.display().to_string(),
+                                                      source: e
+                                                 })?;
+                                                 
+                                                 fs::copy(&path, &dest).map_err(|e| Error::FileWrite {
+                                                      path: dest.display().to_string(),
+                                                      source: e
+                                                 })?;
+                                                 result.restored.push(format!("{}/{}/{}", sub_type, target_profile_name, stem));
+                                                 debug!("✅ Restored {} to profile {}", stem, target_profile_name);
+                                             }
+                                         }
+                                     }
+                                 }
+                             }
+                         }
+                    } else {
+                        // Profiled backup -> Flat target?
+                        // If specific profile requested, we can flatten it to root.
+                        if let Some(ref src_profile) = options.restore_profile {
+                             let profiles_src_dir = sub_src_dir.join(PROFILES_DIR);
+                             let src_profile_path = profiles_src_dir.join(src_profile);
+                             
+                             if src_profile_path.exists() {
+                                 // Restore items from this profile to active flat root
+                                 // We can use 'sub.set' here effectively as we are targeting the active flat config
+                                 // But we need to load json first.
+                                 
+                                 if let Ok(entries) = fs::read_dir(&src_profile_path) {
+                                     for entry in entries.filter_map(|e| e.ok()) {
+                                          let path = entry.path();
+                                          if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                                               let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                                               if !items_filter.is_empty() && !items_filter.contains(&stem) { continue; }
+                                               
+                                               let content = fs::read_to_string(&path).map_err(|e| Error::FileRead {
+                                                   path: path.display().to_string(),
+                                                   source: e
+                                               })?;
+                                               let value: serde_json::Value = serde_json::from_str(&content)?;
+                                               
+                                               if sub.exists(&stem)? && !options.overwrite_existing {
+                                                   result.skipped.push(format!("{}/{}", sub_type, stem));
+                                               } else if options.dry_run {
+                                                   result.restored.push(format!("{}/{}", sub_type, stem));
+                                               } else {
+                                                   sub.set(&stem, &value)?;
+                                                   result.restored.push(format!("{}/{}", sub_type, stem));
+                                               }
+                                          }
+                                     }
+                                 }
+                             }
+                        } else {
+                             warn!("⚠️ Cannot restore profiled backup of '{}' to non-profiled target without specifying --restore-profile", sub_type);
+                        }
+                    }
+                }
+            } else {
+                // Not profiled backup, or profiles not compiled in.
+                // Standard flat restore logic (existing code adapted)
+                let sub_single_file_src = extract_dir.join(format!("{}.json", sub_type));
+
+                // ... [Existing Logic] ...
+                // To minimize diff complexity, I'll inline the existing logic here for the flat case
+                
+                 // Collect entries to restore from either directory or single file
             let mut entries_to_restore: Vec<(String, serde_json::Value)> = Vec::new();
 
             if sub_single_file_src.exists() {
@@ -182,8 +431,6 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                     let value: serde_json::Value = serde_json::from_str(&content)?;
                     entries_to_restore.push((entry_name, value));
                 }
-            } else {
-                continue; // Nothing found for this type
             }
 
             // Process the collected entries
@@ -211,6 +458,7 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
 
                 result.restored.push(entry_id.clone());
                 debug!("✅ Restored {}", entry_id);
+            }
             }
         }
 
@@ -484,7 +732,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         fs::create_dir_all(&config.config_dir).unwrap();
@@ -522,7 +772,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager2 = SettingsManager::new(config2).unwrap();
@@ -563,7 +815,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         fs::create_dir_all(&config.config_dir).unwrap();

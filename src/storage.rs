@@ -1,6 +1,7 @@
 //! Storage backend trait and implementations
 
 use crate::error::{Error, Result};
+use crate::security::{set_secure_dir_permissions, set_secure_file_permissions};
 use serde::{de::DeserializeOwned, Serialize};
 use std::path::Path;
 
@@ -34,10 +35,15 @@ pub trait StorageBackend: Clone + Send + Sync {
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
+            let dir_existed = parent.exists();
             std::fs::create_dir_all(parent).map_err(|e| Error::DirectoryCreate {
                 path: parent.display().to_string(),
                 source: e,
             })?;
+            // Only secure the directory if we just created it
+            if !dir_existed {
+                set_secure_dir_permissions(parent)?;
+            }
         }
 
         // Atomic write: temp file + rename
@@ -57,10 +63,18 @@ pub trait StorageBackend: Clone + Send + Sync {
             source: e,
         })?;
 
+        // Set secure permissions on temp file before rename
+        set_secure_file_permissions(&temp_path)?;
+
         std::fs::rename(&temp_path, path).map_err(|e| Error::FileWrite {
             path: path.display().to_string(),
             source: e,
-        })
+        })?;
+
+        // Ensure final file has secure permissions (in case rename didn't preserve)
+        set_secure_file_permissions(path)?;
+
+        Ok(())
     }
 }
 

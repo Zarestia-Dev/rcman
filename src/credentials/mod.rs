@@ -46,6 +46,7 @@ pub trait CredentialBackend: Send + Sync {
 }
 
 /// Credential manager with configurable backend and fallback
+#[derive(Clone)]
 pub struct CredentialManager {
     /// Primary backend (typically keychain)
     primary: Arc<dyn CredentialBackend>,
@@ -55,6 +56,10 @@ pub struct CredentialManager {
 
     /// Service name for keychain
     service_name: String,
+
+    /// Profile context (if any)
+    #[cfg(feature = "profiles")]
+    profile_context: Option<String>,
 }
 
 impl CredentialManager {
@@ -66,6 +71,8 @@ impl CredentialManager {
             primary: Arc::new(KeychainBackend::new(service.clone())),
             fallback: None,
             service_name: service,
+            #[cfg(feature = "profiles")]
+            profile_context: None,
         }
     }
 
@@ -96,6 +103,8 @@ impl CredentialManager {
             primary: Arc::new(KeychainBackend::new(service.clone())),
             fallback: fallback.map(|f| Arc::new(f) as Arc<dyn CredentialBackend>),
             service_name: service,
+            #[cfg(feature = "profiles")]
+            profile_context: None,
         }
     }
 
@@ -105,6 +114,8 @@ impl CredentialManager {
             primary: Arc::new(MemoryBackend::new()),
             fallback: None,
             service_name: service_name.into(),
+            #[cfg(feature = "profiles")]
+            profile_context: None,
         }
     }
 
@@ -117,12 +128,33 @@ impl CredentialManager {
             primary: backend,
             fallback: None,
             service_name: service_name.into(),
+            #[cfg(feature = "profiles")]
+            profile_context: None,
+        }
+    }
+
+    /// Create a clone of this manager with a profile context
+    ///
+    /// This causes all operations to be namespaced under the profile.
+    /// Key format becomes: `service:profiles:profile_name:key`
+    #[cfg(feature = "profiles")]
+    pub fn with_profile_context(&self, profile_name: &str) -> Self {
+        Self {
+            primary: self.primary.clone(),
+            fallback: self.fallback.clone(),
+            service_name: self.service_name.clone(),
+            profile_context: Some(profile_name.to_string()),
         }
     }
 
     /// Store a credential
     pub fn store(&self, key: &str, value: &str) -> Result<()> {
-        let full_key = self.make_key(key);
+        self.store_with_profile(key, value, None)
+    }
+
+    /// Store a credential with optional profile context
+    pub fn store_with_profile(&self, key: &str, value: &str, profile: Option<&str>) -> Result<()> {
+        let full_key = self.make_key_with_profile(key, profile);
 
         match self.primary.store(&full_key, value) {
             Ok(()) => {
@@ -149,7 +181,12 @@ impl CredentialManager {
 
     /// Retrieve a credential
     pub fn get(&self, key: &str) -> Result<Option<String>> {
-        let full_key = self.make_key(key);
+        self.get_with_profile(key, None)
+    }
+
+    /// Retrieve a credential with optional profile context
+    pub fn get_with_profile(&self, key: &str, profile: Option<&str>) -> Result<Option<String>> {
+        let full_key = self.make_key_with_profile(key, profile);
 
         // Try primary first
         match self.primary.get(&full_key) {
@@ -198,6 +235,9 @@ impl CredentialManager {
 
     /// Clear all credentials for this service
     pub fn clear(&self) -> Result<()> {
+        // Warning: clear() operates on the service level, ignores profile context for now
+        // to avoid accidentally deleting everything if context logic is wrong.
+        // TODO: Implement scoped clear for profiles
         let prefix = format!("{}:", self.service_name);
         let mut keys_to_remove = std::collections::HashSet::new();
 
@@ -241,6 +281,23 @@ impl CredentialManager {
     }
 
     fn make_key(&self, key: &str) -> String {
+        self.make_key_with_profile(key, None)
+    }
+
+    fn make_key_with_profile(&self, key: &str, profile: Option<&str>) -> String {
+        #[cfg(feature = "profiles")]
+        {
+            // Check explicit profile parameter first
+            if let Some(profile) = profile {
+                return format!("{}:profiles:{}:{}", self.service_name, profile, key);
+            }
+            // Fall back to stored context
+            if let Some(ref profile_ctx) = self.profile_context {
+                return format!("{}:profiles:{}:{}", self.service_name, profile_ctx, key);
+            }
+        }
+        #[cfg(not(feature = "profiles"))]
+        let _ = profile;
         format!("{}:{}", self.service_name, key)
     }
 }

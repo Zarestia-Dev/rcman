@@ -8,7 +8,7 @@
 
 A generic, **framework-agnostic** Rust library for managing application settings with backup/restore, sub-settings, and credential management.
 
-> **Built with modern Rust best practices** — Comprehensive test coverage (143 tests), CI-enforced quality gates (fmt, clippy, cargo-deny), and production-ready error handling.
+> **Built with modern Rust best practices** — Comprehensive test coverage, CI-enforced quality gates (fmt, clippy, cargo-deny), and production-ready error handling.
 
 ## Quick Links
 
@@ -24,6 +24,7 @@ A generic, **framework-agnostic** Rust library for managing application settings
 | ----------------------- | -------------------------------------------------------- |
 | **Settings Management** | Load/save with rich schema metadata for UI rendering     |
 | **Sub-Settings**        | Per-entity configs (e.g., one JSON per remote)           |
+| **Profiles**            | Multiple named configurations (work, personal, etc.)     |
 | **Schema Migration**    | Lazy migration for transparent data upgrades             |
 | **Backup & Restore**    | Encrypted ZIP backups with AES-256                       |
 | **Secret Settings**     | Auto-routes secrets to OS keychain                       |
@@ -36,9 +37,8 @@ A generic, **framework-agnostic** Rust library for managing application settings
 
 ## Installation
 
-```toml
-[dependencies]
-rcman = "0.1"
+```bash
+cargo add rcman
 ```
 
 ### Feature Flags
@@ -50,22 +50,23 @@ rcman = "0.1"
 | `derive`         | `#[derive(SettingsSchema)]` macro | ❌       |
 | `keychain`       | OS keychain support               | ❌       |
 | `encrypted-file` | AES-256 encrypted file            | ❌       |
+| `profiles`       | Multiple named configurations     | ❌       |
 | `full`           | All features                      | ❌       |
 
 **Examples:**
 
-```toml
+```bash
 # Default (settings + backup)
-rcman = "0.1"
+cargo add rcman
 
 # Minimal (just settings, no backup)
-rcman = { version = "0.1", default-features = false, features = ["json"] }
+cargo add rcman --no-default-features --features json
 
 # With OS keychain support
-rcman = { version = "0.1", features = ["keychain"] }
+cargo add rcman --features keychain
 
 # Everything
-rcman = { version = "0.1", features = ["full"] }
+cargo add rcman --features full
 ```
 
 ---
@@ -233,6 +234,93 @@ remotes.delete("onedrive")?;
 
 ---
 
+### 2.1 Profiles
+
+Profiles let you maintain multiple named configurations. Enable with the `profiles` feature:
+
+```bash
+cargo add rcman --features profiles
+```
+
+#### Main Settings Profiles (App-Wide)
+
+Enable profiles for your main `settings.json` to switch entire app configurations:
+
+```rust
+use rcman::SettingsManager;
+
+let manager = SettingsManager::builder("my-app", "1.0.0")
+    .with_profiles()  // Enable profiles for main settings
+    .build()?;
+
+// Profile management for main settings
+manager.create_profile("work")?;
+manager.switch_profile("work")?;
+manager.active_profile()?  // "work"
+
+// All settings are now isolated per profile
+manager.save_setting::<MySettings>("ui", "theme", json!("dark"))?;
+```
+
+**Directory structure:**
+
+```text
+my-app/
+├── .profiles.json
+└── profiles/
+    ├── default/
+    │   └── settings.json
+    └── work/
+        └── settings.json
+```
+
+#### Sub-Settings Profiles
+
+Enable profiles for specific sub-settings (e.g., different remote configs):
+
+```rust
+use rcman::{SettingsManager, SubSettingsConfig};
+use serde_json::json;
+
+// Enable profiles only for remotes
+let manager = SettingsManager::builder("my-app", "1.0.0")
+    .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
+    .build()?;
+
+let remotes = manager.sub_settings("remotes")?;
+
+// Add data to default profile
+remotes.set("personal-gdrive", &json!({"type": "drive"}))?;
+
+// Create and switch to work profile
+remotes.profiles()?.create("work")?;
+remotes.switch_profile("work")?;  // Seamless switch
+
+// Now operations use the work profile
+remotes.set("company-drive", &json!({"type": "sharepoint"}))?;
+
+// Profile management
+let profiles = remotes.profiles()?;
+profiles.list()?;                            // ["default", "work"]
+profiles.duplicate("work", "work-backup")?;  // Copy a profile
+profiles.rename("work-backup", "archived")?; // Rename
+profiles.delete("archived")?;                // Delete (can't delete active)
+```
+
+**Directory structure:**
+
+```text
+remotes/
+├── .profiles.json
+└── profiles/
+    ├── default/
+    │   └── gdrive.json
+    └── work/
+        └── company-drive.json
+```
+
+---
+
 ### 3. Schema Migration
 
 Automatically upgrade old data formats when loading settings:
@@ -343,6 +431,15 @@ let remotes_backup = manager.backup()
         .filename_suffix("remotes"))  // Creates: app_timestamp_remotes.rcman
     ?;
 
+// Create backup for specific profiles (requires `profiles` feature)
+#[cfg(feature = "profiles")]
+let profile_backup = manager.backup()
+    .create(BackupOptions::new()
+        .output_dir("./backups")
+        .include_profiles(vec!["work".to_string()]) // Only backup 'work' profile
+        .filename_suffix("work_only"))
+    ?;
+
 // Analyze a backup before restoring (inspect contents, check encryption)
 let analysis = manager.backup().analyze(&backup_path)?;
 println!("Encrypted: {}", analysis.requires_password);
@@ -435,28 +532,6 @@ for (key, meta) in settings {
 
 ---
 
-## Architecture
-
-```
-rcman/
-├── config/
-│   ├── types.rs      # SettingsConfig + Builder
-│   └── schema.rs     # SettingMetadata + Builder, settings! macro
-├── credentials/
-│   ├── keychain.rs   # OS keychain backend
-│   ├── encrypted.rs  # AES-256-GCM file backend
-│   └── memory.rs     # Testing backend
-├── backup/
-│   ├── operations.rs # Create backups
-│   ├── restore.rs    # Restore backups
-│   └── archive.rs    # Zip utilities
-├── manager.rs        # Main SettingsManager
-├── storage.rs        # StorageBackend trait
-└── sub_settings.rs   # Per-entity configs
-```
-
----
-
 ## Performance
 
 `rcman` is designed for efficiency:
@@ -498,22 +573,18 @@ This project follows modern Rust library best practices. See [CONTRIBUTING.md](.
 ### Quick Commands
 
 ```bash
-# Run all checks (CI equivalent)
-just fmt clippy test deny
-
-# Individual commands
-just fmt      # Format code
-just clippy   # Run linter
-just test     # Run tests
-just docs     # Build docs
-just deny     # Check dependencies
+cargo fmt -- --check      # Format code
+cargo clippy -- -D clippy::all   # Run linter
+cargo test -- --test-threads=1   # Run tests
+cargo test docs     # Build docs
+cargo deny check     # Check dependencies
 ```
 
 ### Quality Standards
 
 - **MSRV**: Rust 1.70+
 - **Code Quality**: `clippy -D warnings` enforced in CI
-- **Test Coverage**: 143 tests (120 passing + 13 performance + 10 environment)
+- **Test Coverage**: Comprehensive test suite with unit, integration, and edge case tests
 - **Documentation**: Comprehensive doctests and API docs
 - **Dependencies**: Audited via `cargo-deny` (licenses, advisories, duplicates)
 

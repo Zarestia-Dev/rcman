@@ -87,6 +87,10 @@ pub struct BackupOptions {
 
     /// Progress callback (processed bytes, total bytes)
     pub on_progress: Option<ProgressCallback>,
+
+    /// Profiles to include (if empty, defaults to active or all depending on logic)
+    #[cfg(feature = "profiles")]
+    pub include_profiles: Vec<String>,
 }
 
 /// Callback function for progress reporting (current_bytes, total_bytes)
@@ -119,6 +123,8 @@ impl Default for BackupOptions {
             include_external_configs: Vec::new(),
             filename_suffix: None,
             on_progress: None,
+            #[cfg(feature = "profiles")]
+            include_profiles: Vec::new(),
         }
     }
 }
@@ -226,6 +232,14 @@ impl BackupOptions {
         self.on_progress = Some(ProgressCallback(std::sync::Arc::new(callback)));
         self
     }
+
+    /// Include specific profile (if profiles enabled)
+    #[cfg(feature = "profiles")]
+    #[must_use]
+    pub fn include_profile(mut self, profile: impl Into<String>) -> Self {
+        self.include_profiles.push(profile.into());
+        self
+    }
 }
 
 /// Options for restoring a backup
@@ -255,6 +269,14 @@ pub struct RestoreOptions {
 
     /// Whether to verify the data archive checksum
     pub verify_checksum: bool,
+
+    /// Restore specific profile from backup (if profiles enabled)
+    #[cfg(feature = "profiles")]
+    pub restore_profile: Option<String>,
+
+    /// Rename restored profile to this name (requires restore_profile)
+    #[cfg(feature = "profiles")]
+    pub restore_profile_as: Option<String>,
 }
 
 impl Default for RestoreOptions {
@@ -268,6 +290,10 @@ impl Default for RestoreOptions {
             overwrite_existing: false,
             dry_run: false,
             verify_checksum: true,
+            #[cfg(feature = "profiles")]
+            restore_profile: None,
+            #[cfg(feature = "profiles")]
+            restore_profile_as: None,
         }
     }
 }
@@ -350,6 +376,22 @@ impl RestoreOptions {
     ) -> Self {
         let items: Vec<String> = items.iter().map(|s| s.as_ref().to_string()).collect();
         self.restore_sub_settings.insert(category.into(), items);
+        self
+    }
+
+    /// Set profile to restore (if profiles enabled)
+    #[cfg(feature = "profiles")]
+    #[must_use]
+    pub fn restore_profile(mut self, profile: impl Into<String>) -> Self {
+        self.restore_profile = Some(profile.into());
+        self
+    }
+
+    /// Set target name for restored profile (requires restore_profile)
+    #[cfg(feature = "profiles")]
+    #[must_use]
+    pub fn restore_profile_as(mut self, name: impl Into<String>) -> Self {
+        self.restore_profile_as = Some(name.into());
         self
     }
 }
@@ -726,13 +768,21 @@ pub struct BackupIntegrity {
 /// This supports the "Enterprise" polymorphic schema:
 /// - Single-file settings (e.g. "backend") -> stores filename string "backend.json"
 /// - Multi-file settings (e.g. "remotes") -> stores list of items ["gdrive", "s3"]
+/// - Profiled settings -> stores profile names and mode
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum SubSettingsManifestEntry {
-    /// Single file (stored as filename string)
+    /// Single file (stored as filename)
     SingleFile(String),
     /// Multiple files (stored as list of item names)
     MultiFile(Vec<String>),
+    /// Profiled (stores profile names and indicates the mode)
+    #[cfg(feature = "profiles")]
+    Profiled {
+        profiles: Vec<String>,
+        #[serde(default)]
+        single_file: bool,
+    },
 }
 
 /// What's included in the backup
@@ -768,6 +818,8 @@ impl BackupContents {
                 let items = match v {
                     SubSettingsManifestEntry::SingleFile(_) => Vec::new(), // Empty = all items
                     SubSettingsManifestEntry::MultiFile(items) => items.clone(),
+                    #[cfg(feature = "profiles")]
+                    SubSettingsManifestEntry::Profiled { .. } => Vec::new(), // Restore handles profiles
                 };
                 (k.clone(), items)
             })

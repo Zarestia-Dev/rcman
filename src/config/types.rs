@@ -44,6 +44,14 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage> {
     /// If the function modifies the value, the migrated version is saved back.
     pub migrator:
         Option<std::sync::Arc<dyn Fn(serde_json::Value) -> serde_json::Value + Send + Sync>>,
+
+    /// Enable profiles for main settings (stores settings per-profile)
+    #[cfg(feature = "profiles")]
+    pub profiles_enabled: bool,
+
+    /// Profile migration strategy (defaults to Auto)
+    #[cfg(feature = "profiles")]
+    pub profile_migrator: crate::profiles::ProfileMigrator,
 }
 
 impl Default for SettingsConfig<JsonStorage> {
@@ -60,6 +68,10 @@ impl Default for SettingsConfig<JsonStorage> {
             #[cfg(feature = "backup")]
             external_configs: Vec::new(),
             migrator: None,
+            #[cfg(feature = "profiles")]
+            profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::default(),
         }
     }
 }
@@ -104,6 +116,10 @@ pub struct SettingsConfigBuilder {
     #[cfg(feature = "backup")]
     external_configs: Vec<ExternalConfig>,
     migrator: Option<std::sync::Arc<dyn Fn(serde_json::Value) -> serde_json::Value + Send + Sync>>,
+    #[cfg(feature = "profiles")]
+    profiles_enabled: bool,
+    #[cfg(feature = "profiles")]
+    profile_migrator: Option<crate::profiles::ProfileMigrator>,
 }
 
 impl std::fmt::Debug for SettingsConfigBuilder {
@@ -121,6 +137,11 @@ impl std::fmt::Debug for SettingsConfigBuilder {
 
         #[cfg(feature = "backup")]
         debug.field("external_configs", &self.external_configs);
+
+        #[cfg(feature = "profiles")]
+        debug.field("profiles_enabled", &self.profiles_enabled);
+        #[cfg(feature = "profiles")]
+        debug.field("profile_migrator", &self.profile_migrator);
 
         debug.field("migrator", &self.migrator.as_ref().map(|_| "Some(Fn)"));
         debug.finish()
@@ -142,6 +163,10 @@ impl SettingsConfigBuilder {
             #[cfg(feature = "backup")]
             external_configs: Vec::new(),
             migrator: None,
+            #[cfg(feature = "profiles")]
+            profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: None,
         }
     }
 
@@ -279,6 +304,29 @@ impl SettingsConfigBuilder {
         self
     }
 
+    /// Enable profiles for main settings
+    ///
+    /// When enabled, the main settings.json is stored per-profile, allowing
+    /// completely different configurations (e.g., "work" vs "personal").
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use rcman::SettingsManager;
+    ///
+    /// let manager = SettingsManager::builder("my-app", "1.0.0")
+    ///     .with_profiles()  // Enable profiles for main settings
+    ///     .build()?;
+    ///
+    /// // Now you can switch profiles
+    /// manager.switch_profile("work")?;
+    /// ```
+    #[cfg(feature = "profiles")]
+    pub fn with_profiles(mut self) -> Self {
+        self.profiles_enabled = true;
+        self
+    }
+
     /// Build the SettingsConfig
     ///
     /// If `config_dir` is not set, uses the system config directory for the app.
@@ -308,6 +356,12 @@ impl SettingsConfigBuilder {
             #[cfg(feature = "backup")]
             external_configs: self.external_configs,
             migrator: self.migrator,
+            #[cfg(feature = "profiles")]
+            profiles_enabled: self.profiles_enabled,
+            #[cfg(feature = "profiles")]
+            profile_migrator: self
+                .profile_migrator
+                .unwrap_or(crate::profiles::ProfileMigrator::Auto),
         }
     }
 }

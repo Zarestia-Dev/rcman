@@ -13,9 +13,13 @@ use crate::config::{SettingMetadata, SettingsSchema};
 use crate::credentials::CredentialManager;
 use crate::error::{Error, Result};
 use crate::events::EventManager;
+use std::sync::atomic::{AtomicU64, Ordering};
 use crate::storage::StorageBackend;
 use crate::sub_settings::{SubSettings, SubSettingsConfig};
+use crate::sync::{MutexExt, RwLockExt};
 use log::{debug, info};
+#[cfg(feature = "profiles")]
+use log::warn;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -94,6 +98,9 @@ pub struct SettingsManager<S: StorageBackend + 'static = crate::storage::JsonSto
     /// Storage backend
     storage: S,
 
+    /// Directory where settings file is located (may change if profiles enabled)
+    settings_dir: RwLock<std::path::PathBuf>,
+
     /// Registered sub-settings handlers
     sub_settings: RwLock<HashMap<String, Arc<SubSettings<S>>>>,
 
@@ -102,9 +109,15 @@ pub struct SettingsManager<S: StorageBackend + 'static = crate::storage::JsonSto
 
     /// In-memory cache of settings (populated on first load)
     settings_cache: RwLock<Option<Value>>,
+    
+    /// Generation counter for settings_cache (incremented on invalidation)
+    settings_cache_gen: AtomicU64,
 
     /// Cache of merged settings (defaults + stored, ready for deserialization)
     merged_settings_cache: RwLock<Option<Value>>,
+    
+    /// Generation counter for merged_settings_cache (incremented on invalidation)
+    merged_settings_cache_gen: AtomicU64,
 
     /// Cache of default values (key -> default) for quick lookup
     defaults_cache: RwLock<HashMap<String, Value>>,
@@ -119,6 +132,10 @@ pub struct SettingsManager<S: StorageBackend + 'static = crate::storage::JsonSto
     /// External config providers for backups
     #[cfg(feature = "backup")]
     pub(crate) external_providers: Arc<RwLock<Vec<Box<dyn ExternalConfigProvider>>>>,
+
+    /// Profile manager for main settings (when profiles are enabled)
+    #[cfg(feature = "profiles")]
+    profile_manager: Option<crate::profiles::ProfileManager>,
 }
 
 // =============================================================================
@@ -178,12 +195,13 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// # Ok::<(), rcman::Error>(())
     /// ```
     pub fn new(config: SettingsConfig<S>) -> Result<Self> {
-        // Ensure config directory exists
+        // Ensure config directory exists with secure permissions
         if !config.config_dir.exists() {
             std::fs::create_dir_all(&config.config_dir).map_err(|e| Error::DirectoryCreate {
                 path: config.config_dir.display().to_string(),
                 source: e,
             })?;
+            crate::security::set_secure_dir_permissions(&config.config_dir)?;
         }
 
         let storage = config.storage.clone();
@@ -197,6 +215,28 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
             None
         };
 
+        // Initialize profile manager if profiles are enabled
+        #[cfg(feature = "profiles")]
+        let (settings_dir, profile_manager) = if config.profiles_enabled {
+            // Run migration if needed
+            crate::profiles::migrate(
+                &config.config_dir,
+                "settings",
+                false, // Main settings is always multi-file logic (creates settings.json inside)
+                &config.profile_migrator,
+            )?;
+            
+            let pm = crate::profiles::ProfileManager::new(&config.config_dir, "settings");
+            let active_path = pm.profile_path(crate::profiles::DEFAULT_PROFILE);
+            info!("🎭 Main settings profiles enabled");
+            (active_path, Some(pm))
+        } else {
+            (config.config_dir.clone(), None)
+        };
+
+        #[cfg(not(feature = "profiles"))]
+        let settings_dir = config.config_dir.clone();
+
         info!(
             "📦 Initialized rcman SettingsManager at: {:?}",
             config.config_dir
@@ -205,22 +245,189 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         Ok(Self {
             config,
             storage,
+            settings_dir: RwLock::new(settings_dir),
             sub_settings: RwLock::new(HashMap::new()),
             events: Arc::new(EventManager::new()),
             settings_cache: RwLock::new(None),
+            settings_cache_gen: AtomicU64::new(0),
             merged_settings_cache: RwLock::new(None),
+            merged_settings_cache_gen: AtomicU64::new(0),
             defaults_cache: RwLock::new(HashMap::new()),
             save_mutex: std::sync::Mutex::new(()),
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             credentials,
             #[cfg(feature = "backup")]
             external_providers: Arc::new(RwLock::new(Vec::new())),
+            #[cfg(feature = "profiles")]
+            profile_manager,
         })
     }
 
     /// Get the configuration
     pub fn config(&self) -> &SettingsConfig<S> {
         &self.config
+    }
+
+    /// Get the current settings file path
+    /// 
+    /// This returns the path where settings.json is stored.
+    /// If profiles are enabled, this points to the active profile's directory.
+    fn settings_path(&self) -> std::path::PathBuf {
+        let dir = self.settings_dir.read_recovered()
+            .expect("Failed to acquire settings_dir lock");
+        dir.join(&self.config.settings_file)
+    }
+
+    /// Get the profile manager for main settings
+    ///
+    /// Returns None if profiles are not enabled for main settings.
+    #[cfg(feature = "profiles")]
+    pub fn profiles(&self) -> Option<&crate::profiles::ProfileManager> {
+        self.profile_manager.as_ref()
+    }
+
+    /// Get the credential manager, potentially with profile context
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn get_credential_with_profile(&self, key: &str) -> Result<Option<String>> {
+        let creds = self.credentials.as_ref().ok_or(Error::Credential(
+            "Credentials not enabled".to_string(),
+        ))?;
+
+        #[cfg(feature = "profiles")]
+        let profile = self
+            .profile_manager
+            .as_ref()
+            .and_then(|pm| pm.active().ok());
+
+        #[cfg(not(feature = "profiles"))]
+        let profile: Option<String> = None;
+
+        creds.get_with_profile(key, profile.as_deref())
+    }
+
+    /// Store credential with profile context
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn store_credential_with_profile(&self, key: &str, value: &str) -> Result<()> {
+        let creds = self.credentials.as_ref().ok_or(Error::Credential(
+            "Credentials not enabled".to_string(),
+        ))?;
+
+        #[cfg(feature = "profiles")]
+        let profile = self
+            .profile_manager
+            .as_ref()
+            .and_then(|pm| pm.active().ok());
+
+        #[cfg(not(feature = "profiles"))]
+        let profile: Option<String> = None;
+
+        creds.store_with_profile(key, value, profile.as_deref())
+    }
+
+
+    /// Check if profiles are enabled for main settings
+    #[cfg(feature = "profiles")]
+    pub fn is_profiles_enabled(&self) -> bool {
+        self.profile_manager.is_some()
+    }
+
+    /// Switch to a different profile
+    ///
+    /// This switches the active profile for main settings and updates internal paths.
+    /// All subsequent operations will use the new profile's settings.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let manager = SettingsManager::builder("my-app", "1.0.0")
+    ///     .with_profiles()
+    ///     .build()?;
+    ///
+    /// manager.switch_profile("work")?;
+    /// // Now all settings operations use the work profile
+    /// ```
+    #[cfg(feature = "profiles")]
+    pub fn switch_profile(&self, name: &str) -> Result<()> {
+        let pm = self.profile_manager
+            .as_ref()
+            .ok_or_else(|| Error::ProfilesNotEnabled("settings".to_string()))?;
+        
+        // Step 1: Switch the profile in ProfileManager (this handles manifest updates)
+        // This must be done first to ensure the profile exists and is valid
+        pm.switch(name)?;
+        
+        // Step 2: Get the new path (without holding any locks)
+        let new_path = pm.profile_path(name);
+        
+        // Step 3: Update settings_dir atomically
+        {
+            let mut settings_dir = self.settings_dir.write_recovered()?;
+            *settings_dir = new_path;
+        } // Lock released immediately
+        
+        // Step 4: Invalidate cache (after lock is released)
+        self.invalidate_cache();
+
+        // Step 5: Propagate to sub-settings
+        // Clone the Arc references to avoid holding the lock during profile switches
+        let sub_settings_list: Vec<_> = {
+            let sub_settings = self.sub_settings.read_recovered()?;
+            sub_settings.iter().map(|(key, sub)| (key.clone(), Arc::clone(sub))).collect()
+        }; // Lock released immediately
+        
+        // Now switch each sub-settings without holding the main lock
+        for (key, sub) in sub_settings_list {
+            if let Ok(pm) = sub.profiles() {
+                match pm.switch(name) {
+                    Ok(_) => {
+                        debug!("🎭 Switched sub-settings '{}' to profile '{}'", key, name);
+                        sub.invalidate_cache();
+                    },
+                    Err(e) => warn!("⚠️ Failed to switch sub-settings '{}' to profile '{}': {}", key, name, e),
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Create a new profile for main settings
+    #[cfg(feature = "profiles")]
+    pub fn create_profile(&self, name: &str) -> Result<()> {
+        let pm = self.profile_manager
+            .as_ref()
+            .ok_or_else(|| Error::ProfilesNotEnabled("settings".to_string()))?;
+        pm.create(name)?;
+
+        // Propagate to sub-settings
+        let sub_settings = self.sub_settings.read_recovered()?;
+        for (key, sub) in sub_settings.iter() {
+            if let Ok(pm) = sub.profiles() {
+                match pm.create(name) {
+                    Ok(_) => debug!("🎭 Created profile '{}' in sub-settings '{}'", name, key),
+                    Err(e) => warn!("⚠️ Failed to create profile '{}' in sub-settings '{}': {}", name, key, e),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// List all available profiles
+    #[cfg(feature = "profiles")]
+    pub fn list_profiles(&self) -> Result<Vec<String>> {
+        let pm = self.profile_manager
+            .as_ref()
+            .ok_or_else(|| Error::ProfilesNotEnabled("settings".to_string()))?;
+        pm.list()
+    }
+
+    /// Get the active profile name
+    #[cfg(feature = "profiles")]
+    pub fn active_profile(&self) -> Result<String> {
+        let pm = self.profile_manager
+            .as_ref()
+            .ok_or_else(|| Error::ProfilesNotEnabled("settings".to_string()))?;
+        pm.active()
     }
 
     /// Get the environment variable name for a setting key
@@ -301,10 +508,17 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     ///
     /// Call this if the settings file was modified externally.
     pub fn invalidate_cache(&self) {
-        let mut cache = self.settings_cache.write().unwrap();
-        *cache = None;
-        let mut merged = self.merged_settings_cache.write().unwrap();
-        *merged = None;
+        // Increment generation counters atomically BEFORE clearing cache
+        // This ensures any thread that read the old generation will detect staleness
+        self.settings_cache_gen.fetch_add(1, Ordering::SeqCst);
+        self.merged_settings_cache_gen.fetch_add(1, Ordering::SeqCst);
+        
+        if let Ok(mut cache) = self.settings_cache.write_recovered() {
+            *cache = None;
+        }
+        if let Ok(mut merged) = self.merged_settings_cache.write_recovered() {
+            *merged = None;
+        }
         debug!("🗑️ Settings cache invalidated");
     }
 
@@ -356,12 +570,18 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         let category = parts[0];
         let setting_name = parts[1];
 
-        // Try merged cache first (fastest path)
+        // Try merged cache first (fastest path) - with generation check
         {
-            let cache = self.merged_settings_cache.read().unwrap();
-            if let Some(merged) = cache.as_ref() {
-                if let Some(value) = merged.get(category).and_then(|cat| cat.get(setting_name)) {
-                    return Ok(value.clone());
+            let gen_before = self.merged_settings_cache_gen.load(Ordering::SeqCst);
+            let cache = self.merged_settings_cache.read_recovered()?;
+            let gen_after = self.merged_settings_cache_gen.load(Ordering::SeqCst);
+            
+            // Ensure cache wasn't invalidated during read
+            if gen_before == gen_after {
+                if let Some(merged) = cache.as_ref() {
+                    if let Some(value) = merged.get(category).and_then(|cat| cat.get(setting_name)) {
+                        return Ok(value.clone());
+                    }
                 }
             }
         }
@@ -374,7 +594,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
         // Fall back to defaults cache
         {
-            let defaults = self.defaults_cache.read().unwrap();
+            let defaults = self.defaults_cache.read_recovered()?;
             if let Some(value) = defaults.get(key) {
                 return Ok(value.clone());
             }
@@ -398,12 +618,18 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// println!("Theme: {}", settings.ui.theme);
     /// ```
     pub fn settings<T: SettingsSchema>(&self) -> Result<T> {
-        // Fast path: check merged cache
+        // Fast path: check merged cache with generation validation
         {
-            let cache = self.merged_settings_cache.read().unwrap();
-            if let Some(merged) = cache.as_ref() {
-                return serde_json::from_value(merged.clone())
-                    .map_err(|e| Error::Parse(e.to_string()));
+            let gen_before = self.merged_settings_cache_gen.load(Ordering::SeqCst);
+            let cache = self.merged_settings_cache.read_recovered()?;
+            let gen_after = self.merged_settings_cache_gen.load(Ordering::SeqCst);
+            
+            // Ensure cache wasn't invalidated during read
+            if gen_before == gen_after {
+                if let Some(merged) = cache.as_ref() {
+                    return serde_json::from_value(merged.clone())
+                        .map_err(|e| Error::Parse(e.to_string()));
+                }
             }
         }
 
@@ -412,7 +638,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
         // Update merged cache
         {
-            let mut cache = self.merged_settings_cache.write().unwrap();
+            let mut cache = self.merged_settings_cache.write_recovered()?;
             *cache = Some(merged.clone());
         }
 
@@ -444,18 +670,24 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     }
 
     /// Internal helper to get settings from cache or load from disk safely.
-    /// Implements double-checked locking for thread safety.
+    /// Implements double-checked locking for thread safety with generation counter.
     fn get_stored_settings(&self) -> Result<Value> {
-        // 1. Fast path: Try with read lock
+        // 1. Fast path: Try with read lock and generation check
         {
-            let cache = self.settings_cache.read().unwrap();
-            if let Some(cached) = cache.as_ref() {
-                return Ok(cached.clone());
+            let gen_before = self.settings_cache_gen.load(Ordering::SeqCst);
+            let cache = self.settings_cache.read_recovered()?;
+            let gen_after = self.settings_cache_gen.load(Ordering::SeqCst);
+            
+            // Ensure cache wasn't invalidated during read
+            if gen_before == gen_after {
+                if let Some(cached) = cache.as_ref() {
+                    return Ok(cached.clone());
+                }
             }
         } // Drop read lock
 
         // 2. Slow path: Acquire write lock
-        let mut cache = self.settings_cache.write().unwrap();
+        let mut cache = self.settings_cache.write_recovered()?;
 
         // 3. Double-check: Did another thread populate it while we waited?
         if let Some(cached) = cache.as_ref() {
@@ -463,7 +695,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         }
 
         // 4. Actually load from disk
-        let path = self.config.settings_path();
+        let path = self.settings_path();
         let stored = match self.storage.read(&path) {
             Ok(v) => v,
             Err(Error::FileRead { source, .. })
@@ -483,7 +715,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
             if migrated != original {
                 debug!("🔄 Migrated main settings structure");
                 // Acquire write lock for storage to prevent race conditions
-                let _save_guard = self.save_mutex.lock().unwrap();
+                let _save_guard = self.save_mutex.lock_recovered()?;
                 self.storage.write(&path, &migrated)?;
                 info!("💾 Saved migrated main settings to disk");
             }
@@ -533,11 +765,9 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
                         }
                     }
 
-                    if let Some(ref creds) = self.credentials {
-                        if let Ok(Some(secret_value)) = creds.get(key) {
-                            option.value = Some(Value::String(secret_value));
-                            continue;
-                        }
+                    if let Ok(Some(secret_value)) = self.get_credential_with_profile(key) {
+                        option.value = Some(Value::String(secret_value));
+                        continue;
                     }
                     // Secret not found in keychain, use default
                     option.value = Some(option.default.clone());
@@ -566,7 +796,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
         // Store defaults in cache only if not already populated (lazy init)
         {
-            let mut defaults = self.defaults_cache.write().unwrap();
+            let mut defaults = self.defaults_cache.write_recovered()?;
             if defaults.is_empty() {
                 *defaults = defaults_to_cache;
                 debug!(
@@ -606,9 +836,9 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         value: Value,
     ) -> Result<()> {
         // Acquire save mutex to prevent race conditions
-        let _save_guard = self.save_mutex.lock().unwrap();
+        let _save_guard = self.save_mutex.lock_recovered()?;
 
-        let path = self.config.settings_path();
+        let path = self.settings_path();
         let full_key = format!("{}.{}", category, key);
 
         // Validate the value before saving
@@ -628,43 +858,57 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         // Handle secret settings separately
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         if metadata.get(&full_key).map(|m| m.secret).unwrap_or(false) {
-            if let Some(ref creds) = self.credentials {
-                // Get default value from metadata
-                let default_value = metadata
-                    .get(&full_key)
-                    .map(|m| m.default.clone())
-                    .unwrap_or(Value::Null);
+            // Get default value from metadata
+            let default_value = metadata
+                .get(&full_key)
+                .map(|m| m.default.clone())
+                .unwrap_or(Value::Null);
 
-                // If value equals default, remove from keychain (keep storage minimal)
-                if value == default_value {
+            // If value equals default, remove from keychain (keep storage minimal)
+            if value == default_value {
+                if let Some(ref creds) = self.credentials {
                     creds.remove(&full_key)?;
-                    info!(
-                        "🔄 Secret {} set to default, removed from keychain",
-                        full_key
-                    );
-                    return Ok(());
                 }
-
-                let value_str = match &value {
-                    Value::String(s) => s.clone(),
-                    _ => value.to_string(),
-                };
-                creds.store(&full_key, &value_str)?;
-                info!("🔐 Secret setting {} stored in keychain", full_key);
+                info!(
+                    "🔄 Secret {} set to default, removed from keychain",
+                    full_key
+                );
                 return Ok(());
             }
-            debug!(
-                "⚠️ Setting {} is secret but credentials not enabled, storing in file",
-                full_key
-            );
+
+            let value_str = match &value {
+                Value::String(s) => s.clone(),
+                _ => value.to_string(),
+            };
+            self.store_credential_with_profile(&full_key, &value_str)?;
+            info!("🔐 Secret setting {} stored in keychain", full_key);
+            return Ok(());
         }
 
-        // Load current settings from cache or disk
+        // Load current settings from cache or disk with generation check
         let mut stored: Value = {
-            let cache = self.settings_cache.read().unwrap();
-            if let Some(cached) = cache.as_ref() {
-                cached.clone()
+            let gen_before = self.settings_cache_gen.load(Ordering::SeqCst);
+            let cache = self.settings_cache.read_recovered()?;
+            let gen_after = self.settings_cache_gen.load(Ordering::SeqCst);
+            
+            // Ensure cache wasn't invalidated during read
+            if gen_before == gen_after {
+                if let Some(cached) = cache.as_ref() {
+                    cached.clone()
+                } else {
+                    drop(cache);
+                    match self.storage.read(&path) {
+                        Ok(v) => v,
+                        Err(Error::FileRead { source, .. })
+                            if source.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            json!({})
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
             } else {
+                // Cache was invalidated, reload from disk
                 drop(cache);
                 match self.storage.read(&path) {
                     Ok(v) => v,
@@ -754,13 +998,13 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
         // Update raw settings cache
         {
-            let mut cache = self.settings_cache.write().unwrap();
+            let mut cache = self.settings_cache.write_recovered()?;
             *cache = Some(stored);
         }
 
         // Update merged cache in-place (if populated) instead of invalidating
         {
-            let mut merged = self.merged_settings_cache.write().unwrap();
+            let mut merged = self.merged_settings_cache.write_recovered()?;
             if let Some(ref mut merged_value) = *merged {
                 // Update the specific value in the merged cache
                 if let Some(cat_obj) = merged_value.get_mut(category) {
@@ -799,7 +1043,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
     /// Reset all settings to defaults
     pub fn reset_all(&self) -> Result<()> {
-        let path = self.config.settings_path();
+        let path = self.settings_path();
 
         // Write empty object
         self.storage.write(&path, &json!({}))?;
@@ -840,7 +1084,8 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
             self.storage.clone(),
         ));
 
-        let mut guard = self.sub_settings.write().unwrap();
+        let mut guard = self.sub_settings.write_recovered()
+            .expect("Failed to acquire sub_settings lock");
         guard.insert(name.clone(), handler);
 
         info!("📁 Registered sub-settings type: {}", name);
@@ -859,7 +1104,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// let config = remotes.get_value("gdrive")?;
     /// ```
     pub fn sub_settings(&self, name: &str) -> Result<Arc<SubSettings<S>>> {
-        let guard = self.sub_settings.read().unwrap();
+        let guard = self.sub_settings.read_recovered()?;
         guard
             .get(name)
             .cloned()
@@ -868,14 +1113,18 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
     /// Check if a sub-settings type is registered
     pub fn has_sub_settings(&self, name: &str) -> bool {
-        let guard = self.sub_settings.read().unwrap();
-        guard.contains_key(name)
+        self.sub_settings
+            .read_recovered()
+            .map(|guard| guard.contains_key(name))
+            .unwrap_or(false)
     }
 
     /// Get all registered sub-settings types
     pub fn sub_settings_types(&self) -> Vec<String> {
-        let guard = self.sub_settings.read().unwrap();
-        guard.keys().cloned().collect()
+        self.sub_settings
+            .read_recovered()
+            .map(|guard| guard.keys().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// List all entries in a sub-settings type (convenience method)
@@ -901,8 +1150,9 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// This allows dynamic registration of external files to be included in backups.
     #[cfg(feature = "backup")]
     pub fn register_external_provider(&self, provider: Box<dyn ExternalConfigProvider>) {
-        let mut providers = self.external_providers.write().unwrap();
-        providers.push(provider);
+        if let Ok(mut providers) = self.external_providers.write_recovered() {
+            providers.push(provider);
+        }
     }
 
     // =========================================================================
@@ -1051,7 +1301,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1082,7 +1334,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1107,7 +1361,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1137,7 +1393,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1168,7 +1426,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1200,7 +1460,9 @@ mod tests {
             env_prefix: Some("RCMAN_TEST".to_string()),
             env_overrides_secrets: false,
             external_configs: Vec::new(),
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1250,7 +1512,9 @@ mod tests {
             env_prefix: Some("RCMAN_TEST2".to_string()),
             env_overrides_secrets: false,
             external_configs: Vec::new(),
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1281,7 +1545,9 @@ mod tests {
             env_prefix: Some("RCMAN_TEST3".to_string()),
             env_overrides_secrets: false,
             external_configs: Vec::new(),
-            migrator: None,
+            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            #[cfg(feature = "profiles")]
+            profile_migrator: crate::profiles::ProfileMigrator::None,
         };
 
         let manager = SettingsManager::new(config).unwrap();

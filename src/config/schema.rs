@@ -1,6 +1,7 @@
 //! Settings schema trait and metadata types
 
 use crate::credentials::SecretStorage;
+use crate::sync::RwLockExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -14,7 +15,8 @@ fn get_cached_regex(pattern: &str) -> Result<regex::Regex, String> {
 
     // Try to get from cache (read lock)
     {
-        let read_guard = cache.read().unwrap();
+        let read_guard = cache.read_recovered()
+            .map_err(|e| format!("Lock poisoned: {}", e))?;
         if let Some(re) = read_guard.get(pattern) {
             return Ok(re.clone());
         }
@@ -23,7 +25,8 @@ fn get_cached_regex(pattern: &str) -> Result<regex::Regex, String> {
     // Cache miss - compile and store (write lock)
     let re = regex::Regex::new(pattern).map_err(|e| format!("Invalid regex pattern: {}", e))?;
 
-    let mut write_guard = cache.write().unwrap();
+    let mut write_guard = cache.write_recovered()
+        .map_err(|e| format!("Lock poisoned: {}", e))?;
     // Simple safety valve without new dependencies
     if write_guard.len() > 1000 {
         write_guard.clear();

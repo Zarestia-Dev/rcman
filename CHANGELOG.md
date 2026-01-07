@@ -4,6 +4,65 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Lock Poisoning Recovery System**
+  - sync.rs module with `RwLockExt` and `MutexExt` traits
+  - Graceful handling of poisoned locks with `read_recovered()`, `write_recovered()`, `lock_recovered()`
+  - Comprehensive tests for poison recovery scenarios
+
+- **Atomic Cache Generation Counters** 
+  - `AtomicU64` generation counters in `SettingsManager` for race-free cache invalidation
+  - Lock-free concurrent cache invalidation detection
+
+- **Secure File Permissions (Unix)**
+  - security.rs module with permission enforcement
+  - `set_secure_file_permissions()` - 0o600 (owner read/write only)
+  - `set_secure_dir_permissions()` - 0o700 (owner rwx only)
+  - Applied in storage.rs, sub_settings.rs, and profile managers
+
+- **Profile Support** (new `profiles` feature)
+  - profiles module with `ProfileManager`, `ProfileMigrator`
+  - Profile CRUD operations (create, switch, delete, rename, duplicate)
+  - Auto-migration from flat structure to `profiles/default/`
+  - Profile-scoped sub-settings and main settings
+  - Profile event system with callbacks
+  - profiles_usage.rs demonstrating profile workflows
+
+- **Tests**
+  - profile_backup_restore.rs - Profile backup/restore integration tests
+  - profiles_test.rs - Comprehensive profile CRUD and switching tests
+  - sync.rs unit tests for poison recovery
+
+### Changed
+
+- **Deadlock Prevention in Profile Switching**
+  - Refactored `SettingsManager::switch_profile()` to release locks before next acquisition
+  - No nested lock holdings across manager, settings_dir, and sub_settings
+
+- **Performance Optimization in SubSettings**
+  - Optimized `single_file_path()` and `entry_path()` with inline path construction
+  - Eliminated intermediate `get_base_dir()` allocations
+  - Direct lock access + path join in single operation
+
+- **Enhanced Error Handling**
+  - `SubSettings::new()` fails fast on migration errors with clear messages
+  - Profile migrator properly propagates serialization errors (removed `unwrap()`)
+  - Added `MigrationFn` type alias for cleaner signatures
+
+- **All Lock Operations Use Poison Recovery**
+  - 62 lock acquisitions converted from `.unwrap()` to `.read_recovered()`/`.write_recovered()`
+  - Consistent error handling across all modules
+
+### Fixed
+
+- **File permissions security** - All configuration files/directories created with secure permissions
+- **Clippy warnings** - Fixed `type_complexity`, `derivable_impls`, unused variables
+- **Edge case test** - Updated readonly directory test to properly verify permission enforcement
+
+
 ## [v0.1.1] - 2026-01-2
 
 ### Added

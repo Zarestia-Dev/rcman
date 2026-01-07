@@ -127,6 +127,30 @@ impl SettingsManagerBuilder {
         self
     }
 
+    /// Enable profiles for main settings.
+    ///
+    /// When enabled, the main settings.json is stored per-profile, allowing
+    /// completely different app configurations (e.g., "work" vs "personal").
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use rcman::SettingsManager;
+    ///
+    /// let manager = SettingsManager::builder("my-app", "1.0.0")
+    ///     .with_profiles()  // Enable profiles
+    ///     .build()?;
+    ///
+    /// // Switch the entire app to work profile
+    /// manager.switch_profile("work")?;
+    /// # Ok::<(), rcman::Error>(())
+    /// ```
+    #[cfg(feature = "profiles")]
+    pub fn with_profiles(mut self) -> Self {
+        self.config_builder = self.config_builder.with_profiles();
+        self
+    }
+
     /// Register a sub-settings type for per-entity configuration.
     ///
     /// Sub-settings allow you to manage separate config files for each entity
