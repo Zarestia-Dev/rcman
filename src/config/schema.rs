@@ -1,40 +1,9 @@
 //! Settings schema trait and metadata types
 
 use crate::credentials::SecretStorage;
-use crate::sync::RwLockExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::OnceLock;
-
-// Global regex cache (thread-safe, lazy initialization)
-static REGEX_CACHE: OnceLock<std::sync::RwLock<HashMap<String, regex::Regex>>> = OnceLock::new();
-
-fn get_cached_regex(pattern: &str) -> Result<regex::Regex, String> {
-    let cache = REGEX_CACHE.get_or_init(|| std::sync::RwLock::new(HashMap::new()));
-
-    // Try to get from cache (read lock)
-    {
-        let read_guard = cache.read_recovered()
-            .map_err(|e| format!("Lock poisoned: {}", e))?;
-        if let Some(re) = read_guard.get(pattern) {
-            return Ok(re.clone());
-        }
-    }
-
-    // Cache miss - compile and store (write lock)
-    let re = regex::Regex::new(pattern).map_err(|e| format!("Invalid regex pattern: {}", e))?;
-
-    let mut write_guard = cache.write_recovered()
-        .map_err(|e| format!("Lock poisoned: {}", e))?;
-    // Simple safety valve without new dependencies
-    if write_guard.len() > 1000 {
-        write_guard.clear();
-    }
-    write_guard.insert(pattern.to_string(), re.clone());
-
-    Ok(re)
-}
 
 /// Type of setting for UI rendering
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -425,7 +394,8 @@ impl SettingMetadata {
             SettingType::Text | SettingType::Password | SettingType::Textarea => {
                 if let Some(ref pattern) = self.pattern {
                     let text = value.as_str().unwrap_or_default();
-                    let re = get_cached_regex(pattern)?;
+                    let re = regex::Regex::new(pattern)
+                        .map_err(|e| format!("Invalid regex pattern: {}", e))?;
 
                     if !re.is_match(text) {
                         return Err(self.pattern_error.clone().unwrap_or_else(|| {

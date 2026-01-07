@@ -2,13 +2,12 @@
 
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
-use crate::sync::{MutexExt, RwLockExt};
 use log::{debug, info, warn};
+use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::RwLock;
 
 /// Mode of storage for sub-settings
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -212,7 +211,7 @@ pub struct SubSettings<S: StorageBackend> {
     storage: S,
 
     /// Mutex to serialize save operations (prevents race conditions)
-    save_mutex: std::sync::Mutex<()>,
+    save_mutex: parking_lot::Mutex<()>,
 
     /// In-memory cache
     /// - None: not loaded (lazy load)
@@ -293,7 +292,7 @@ impl<S: StorageBackend> SubSettings<S> {
             #[cfg(feature = "profiles")]
             root_dir,
             storage,
-            save_mutex: std::sync::Mutex::new(()),
+            save_mutex: parking_lot::Mutex::new(()),
             cache: RwLock::new(None),
             on_change: RwLock::new(None),
             #[cfg(feature = "profiles")]
@@ -309,6 +308,11 @@ impl<S: StorageBackend> SubSettings<S> {
 
     /// Get the current base directory
     fn get_base_dir(&self) -> PathBuf {
+        self.active_profile_dir()
+    }
+
+    /// Get the active profile's directory path, or base_dir if profiles disabled
+    fn active_profile_dir(&self) -> PathBuf {
         #[cfg(feature = "profiles")]
         if let Some(pm) = &self.profile_manager {
             if let Ok(active) = pm.active() {
@@ -317,27 +321,13 @@ impl<S: StorageBackend> SubSettings<S> {
             // Fallback to default if active fetch fails (shouldn't happen)
             return pm.profile_path(crate::profiles::DEFAULT_PROFILE);
         }
-        self.base_dir.read_recovered()
-            .map(|guard| guard.clone())
-            .unwrap_or_else(|_| PathBuf::new())
+        self.base_dir.read().clone()
     }
 
     /// Get the single-file path (for single-file mode)
     fn single_file_path(&self) -> PathBuf {
-        // Inline optimization: avoid intermediate PathBuf allocation
-        #[cfg(feature = "profiles")]
-        if let Some(pm) = &self.profile_manager {
-            if let Ok(active) = pm.active() {
-                return pm.profile_path(&active)
-                    .join(format!("{}.{}", self.config.name, self.config.extension));
-            }
-            return pm.profile_path(crate::profiles::DEFAULT_PROFILE)
-                .join(format!("{}.{}", self.config.name, self.config.extension));
-        }
-        
-        self.base_dir.read_recovered()
-            .map(|guard| guard.join(format!("{}.{}", self.config.name, self.config.extension)))
-            .unwrap_or_else(|_| PathBuf::from(format!("{}.{}", self.config.name, self.config.extension)))
+        self.active_profile_dir()
+            .join(format!("{}.{}", self.config.name, self.config.extension))
     }
 
     /// Get the file path for an entry (multi-file mode only)
@@ -346,21 +336,8 @@ impl<S: StorageBackend> SubSettings<S> {
             // In single-file mode, all entries are in the single file
             return self.single_file_path();
         }
-        
-        // Inline optimization: avoid intermediate PathBuf allocation
-        #[cfg(feature = "profiles")]
-        if let Some(pm) = &self.profile_manager {
-            if let Ok(active) = pm.active() {
-                return pm.profile_path(&active)
-                    .join(format!("{}.{}", name, self.config.extension));
-            }
-            return pm.profile_path(crate::profiles::DEFAULT_PROFILE)
-                .join(format!("{}.{}", name, self.config.extension));
-        }
-        
-        self.base_dir.read_recovered()
-            .map(|guard| guard.join(format!("{}.{}", name, self.config.extension)))
-            .unwrap_or_else(|_| PathBuf::from(format!("{}.{}", name, self.config.extension)))
+        self.active_profile_dir()
+            .join(format!("{}.{}", name, self.config.extension))
     }
 
     /// Check if we're in single-file mode
@@ -379,9 +356,8 @@ impl<S: StorageBackend> SubSettings<S> {
     /// This forces the next read operation to reload from disk.
     /// Useful if external processes might modify the files.
     pub fn invalidate_cache(&self) {
-        if let Ok(mut cache) = self.cache.write() {
-            *cache = None;
-        }
+        let mut cache = self.cache.write();
+        *cache = None;
     }
 
     /// Check if profiles are enabled for this sub-settings type
@@ -425,15 +401,15 @@ impl<S: StorageBackend> SubSettings<S> {
     pub fn switch_profile(&self, name: &str) -> Result<()> {
         let pm = self.profiles()?;
         pm.switch(name)?;
-        
+
         // Update base_dir to point to the new profile's directory
         let new_path = pm.profile_path(name);
-        let mut base_dir = self.base_dir.write_recovered()?;
+        let mut base_dir = self.base_dir.write();
         *base_dir = new_path;
-        
+
         // Invalidate cache
         self.invalidate_cache();
-        
+
         Ok(())
     }
 
@@ -442,14 +418,16 @@ impl<S: StorageBackend> SubSettings<S> {
     where
         F: Fn(&str, SubSettingsAction) + Send + Sync + 'static,
     {
-        if let Ok(mut guard) = self.on_change.write_recovered() {
+        {
+            let mut guard = self.on_change.write();
             *guard = Some(Arc::new(callback));
         }
     }
 
     /// Notify about a change
     fn notify_change(&self, name: &str, action: SubSettingsAction) {
-        if let Ok(guard) = self.on_change.read_recovered() {
+        {
+            let guard = self.on_change.read();
             if let Some(callback) = guard.as_ref() {
                 callback(name, action);
             }
@@ -459,11 +437,11 @@ impl<S: StorageBackend> SubSettings<S> {
     /// Ensure cache is populated (loads from disk if needed)
     fn ensure_cache_populated(&self) -> Result<()> {
         // Fast path: check read lock
-        if self.cache.read_recovered()?.is_some() {
+        if self.cache.read().is_some() {
             return Ok(());
         }
 
-        let mut cache_guard = self.cache.write_recovered()?;
+        let mut cache_guard = self.cache.write();
         if cache_guard.is_some() {
             return Ok(());
         }
@@ -494,8 +472,8 @@ impl<S: StorageBackend> SubSettings<S> {
                 file_data = migrator(file_data);
 
                 if file_data != original {
-                    debug!("🔄 Migrated sub-settings file: {}", self.config.name);
-                    let _save_guard = self.save_mutex.lock_recovered()?;
+                    debug!("Migrated sub-settings file: {}", self.config.name);
+                    let _save_guard = self.save_mutex.lock();
                     self.storage.write(&path, &file_data)?;
                 }
             }
@@ -520,7 +498,7 @@ impl<S: StorageBackend> SubSettings<S> {
 
         // Check cache first
         let mut value = {
-            let cache = self.cache.read_recovered()?;
+            let cache = self.cache.read();
             // Cache must be Some(_) because of ensure_cache_populated
             cache.as_ref().and_then(|map| map.get(name).cloned())
         };
@@ -570,7 +548,7 @@ impl<S: StorageBackend> SubSettings<S> {
                 if self.is_single_file() {
                     // Update cache and persist the whole file
                     {
-                        let mut cache = self.cache.write_recovered()?;
+                        let mut cache = self.cache.write();
                         if let Some(map) = cache.as_mut() {
                             map.insert(name.to_string(), value.clone());
                         }
@@ -578,7 +556,7 @@ impl<S: StorageBackend> SubSettings<S> {
 
                     let path = self.single_file_path();
                     let full_obj = {
-                        let cache = self.cache.read_recovered()?;
+                        let cache = self.cache.read();
                         if let Some(map) = cache.as_ref() {
                             Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                         } else {
@@ -586,12 +564,12 @@ impl<S: StorageBackend> SubSettings<S> {
                         }
                     };
 
-                    let _save_guard = self.save_mutex.lock_recovered()?;
+                    let _save_guard = self.save_mutex.lock();
                     self.storage.write(&path, &full_obj)?;
                 } else {
                     // Multi-file mode: write individual file
                     let path = self.entry_path(name);
-                    let _save_guard = self.save_mutex.lock_recovered()?;
+                    let _save_guard = self.save_mutex.lock();
                     self.storage.write(&path, &value)?;
                 }
             }
@@ -599,7 +577,7 @@ impl<S: StorageBackend> SubSettings<S> {
 
         // Update cache
         {
-            let mut cache = self.cache.write_recovered()?;
+            let mut cache = self.cache.write();
             if let Some(map) = cache.as_mut() {
                 map.insert(name.to_string(), value.clone());
             }
@@ -622,10 +600,10 @@ impl<S: StorageBackend> SubSettings<S> {
         let json_value = serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
 
         // Acquire save mutex to prevent race conditions
-        let _save_guard = self.save_mutex.lock_recovered()?;
+        let _save_guard = self.save_mutex.lock();
 
         let exists = {
-            let mut cache = self.cache.write_recovered()?;
+            let mut cache = self.cache.write();
             if let Some(map) = cache.as_mut() {
                 map.insert(name.to_string(), json_value.clone()).is_some()
             } else {
@@ -640,7 +618,7 @@ impl<S: StorageBackend> SubSettings<S> {
 
             // Reconstruct the full object from cache
             let full_obj = {
-                let cache = self.cache.read_recovered()?;
+                let cache = self.cache.read();
                 if let Some(map) = cache.as_ref() {
                     Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 } else {
@@ -681,7 +659,7 @@ impl<S: StorageBackend> SubSettings<S> {
         };
 
         info!(
-            "✅ Sub-settings '{}' {} in {}",
+            "Sub-settings '{}' {} in {}",
             name,
             match action {
                 SubSettingsAction::Created => "created",
@@ -700,11 +678,11 @@ impl<S: StorageBackend> SubSettings<S> {
         self.ensure_cache_populated()?;
 
         // Acquire save mutex to prevent race conditions
-        let _save_guard = self.save_mutex.lock_recovered()?;
+        let _save_guard = self.save_mutex.lock();
 
         // Remove from cache
         let existed = {
-            let mut cache = self.cache.write_recovered()?;
+            let mut cache = self.cache.write();
             if let Some(map) = cache.as_mut() {
                 map.remove(name).is_some()
             } else {
@@ -718,7 +696,7 @@ impl<S: StorageBackend> SubSettings<S> {
         if self.is_single_file() {
             if !existed {
                 warn!(
-                    "⚠️ Sub-settings entry '{}' not found in {}, nothing to delete",
+                    "Sub-settings entry '{}' not found in {}, nothing to delete",
                     name, self.config.name
                 );
                 return Ok(());
@@ -729,7 +707,7 @@ impl<S: StorageBackend> SubSettings<S> {
 
             // Reconstruct the full object from cache
             let full_obj = {
-                let cache = self.cache.read_recovered()?;
+                let cache = self.cache.read();
                 if let Some(map) = cache.as_ref() {
                     Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 } else {
@@ -766,10 +744,7 @@ impl<S: StorageBackend> SubSettings<S> {
             }
         }
 
-        info!(
-            "✅ Sub-settings '{}' deleted from {}",
-            name, self.config.name
-        );
+        info!("Sub-settings '{}' deleted from {}", name, self.config.name);
         self.notify_change(name, SubSettingsAction::Deleted);
         Ok(())
     }
@@ -780,7 +755,7 @@ impl<S: StorageBackend> SubSettings<S> {
 
         if self.is_single_file() {
             // Single-file mode: return keys from cache
-            let cache = self.cache.read_recovered()?;
+            let cache = self.cache.read();
             if let Some(map) = cache.as_ref() {
                 let mut entries: Vec<String> = map.keys().cloned().collect();
                 entries.sort();
@@ -838,7 +813,7 @@ impl<S: StorageBackend> SubSettings<S> {
 
         // Check cache first
         {
-            let cache = self.cache.read_recovered()?;
+            let cache = self.cache.read();
             if let Some(map) = cache.as_ref() {
                 if map.contains_key(name) {
                     return Ok(true);

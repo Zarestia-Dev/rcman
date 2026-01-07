@@ -65,7 +65,7 @@ fn main() -> rcman::Result<()> {
     // --- Switching Profiles ---
 
     println!("\n🔄 Switching to 'work' profile...");
-    remotes.switch_profile("work")?;  // Seamless switch!
+    remotes.switch_profile("work")?; // Seamless switch!
     println!("✅ Active profile: {}", profiles.active()?);
 
     // The 'work' profile is empty - let's add some remotes
@@ -106,7 +106,7 @@ fn main() -> rcman::Result<()> {
     // --- Switch Back and Verify ---
 
     println!("\n🔄 Switching back to 'default' profile...");
-    remotes.switch_profile("default")?;  // Seamless switch!
+    remotes.switch_profile("default")?; // Seamless switch!
     println!("📋 Remotes in default profile: {:?}", remotes.list()?);
 
     // --- Event Handling ---

@@ -10,12 +10,12 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use log::debug;
+use parking_lot::RwLock;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::RwLock;
 
 /// Encrypted credential entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,17 +271,19 @@ impl CredentialBackend for EncryptedFileBackend {
         self.save_store(&mut store)?;
 
         // Update cache
-        if let Ok(mut cache) = self.cache.write() {
+        {
+            let mut cache = self.cache.write();
             cache.insert(key.to_string(), value.to_string());
         }
 
-        debug!("✅ Credential stored in encrypted file: {}", key);
+        debug!("Credential stored in encrypted file: {}", key);
         Ok(())
     }
 
     fn get(&self, key: &str) -> Result<Option<String>> {
         // Check cache first
-        if let Ok(cache) = self.cache.read() {
+        {
+            let cache = self.cache.read();
             if let Some(value) = cache.get(key) {
                 return Ok(Some(value.clone()));
             }
@@ -293,11 +295,12 @@ impl CredentialBackend for EncryptedFileBackend {
             let value = self.decrypt(entry)?;
 
             // Update cache
-            if let Ok(mut cache) = self.cache.write() {
+            {
+                let mut cache = self.cache.write();
                 cache.insert(key.to_string(), value.clone());
             }
 
-            debug!("✅ Credential retrieved from encrypted file: {}", key);
+            debug!("Credential retrieved from encrypted file: {}", key);
             Ok(Some(value))
         } else {
             Ok(None)
@@ -310,11 +313,12 @@ impl CredentialBackend for EncryptedFileBackend {
         self.save_store(&mut store)?;
 
         // Update cache
-        if let Ok(mut cache) = self.cache.write() {
+        {
+            let mut cache = self.cache.write();
             cache.remove(key);
         }
 
-        debug!("✅ Credential removed from encrypted file: {}", key);
+        debug!("Credential removed from encrypted file: {}", key);
         Ok(())
     }
 

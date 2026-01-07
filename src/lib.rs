@@ -170,10 +170,9 @@ mod docs;
 mod error;
 mod events;
 mod manager;
+pub mod security;
 mod storage;
 mod sub_settings;
-mod sync;
-pub mod security;
 
 // Grouped modules
 pub mod config;

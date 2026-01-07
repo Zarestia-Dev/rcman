@@ -4,11 +4,15 @@
 
 use crate::error::{Error, Result};
 use crate::profiles::{validate_profile_name, DEFAULT_PROFILE, MANIFEST_FILE, PROFILES_DIR};
-use crate::sync::{RwLockExt};
+
 use log::{debug, info};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+
+/// Type alias for cache invalidation callback
+pub type InvalidateCallback = Arc<dyn Fn() + Send + Sync>;
 
 // =============================================================================
 // Profile Manifest
@@ -158,8 +162,7 @@ pub struct ProfileManager {
     on_event: RwLock<Option<ProfileEventCallback>>,
 
     /// Callback to invalidate caches when profile switches
-    #[allow(clippy::type_complexity)]
-    on_invalidate: RwLock<Option<Arc<dyn Fn() + Send + Sync>>>,
+    on_invalidate: RwLock<Option<InvalidateCallback>>,
 }
 
 impl ProfileManager {
@@ -185,7 +188,7 @@ impl ProfileManager {
     where
         F: Fn(ProfileEvent) + Send + Sync + 'static,
     {
-        let mut guard = self.on_event.write_recovered().expect("Failed to acquire event callback lock");
+        let mut guard = self.on_event.write();
         *guard = Some(Arc::new(callback));
     }
 
@@ -194,27 +197,23 @@ impl ProfileManager {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        let mut guard = self.on_invalidate.write_recovered().expect("Failed to acquire invalidate callback lock");
+        let mut guard = self.on_invalidate.write();
         *guard = Some(Arc::new(callback));
     }
 
     /// Emit a profile event
     fn emit_event(&self, event: ProfileEvent) {
-        let guard = self.on_event.read_recovered().ok();
-        if let Some(guard) = guard {
-            if let Some(callback) = guard.as_ref() {
-                callback(event);
-            }
+        let guard = self.on_event.read();
+        if let Some(callback) = guard.as_ref() {
+            callback(event);
         }
     }
 
     /// Invalidate caches
     fn invalidate_caches(&self) {
-        let guard = self.on_invalidate.read_recovered().ok();
-        if let Some(guard) = guard {
-            if let Some(callback) = guard.as_ref() {
-                callback();
-            }
+        let guard = self.on_invalidate.read();
+        if let Some(callback) = guard.as_ref() {
+            callback();
         }
     }
 
@@ -232,25 +231,24 @@ impl ProfileManager {
     /// Ensure the manifest is loaded
     fn ensure_manifest(&self) -> Result<()> {
         {
-            let guard = self.manifest.read_recovered()?;
+            let guard = self.manifest.read();
             if guard.is_some() {
                 return Ok(());
             }
         }
 
-        let mut guard = self.manifest.write_recovered()?;
+        let mut guard = self.manifest.write();
         if guard.is_some() {
             return Ok(());
         }
 
         // Try to load existing manifest
         if self.manifest_path.exists() {
-            let content = std::fs::read_to_string(&self.manifest_path).map_err(|e| {
-                Error::FileRead {
+            let content =
+                std::fs::read_to_string(&self.manifest_path).map_err(|e| Error::FileRead {
                     path: self.manifest_path.display().to_string(),
                     source: e,
-                }
-            })?;
+                })?;
             let manifest: ProfileManifest =
                 serde_json::from_str(&content).map_err(|e| Error::Parse(e.to_string()))?;
             *guard = Some(manifest);
@@ -264,7 +262,7 @@ impl ProfileManager {
 
     /// Save the manifest to disk
     fn save_manifest(&self) -> Result<()> {
-        let guard = self.manifest.read_recovered()?;
+        let guard = self.manifest.read();
         let manifest = guard.as_ref().ok_or(Error::NotInitialized)?;
 
         // Ensure parent directory exists
@@ -285,7 +283,7 @@ impl ProfileManager {
         })?;
 
         debug!(
-            "💾 Saved profile manifest for '{}': active={}",
+            "Saved profile manifest for '{}': active={}",
             self.target_name, manifest.active
         );
 
@@ -299,21 +297,21 @@ impl ProfileManager {
     /// Get the currently active profile name
     pub fn active(&self) -> Result<String> {
         self.ensure_manifest()?;
-        let guard = self.manifest.read_recovered()?;
+        let guard = self.manifest.read();
         Ok(guard.as_ref().unwrap().active.clone())
     }
 
     /// List all profile names
     pub fn list(&self) -> Result<Vec<String>> {
         self.ensure_manifest()?;
-        let guard = self.manifest.read_recovered()?;
+        let guard = self.manifest.read();
         Ok(guard.as_ref().unwrap().profiles.clone())
     }
 
     /// Check if a profile exists
     pub fn exists(&self, name: &str) -> Result<bool> {
         self.ensure_manifest()?;
-        let guard = self.manifest.read_recovered()?;
+        let guard = self.manifest.read();
         Ok(guard.as_ref().unwrap().has_profile(name))
     }
 
@@ -326,7 +324,7 @@ impl ProfileManager {
 
         // Check if already exists
         {
-            let guard = self.manifest.read_recovered()?;
+            let guard = self.manifest.read();
             if guard.as_ref().unwrap().has_profile(name) {
                 return Err(Error::ProfileAlreadyExists(name.to_string()));
             }
@@ -342,12 +340,12 @@ impl ProfileManager {
 
         // Update manifest
         {
-            let mut guard = self.manifest.write_recovered()?;
+            let mut guard = self.manifest.write();
             guard.as_mut().unwrap().add_profile(name.to_string());
         }
         self.save_manifest()?;
 
-        info!("✨ Created profile '{}' for '{}'", name, self.target_name);
+        info!("Created profile '{}' for '{}'", name, self.target_name);
         self.emit_event(ProfileEvent::Created {
             name: name.to_string(),
         });
@@ -362,7 +360,7 @@ impl ProfileManager {
         self.ensure_manifest()?;
 
         let from = {
-            let guard = self.manifest.read_recovered()?;
+            let guard = self.manifest.read();
             let manifest = guard.as_ref().unwrap();
             if !manifest.has_profile(name) {
                 return Err(Error::ProfileNotFound(name.to_string()));
@@ -377,13 +375,13 @@ impl ProfileManager {
 
         // Update manifest
         {
-            let mut guard = self.manifest.write_recovered()?;
+            let mut guard = self.manifest.write();
             guard.as_mut().unwrap().set_active(name);
         }
         self.save_manifest()?;
 
         info!(
-            "🔄 Switched profile for '{}': {} → {}",
+            "Switched profile for '{}': {} -> {}",
             self.target_name, from, name
         );
 
@@ -406,7 +404,7 @@ impl ProfileManager {
         self.ensure_manifest()?;
 
         {
-            let guard = self.manifest.read_recovered()?;
+            let guard = self.manifest.read();
             let manifest = guard.as_ref().unwrap();
 
             if !manifest.has_profile(name) {
@@ -433,12 +431,12 @@ impl ProfileManager {
 
         // Update manifest
         {
-            let mut guard = self.manifest.write_recovered()?;
+            let mut guard = self.manifest.write();
             guard.as_mut().unwrap().remove_profile(name);
         }
         self.save_manifest()?;
 
-        info!("🗑️ Deleted profile '{}' from '{}'", name, self.target_name);
+        info!("Deleted profile '{}' from '{}'", name, self.target_name);
         self.emit_event(ProfileEvent::Deleted {
             name: name.to_string(),
         });
@@ -452,7 +450,7 @@ impl ProfileManager {
         self.ensure_manifest()?;
 
         {
-            let guard = self.manifest.read_recovered()?;
+            let guard = self.manifest.read();
             let manifest = guard.as_ref().unwrap();
 
             if !manifest.has_profile(from) {
@@ -483,13 +481,13 @@ impl ProfileManager {
 
         // Update manifest
         {
-            let mut guard = self.manifest.write_recovered()?;
+            let mut guard = self.manifest.write();
             guard.as_mut().unwrap().rename_profile(from, to.to_string());
         }
         self.save_manifest()?;
 
         info!(
-            "📝 Renamed profile '{}' → '{}' in '{}'",
+            "Renamed profile '{}' -> '{}' in '{}'",
             from, to, self.target_name
         );
 
@@ -509,7 +507,7 @@ impl ProfileManager {
         self.ensure_manifest()?;
 
         {
-            let guard = self.manifest.read_recovered()?;
+            let guard = self.manifest.read();
             let manifest = guard.as_ref().unwrap();
 
             if !manifest.has_profile(source) {
@@ -536,13 +534,13 @@ impl ProfileManager {
 
         // Update manifest
         {
-            let mut guard = self.manifest.write_recovered()?;
+            let mut guard = self.manifest.write();
             guard.as_mut().unwrap().add_profile(target.to_string());
         }
         self.save_manifest()?;
 
         info!(
-            "📋 Duplicated profile '{}' → '{}' in '{}'",
+            "Duplicated profile '{}' -> '{}' in '{}'",
             source, target, self.target_name
         );
 
@@ -588,7 +586,7 @@ impl ProfileManager {
 
         // Migration will be handled by the caller
         // Just initialize the manifest
-        let mut guard = self.manifest.write_recovered()?;
+        let mut guard = self.manifest.write();
         *guard = Some(ProfileManifest::default());
         drop(guard);
 
@@ -601,7 +599,7 @@ impl ProfileManager {
         }
 
         info!(
-            "🔄 Initialized profiles for '{}', migration needed",
+            "Initialized profiles for '{}', migration needed",
             self.target_name
         );
 
@@ -611,17 +609,14 @@ impl ProfileManager {
     /// Mark migration as complete and save manifest
     pub fn complete_migration(&self) -> Result<()> {
         self.save_manifest()?;
-        info!(
-            "✅ Profile migration complete for '{}'",
-            self.target_name
-        );
+        info!("Profile migration complete for '{}'", self.target_name);
         Ok(())
     }
 
     /// Get the manifest (for advanced use cases)
     pub fn manifest(&self) -> Result<ProfileManifest> {
         self.ensure_manifest()?;
-        let guard = self.manifest.read_recovered()?;
+        let guard = self.manifest.read();
         Ok(guard.as_ref().unwrap().clone())
     }
 

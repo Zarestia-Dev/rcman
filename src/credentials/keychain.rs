@@ -4,7 +4,7 @@ use super::CredentialBackend;
 use crate::error::{Error, Result};
 use keyring::Entry;
 use log::{debug, warn};
-use std::sync::RwLock;
+use parking_lot::RwLock;
 
 /// OS Keychain backend for secure credential storage
 pub struct KeychainBackend {
@@ -28,17 +28,15 @@ impl KeychainBackend {
     }
 
     fn track_key(&self, key: &str) {
-        if let Ok(mut keys) = self.known_keys.write() {
-            if !keys.contains(&key.to_string()) {
-                keys.push(key.to_string());
-            }
+        let mut keys = self.known_keys.write();
+        if !keys.contains(&key.to_string()) {
+            keys.push(key.to_string());
         }
     }
 
     fn untrack_key(&self, key: &str) {
-        if let Ok(mut keys) = self.known_keys.write() {
-            keys.retain(|k| k != key);
-        }
+        let mut keys = self.known_keys.write();
+        keys.retain(|k| k != key);
     }
 }
 
@@ -51,7 +49,7 @@ impl CredentialBackend for KeychainBackend {
         })?;
 
         self.track_key(key);
-        debug!("✅ Credential stored in keychain: {}", key);
+        debug!("Credential stored in keychain: {}", key);
         Ok(())
     }
 
@@ -60,7 +58,7 @@ impl CredentialBackend for KeychainBackend {
 
         match entry.get_password() {
             Ok(password) => {
-                debug!("✅ Credential retrieved from keychain: {}", key);
+                debug!("Credential retrieved from keychain: {}", key);
                 Ok(Some(password))
             }
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -80,7 +78,7 @@ impl CredentialBackend for KeychainBackend {
         match entry.delete_credential() {
             Ok(()) => {
                 self.untrack_key(key);
-                debug!("✅ Credential removed from keychain: {}", key);
+                debug!("Credential removed from keychain: {}", key);
                 Ok(())
             }
             Err(keyring::Error::NoEntry) => {
@@ -96,11 +94,7 @@ impl CredentialBackend for KeychainBackend {
 
     fn list_keys(&self) -> Result<Vec<String>> {
         // Keychain doesn't support listing, return tracked keys
-        Ok(self
-            .known_keys
-            .read()
-            .map(|guard| guard.clone())
-            .unwrap_or_default())
+        Ok(self.known_keys.read().clone())
     }
 
     fn backend_name(&self) -> &'static str {

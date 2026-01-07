@@ -25,20 +25,20 @@ use std::path::Path;
 pub fn set_secure_file_permissions(path: &Path) -> Result<()> {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    
+
     let metadata = fs::metadata(path).map_err(|e| Error::FileRead {
         path: path.display().to_string(),
         source: e,
     })?;
-    
+
     let mut perms = metadata.permissions();
     perms.set_mode(0o600); // Owner read/write only
-    
+
     fs::set_permissions(path, perms).map_err(|e| Error::FileWrite {
         path: path.display().to_string(),
         source: e,
     })?;
-    
+
     Ok(())
 }
 
@@ -64,20 +64,20 @@ pub fn set_secure_file_permissions(path: &Path) -> Result<()> {
 pub fn set_secure_dir_permissions(path: &Path) -> Result<()> {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    
+
     let metadata = fs::metadata(path).map_err(|e| Error::FileRead {
         path: path.display().to_string(),
         source: e,
     })?;
-    
+
     let mut perms = metadata.permissions();
     perms.set_mode(0o700); // Owner read/write/execute only
-    
+
     fs::set_permissions(path, perms).map_err(|e| Error::FileWrite {
         path: path.display().to_string(),
         source: e,
     })?;
-    
+
     Ok(())
 }
 
@@ -98,16 +98,16 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-    
+
     #[test]
     fn test_secure_file_permissions() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.txt");
-        
+
         fs::write(&file_path, "test data").unwrap();
-        
+
         set_secure_file_permissions(&file_path).unwrap();
-        
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -117,16 +117,16 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
     }
-    
+
     #[test]
     fn test_secure_dir_permissions() {
         let dir = tempdir().unwrap();
         let subdir = dir.path().join("secure");
-        
+
         fs::create_dir_all(&subdir).unwrap();
-        
+
         set_secure_dir_permissions(&subdir).unwrap();
-        
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

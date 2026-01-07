@@ -71,7 +71,9 @@ fn test_seamless_profile_switching() {
     let remotes = manager.sub_settings("remotes").unwrap();
 
     // Add data to default profile
-    remotes.set("personal-gdrive", &json!({"type": "drive"})).unwrap();
+    remotes
+        .set("personal-gdrive", &json!({"type": "drive"}))
+        .unwrap();
     assert!(remotes.exists("personal-gdrive").unwrap());
 
     // Create work profile and switch to it using the convenience method
@@ -82,7 +84,9 @@ fn test_seamless_profile_switching() {
     assert!(!remotes.exists("personal-gdrive").unwrap());
 
     // Add work-specific data
-    remotes.set("company-drive", &json!({"type": "sharepoint"})).unwrap();
+    remotes
+        .set("company-drive", &json!({"type": "sharepoint"}))
+        .unwrap();
     assert!(remotes.exists("company-drive").unwrap());
 
     // Switch back to default
@@ -327,7 +331,9 @@ fn test_main_settings_profiles() {
 
     impl Default for TestSettings {
         fn default() -> Self {
-            Self { general: GeneralSettings::default() }
+            Self {
+                general: GeneralSettings::default(),
+            }
         }
     }
 
@@ -337,11 +343,15 @@ fn test_main_settings_profiles() {
         theme: String,
     }
 
-    fn default_theme() -> String { "light".to_string() }
+    fn default_theme() -> String {
+        "light".to_string()
+    }
 
     impl Default for GeneralSettings {
         fn default() -> Self {
-            Self { theme: default_theme() }
+            Self {
+                theme: default_theme(),
+            }
         }
     }
 
@@ -420,7 +430,10 @@ fn test_main_settings_profiles_directory_structure() {
     impl SettingsSchema for TestSettings {
         fn get_metadata() -> HashMap<String, SettingMetadata> {
             let mut map = HashMap::new();
-            map.insert("ui.theme".to_string(), SettingMetadata::text("Theme", "light"));
+            map.insert(
+                "ui.theme".to_string(),
+                SettingMetadata::text("Theme", "light"),
+            );
             map
         }
     }
@@ -434,22 +447,36 @@ fn test_main_settings_profiles_directory_structure() {
         .unwrap();
 
     // Save something to create the default profile directory
-    manager.save_setting::<TestSettings>("ui", "theme", json!("dark")).unwrap();
+    manager
+        .save_setting::<TestSettings>("ui", "theme", json!("dark"))
+        .unwrap();
 
     manager.create_profile("work").unwrap();
 
     // Check directory structure
     // .profiles.json should exist at config root
-    assert!(temp_dir.path().join(".profiles.json").exists(), ".profiles.json should exist");
+    assert!(
+        temp_dir.path().join(".profiles.json").exists(),
+        ".profiles.json should exist"
+    );
 
     // profiles/ directory should exist
     let profiles_dir = temp_dir.path().join("profiles");
     assert!(profiles_dir.exists(), "profiles/ directory should exist");
 
     // work profile dir exists because we created it
-    assert!(profiles_dir.join("work").exists(), "work profile directory should exist");
+    assert!(
+        profiles_dir.join("work").exists(),
+        "work profile directory should exist"
+    );
 
     // default profile dir should exist after saving
-    assert!(profiles_dir.join("default").exists(), "default profile directory should exist after saving");
-    assert!(profiles_dir.join("default").join("settings.json").exists(), "settings.json should exist in default profile");
+    assert!(
+        profiles_dir.join("default").exists(),
+        "default profile directory should exist after saving"
+    );
+    assert!(
+        profiles_dir.join("default").join("settings.json").exists(),
+        "settings.json should exist in default profile"
+    );
 }

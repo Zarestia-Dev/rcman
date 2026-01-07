@@ -117,16 +117,16 @@ fn format_setting(key: &str, meta: &SettingMetadata) -> String {
     // Badges
     let mut badges = Vec::new();
     if meta.advanced {
-        badges.push("🔧 Advanced");
+        badges.push("Advanced");
     }
     if meta.requires_restart {
-        badges.push("🔄 Requires Restart");
+        badges.push("Requires Restart");
     }
     if meta.secret {
-        badges.push("🔒 Secret");
+        badges.push("Secret");
     }
     if meta.disabled {
-        badges.push("⚠️ Disabled");
+        badges.push("Disabled");
     }
     if !badges.is_empty() {
         out.push_str(&format!("{}\n\n", badges.join(" • ")));
@@ -289,8 +289,8 @@ mod tests {
         assert!(docs.contains("## Network"));
         assert!(docs.contains("## Security"));
         assert!(docs.contains("`appearance.theme`"));
-        assert!(docs.contains("🔒 Secret"));
-        assert!(docs.contains("🔧 Advanced"));
+        assert!(docs.contains("Secret"));
+        assert!(docs.contains("Advanced"));
     }
 
     #[test]

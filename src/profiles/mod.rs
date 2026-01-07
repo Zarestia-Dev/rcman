@@ -81,7 +81,9 @@ pub fn validate_profile_name(name: &str) -> crate::Result<()> {
     {
         return Err(Error::InvalidProfileName {
             name: name.to_string(),
-            reason: "Profile name can only contain alphanumeric characters, underscores, and hyphens".to_string(),
+            reason:
+                "Profile name can only contain alphanumeric characters, underscores, and hyphens"
+                    .to_string(),
         });
     }
 

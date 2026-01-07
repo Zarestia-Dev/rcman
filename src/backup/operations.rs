@@ -2,10 +2,10 @@
 
 use super::archive::{calculate_file_hash, create_rcman_container, create_zip_archive};
 use super::types::*;
+use crate::config::SettingsSchema;
 use crate::error::{Error, Result};
 use crate::manager::SettingsManager;
 use crate::storage::StorageBackend;
-use crate::sync::RwLockExt as _;
 use chrono::Utc;
 use log::{debug, info};
 use std::fs;
@@ -18,8 +18,7 @@ use crate::profiles::{MANIFEST_FILE, PROFILES_DIR};
 /// Returns (source_path, relative_dest_path) pairs
 fn collect_settings_files(
     config: &crate::config::SettingsConfig<impl StorageBackend>,
-    #[cfg_attr(not(feature = "profiles"), allow(unused_variables))]
-    options: &BackupOptions,
+    #[cfg_attr(not(feature = "profiles"), allow(unused_variables))] options: &BackupOptions,
 ) -> Result<Vec<(PathBuf, PathBuf)>> {
     let mut files = Vec::new();
 
@@ -283,7 +282,7 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
         for sub_type in sub_settings_to_backup {
             #[cfg(feature = "profiles")]
             let sub_export_dir = export_dir.join(&sub_type);
-            
+
             if let Ok(sub) = self.manager.sub_settings(&sub_type) {
                 // Check for profiles
                 #[cfg(feature = "profiles")]
@@ -300,11 +299,13 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
                         if profiles_manifest.exists() {
                             let dest = sub_export_dir.join(MANIFEST_FILE);
                             // Ensure sub_export_dir exists (we might not have created it yet)
-                            fs::create_dir_all(&sub_export_dir).map_err(|e| Error::DirectoryCreate {
-                                path: sub_export_dir.display().to_string(),
-                                source: e,
+                            fs::create_dir_all(&sub_export_dir).map_err(|e| {
+                                Error::DirectoryCreate {
+                                    path: sub_export_dir.display().to_string(),
+                                    source: e,
+                                }
                             })?;
-                            
+
                             fs::copy(&profiles_manifest, &dest).map_err(|e| Error::FileRead {
                                 path: profiles_manifest.display().to_string(),
                                 source: e,
@@ -317,62 +318,74 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
                         let profiles_dir = root_path.join(PROFILES_DIR);
                         if profiles_dir.exists() {
                             let dest_profiles_dir = sub_export_dir.join(PROFILES_DIR);
-                            fs::create_dir_all(&dest_profiles_dir).map_err(|e| Error::DirectoryCreate {
-                                path: dest_profiles_dir.display().to_string(),
-                                source: e,
+                            fs::create_dir_all(&dest_profiles_dir).map_err(|e| {
+                                Error::DirectoryCreate {
+                                    path: dest_profiles_dir.display().to_string(),
+                                    source: e,
+                                }
                             })?;
 
                             let mut profile_names = Vec::new();
 
-                            for entry in fs::read_dir(&profiles_dir).map_err(|e| Error::DirectoryRead {
-                                path: profiles_dir.display().to_string(),
-                                source: e,
-                            })? {
+                            for entry in
+                                fs::read_dir(&profiles_dir).map_err(|e| Error::DirectoryRead {
+                                    path: profiles_dir.display().to_string(),
+                                    source: e,
+                                })?
+                            {
                                 let entry = entry.map_err(|e| Error::DirectoryRead {
                                     path: profiles_dir.display().to_string(),
                                     source: e,
                                 })?;
-                                
+
                                 let profile_name = entry.file_name().to_string_lossy().to_string();
-                                
+
                                 // Filter
-                                if !options.include_profiles.is_empty() 
-                                    && !options.include_profiles.contains(&profile_name) {
+                                if !options.include_profiles.is_empty()
+                                    && !options.include_profiles.contains(&profile_name)
+                                {
                                     continue;
                                 }
 
                                 let profile_path = entry.path();
                                 let profile_export_dir = dest_profiles_dir.join(&profile_name);
-                                fs::create_dir_all(&profile_export_dir).map_err(|e| Error::DirectoryCreate {
-                                    path: profile_export_dir.display().to_string(),
-                                    source: e,
+                                fs::create_dir_all(&profile_export_dir).map_err(|e| {
+                                    Error::DirectoryCreate {
+                                        path: profile_export_dir.display().to_string(),
+                                        source: e,
+                                    }
                                 })?;
 
                                 // Copy all JSON files from this profile
                                 if let Ok(profile_entries) = fs::read_dir(&profile_path) {
                                     for item_entry in profile_entries.flatten() {
                                         let path = item_entry.path();
-                                        if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                                            let dest = profile_export_dir.join(item_entry.file_name());
-                                            fs::copy(&path, &dest).map_err(|e| Error::FileRead {
-                                                path: path.display().to_string(),
-                                                source: e,
+                                        if path.extension().and_then(|s| s.to_str()) == Some("json")
+                                        {
+                                            let dest =
+                                                profile_export_dir.join(item_entry.file_name());
+                                            fs::copy(&path, &dest).map_err(|e| {
+                                                Error::FileRead {
+                                                    path: path.display().to_string(),
+                                                    source: e,
+                                                }
                                             })?;
-                                            total_size += fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                                            total_size +=
+                                                fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
                                             contents.file_count += 1;
                                         }
                                     }
                                     profile_names.push(profile_name);
                                 }
                             }
-                            
+
                             if !profile_names.is_empty() {
                                 contents.sub_settings.insert(
                                     sub_type.clone(),
                                     SubSettingsManifestEntry::Profiled {
                                         profiles: profile_names,
                                         single_file: sub.is_single_file(),
-                                    }
+                                    },
                                 );
                             }
                         }
@@ -388,11 +401,13 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
                             if path.exists() {
                                 let dest = sub_export_dir.join(format!("{}.json", sub_type));
                                 // Ensure dir
-                                fs::create_dir_all(&sub_export_dir).map_err(|e| Error::DirectoryCreate {
-                                    path: sub_export_dir.display().to_string(),
-                                    source: e,
+                                fs::create_dir_all(&sub_export_dir).map_err(|e| {
+                                    Error::DirectoryCreate {
+                                        path: sub_export_dir.display().to_string(),
+                                        source: e,
+                                    }
                                 })?;
-                                
+
                                 fs::copy(&path, &dest).map_err(|e| Error::FileRead {
                                     path: path.display().to_string(),
                                     source: e,
@@ -403,16 +418,21 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
                                 // For single-file mode, we use SingleFile manifest entry with filename
                                 contents.sub_settings.insert(
                                     sub_type.clone(),
-                                    SubSettingsManifestEntry::SingleFile(format!("{}.json", sub_type)),
+                                    SubSettingsManifestEntry::SingleFile(format!(
+                                        "{}.json",
+                                        sub_type
+                                    )),
                                 );
                                 debug!("📄 Added single-file sub-settings: {}", sub_type);
                             }
                         }
                     } else {
                         // Multi-file mode: create directory and copy individuals
-                        fs::create_dir_all(&sub_export_dir).map_err(|e| Error::DirectoryCreate {
-                            path: sub_export_dir.display().to_string(),
-                            source: e,
+                        fs::create_dir_all(&sub_export_dir).map_err(|e| {
+                            Error::DirectoryCreate {
+                                path: sub_export_dir.display().to_string(),
+                                source: e,
+                            }
                         })?;
 
                         let mut items = Vec::new();
@@ -442,7 +462,7 @@ impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
 
         // 3. External configs
         if !options.include_external_configs.is_empty() {
-            let providers = self.manager.external_providers.read_recovered()?;
+            let providers = self.manager.external_providers.read();
             let mut all_configs = Vec::new();
 
             // Add static configs from settings
@@ -646,7 +666,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            migrator: None,
+            #[cfg(feature = "profiles")]
+            profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
         };
@@ -696,7 +718,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            migrator: None,
+            #[cfg(feature = "profiles")]
+            profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
         };
@@ -742,7 +766,9 @@ mod tests {
             external_configs: Vec::new(),
             env_prefix: None,
             env_overrides_secrets: false,
-            migrator: None, #[cfg(feature = "profiles")] profiles_enabled: false,
+            migrator: None,
+            #[cfg(feature = "profiles")]
+            profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
         };
