@@ -10,15 +10,55 @@ use std::path::Path;
 /// This allows swapping JSON for TOML, YAML, or other formats in the future.
 pub trait StorageBackend: Clone + Send + Sync {
     /// File extension for this storage format (e.g., "json", "toml")
+    /// 
+    /// # Returns
+    /// 
+    /// * `&str` - File extension for this storage format
     fn extension(&self) -> &str;
 
     /// Serialize data to string
+    /// 
+    /// # Arguments
+    /// 
+    /// * `data` - Data to serialize
+    /// 
+    /// # Returns
+    /// 
+    /// * `Result<String>` - Serialized data
+    /// 
+    /// # Errors
+    /// 
+    /// * `Error::Io` - If the data cannot be serialized
     fn serialize<T: Serialize>(&self, data: &T) -> Result<String>;
 
     /// Deserialize data from string
+    /// 
+    /// # Arguments
+    /// 
+    /// * `content` - Data to deserialize
+    /// 
+    /// # Returns
+    /// 
+    /// * `Result<T>` - Deserialized data
+    /// 
+    /// # Errors
+    /// 
+    /// * `Error::Io` - If the data cannot be deserialized
     fn deserialize<T: DeserializeOwned>(&self, content: &str) -> Result<T>;
 
     /// Read and deserialize from file
+    /// 
+    /// # Arguments
+    /// 
+    /// * `path` - Path to file to read
+    /// 
+    /// # Returns
+    /// 
+    /// * `Result<T>` - Deserialized data
+    /// 
+    /// # Errors
+    /// 
+    /// * `Error::FileRead` - If the file cannot be read
     fn read<T: DeserializeOwned>(&self, path: &Path) -> Result<T> {
         let content = std::fs::read_to_string(path).map_err(|e| Error::FileRead {
             path: path.display().to_string(),
@@ -30,6 +70,19 @@ pub trait StorageBackend: Clone + Send + Sync {
     /// Serialize and write to file
     ///
     /// Uses atomic write: writes to temp file then renames to prevent corruption.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to file to write
+    /// * `data` - Data to serialize and write
+    ///
+    /// # Returns
+    ///
+    /// * `Result<()>` - Success or error
+    ///
+    /// # Errors
+    ///
+    /// * `Error::FileWrite` - If the file cannot be written
     fn write<T: Serialize>(&self, path: &Path, data: &T) -> Result<()> {
         let content = self.serialize(data)?;
 
@@ -106,18 +159,20 @@ pub struct JsonStorage {
 
 impl JsonStorage {
     /// Create a new JSON storage backend with pretty printing enabled
+    #[must_use]
     pub fn new() -> Self {
         Self { pretty: true }
     }
 
     /// Create a compact JSON storage (no pretty printing)
+    #[must_use]
     pub fn compact() -> Self {
         Self { pretty: false }
     }
 }
 
 impl StorageBackend for JsonStorage {
-    fn extension(&self) -> &str {
+    fn extension(&self) -> &'static str {
         "json"
     }
 

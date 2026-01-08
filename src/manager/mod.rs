@@ -147,7 +147,7 @@ pub use builder::SettingsManagerBuilder;
 use crate::storage::JsonStorage;
 
 impl SettingsManager<JsonStorage> {
-    /// Create a builder for SettingsManager with a fluent API.
+    /// Create a builder for `SettingsManager` with a fluent API.
     ///
     /// This is the recommended way to create a `SettingsManager`.
     ///
@@ -346,7 +346,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         let pm = self
             .profile_manager
             .as_ref()
-            .ok_or_else(|| Error::ProfilesNotEnabled("settings".to_string()))?;
+            .ok_or(Error::ProfilesNotEnabled)?;
 
         // Step 1: Switch the profile in ProfileManager (this handles manifest updates)
         // This must be done first to ensure the profile exists and is valid
@@ -378,13 +378,12 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         for (key, sub) in sub_settings_list {
             if let Ok(pm) = sub.profiles() {
                 match pm.switch(name) {
-                    Ok(_) => {
-                        debug!("Switched sub-settings '{}' to profile '{}'", key, name);
+                    Ok(()) => {
+                        debug!("Switched sub-settings '{key}' to profile '{name}'");
                         sub.invalidate_cache();
                     }
                     Err(e) => warn!(
-                        "Failed to switch sub-settings '{}' to profile '{}': {}",
-                        key, name, e
+                        "Failed to switch sub-settings '{key}' to profile '{name}': {e}"
                     ),
                 }
             }
@@ -399,7 +398,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         let pm = self
             .profile_manager
             .as_ref()
-            .ok_or_else(|| Error::ProfilesNotEnabled("settings".to_string()))?;
+            .ok_or(Error::ProfilesNotEnabled)?;
         pm.create(name)?;
 
         // Propagate to sub-settings
@@ -407,10 +406,9 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         for (key, sub) in sub_settings.iter() {
             if let Ok(pm) = sub.profiles() {
                 match pm.create(name) {
-                    Ok(_) => debug!("Created profile '{}' in sub-settings '{}'", name, key),
+                    Ok(()) => debug!("Created profile '{name}' in sub-settings '{key}'"),
                     Err(e) => warn!(
-                        "Failed to create profile '{}' in sub-settings '{}': {}",
-                        name, key, e
+                        "Failed to create profile '{name}' in sub-settings '{key}': {e}"
                     ),
                 }
             }
@@ -424,7 +422,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         let pm = self
             .profile_manager
             .as_ref()
-            .ok_or_else(|| Error::ProfilesNotEnabled("settings".to_string()))?;
+            .ok_or(Error::ProfilesNotEnabled)?;
         pm.list()
     }
 
@@ -434,7 +432,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         let pm = self
             .profile_manager
             .as_ref()
-            .ok_or_else(|| Error::ProfilesNotEnabled("settings".to_string()))?;
+            .ok_or(Error::ProfilesNotEnabled)?;
         pm.active()
     }
 
@@ -443,7 +441,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// Returns None if env var overrides are disabled.
     /// Format: {PREFIX}_{CATEGORY}_{KEY} (all uppercase)
     ///
-    /// Example: with prefix "MYAPP" and key "ui.theme" -> "MYAPP_UI_THEME"
+    /// Example: with prefix "MYAPP" and key "ui.theme" -> "`MYAPP_UI_THEME`"
     #[inline]
     fn get_env_var_name(&self, key: &str) -> Option<String> {
         self.config.env_prefix.as_ref().map(|prefix| {
@@ -469,9 +467,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
                 } else if let Ok(n) = env_value.parse::<i64>() {
                     Value::Number(n.into())
                 } else if let Ok(n) = env_value.parse::<f64>() {
-                    serde_json::Number::from_f64(n)
-                        .map(Value::Number)
-                        .unwrap_or_else(|| Value::String(env_value.clone()))
+                    serde_json::Number::from_f64(n).map_or_else(|| Value::String(env_value.clone()), Value::Number)
                 } else {
                     Value::String(env_value)
                 }
@@ -657,10 +653,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
             }
         }
 
-        Err(Error::SettingNotFound {
-            category: category.to_string(),
-            key: setting_name.to_string(),
-        })
+        Err(Error::SettingNotFound(format!("{category}.{setting_name}")))
     }
 
     /// Get merged settings struct with caching.
@@ -819,15 +812,13 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         let stored = {
             let cache = self.settings_cache.read();
             cache
-                .as_ref()
-                .map(|c| c.stored.clone())
-                .unwrap_or_else(|| json!({}))
+                .as_ref().map_or_else(|| json!({}), |c| c.stored.clone())
         };
 
         // Get metadata and populate values
         let mut metadata = T::get_metadata();
 
-        for (key, option) in metadata.iter_mut() {
+        for (key, option) in &mut metadata {
             let parts: Vec<&str> = key.split('.').collect();
             if parts.len() == 2 {
                 let category = parts[0];
@@ -841,7 +832,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
                         if let Some(env_value) = self.get_env_override(key) {
                             option.value = Some(env_value);
                             option.env_override = true;
-                            debug!("Secret {} overridden by env var", key);
+                            debug!("Secret {key} overridden by env var");
                             continue;
                         }
                     }
@@ -860,7 +851,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
                 if let Some(env_value) = self.get_env_override(key) {
                     option.value = Some(env_value);
                     option.env_override = true; // Mark as env-overridden for UI
-                    debug!("Setting {} overridden by env var", key);
+                    debug!("Setting {key} overridden by env var");
                     continue;
                 }
 
@@ -922,13 +913,12 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         let _save_guard = self.save_mutex.lock();
 
         let path = self.settings_path();
-        let full_key = format!("{}.{}", category, key);
+        let full_key = format!("{category}.{key}");
 
         // Validate the value before saving
         self.events
             .validate(&full_key, &value)
             .map_err(|msg| Error::InvalidSettingValue {
-                category: category.to_string(),
                 key: key.to_string(),
                 reason: msg,
             })?;
@@ -940,19 +930,18 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
         // Handle secret settings separately
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        if metadata.get(&full_key).map(|m| m.secret).unwrap_or(false) {
+        if metadata.get(&full_key).is_some_and(|m| m.secret) {
             // Get default value from metadata
             let default_value = metadata
                 .get(&full_key)
-                .map(|m| m.default.clone())
-                .unwrap_or(Value::Null);
+                .map_or(Value::Null, |m| m.default.clone());
 
             // If value equals default, remove from keychain (keep storage minimal)
             if value == default_value {
                 if let Some(ref creds) = self.credentials {
                     creds.remove(&full_key)?;
                 }
-                info!("Secret {} set to default, removed from keychain", full_key);
+                info!("Secret {full_key} set to default, removed from keychain");
                 return Ok(());
             }
 
@@ -961,7 +950,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
                 _ => value.to_string(),
             };
             self.store_credential_with_profile(&full_key, &value_str)?;
-            info!("Secret setting {} stored in keychain", full_key);
+            info!("Secret setting {full_key} stored in keychain");
             return Ok(());
         }
 
@@ -971,31 +960,25 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         let mut stored: Value = {
             let cache = self.settings_cache.read();
             cache
-                .as_ref()
-                .map(|c| c.stored.clone())
-                .unwrap_or_else(|| json!({}))
+                .as_ref().map_or_else(|| json!({}), |c| c.stored.clone())
         };
 
         // Get default value from metadata
-        let metadata_key = format!("{}.{}", category, key);
+        let metadata_key = format!("{category}.{key}");
         let validator = metadata.get(&metadata_key);
 
         // Ensure setting exists in schema
         if validator.is_none() {
-            return Err(Error::SettingNotFound {
-                category: category.to_string(),
-                key: key.to_string(),
-            });
+            return Err(Error::SettingNotFound(format!("{category}.{key}")));
         }
 
-        let default_value = validator.map(|m| m.default.clone()).unwrap_or(Value::Null);
+        let default_value = validator.map_or(Value::Null, |m| m.default.clone());
 
         // Validate value
         if let Some(m) = validator {
             if let Err(e) = m.validate(&value) {
                 return Err(Error::Config(format!(
-                    "Validation failed for {}.{}: {}",
-                    category, key, e
+                    "Validation failed for {category}.{key}: {e}"
                 )));
             }
         }
@@ -1009,7 +992,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
         // Skip if value unchanged
         if old_value == value {
-            debug!("Setting {}.{} unchanged, skipping save", category, key);
+            debug!("Setting {category}.{key} unchanged, skipping save");
             return Ok(());
         }
 
@@ -1026,18 +1009,17 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         let category_obj = stored_obj
             .get_mut(category)
             .and_then(|v| v.as_object_mut())
-            .ok_or_else(|| Error::Parse(format!("Category {} is not an object", category)))?;
+            .ok_or_else(|| Error::Parse(format!("Category {category} is not an object")))?;
 
         // If value equals default, remove it (keep settings file minimal)
         if value == default_value {
             category_obj.remove(key);
             debug!(
-                "Setting {}.{} set to default, removed from store",
-                category, key
+                "Setting {category}.{key} set to default, removed from store"
             );
         } else {
             category_obj.insert(key.to_string(), value.clone());
-            debug!("Saved setting {}.{}", category, key);
+            debug!("Saved setting {category}.{key}");
         }
 
         // Remove empty categories
@@ -1060,7 +1042,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
             }
         }
 
-        info!("Setting {}.{} saved", category, key);
+        info!("Setting {category}.{key} saved");
 
         // Notify change listeners
         self.events.notify(&full_key, &old_value, &value);
@@ -1070,18 +1052,15 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
     /// Reset a single setting to default
     pub fn reset_setting<T: SettingsSchema>(&self, category: &str, key: &str) -> Result<Value> {
-        let metadata_key = format!("{}.{}", category, key);
+        let metadata_key = format!("{category}.{key}");
         let default_value = T::get_metadata()
             .get(&metadata_key)
             .map(|m| m.default.clone())
-            .ok_or_else(|| Error::SettingNotFound {
-                category: category.to_string(),
-                key: key.to_string(),
-            })?;
+            .ok_or_else(|| Error::SettingNotFound(format!("{category}.{key}")))?;
 
         self.save_setting::<T>(category, key, default_value.clone())?;
 
-        info!("Setting {}.{} reset to default", category, key);
+        info!("Setting {category}.{key} reset to default");
         Ok(default_value)
     }
 
@@ -1134,7 +1113,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         let mut guard = self.sub_settings.write();
         guard.insert(name.clone(), handler);
 
-        info!("Registered sub-settings type: {}", name);
+        info!("Registered sub-settings type: {name}");
     }
 
     /// Get a registered sub-settings handler.
@@ -1360,6 +1339,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
+            _schema: std::marker::PhantomData,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1395,6 +1375,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
+            _schema: std::marker::PhantomData,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1424,6 +1405,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
+            _schema: std::marker::PhantomData,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1458,6 +1440,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
+            _schema: std::marker::PhantomData,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1493,6 +1476,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
+            _schema: std::marker::PhantomData,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1529,6 +1513,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
+            _schema: std::marker::PhantomData,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1583,6 +1568,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
+            _schema: std::marker::PhantomData,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1618,6 +1604,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
+            _schema: std::marker::PhantomData,
         };
 
         let manager = SettingsManager::new(config).unwrap();

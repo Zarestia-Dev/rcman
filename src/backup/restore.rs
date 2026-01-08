@@ -1,22 +1,37 @@
 //! Restore functionality
 
 use super::archive::{extract_zip_archive, read_file_from_zip};
-use super::types::*;
+use crate::RestoreOptions;
 use crate::error::{Error, Result};
-#[cfg(feature = "profiles")]
-use crate::profiles::{MANIFEST_FILE, PROFILES_DIR};
 use crate::storage::StorageBackend;
 use log::{debug, info, warn};
 use std::fs;
 use std::path::Path;
 
-impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
+#[cfg(feature = "profiles")]
+use crate::SubSettingsManifestEntry;
+#[cfg(feature = "profiles")]
+use crate::profiles::{MANIFEST_FILE, PROFILES_DIR};
+
+impl<S: StorageBackend + 'static> super::BackupManager<'_, S> {
     /// Restore from a backup
-    pub fn restore(&self, options: RestoreOptions) -> Result<RestoreResult> {
+    /// 
+    /// # Arguments
+    /// 
+    /// * `options` - The restore options
+    /// 
+    /// # Returns
+    /// 
+    /// Returns a `RestoreResult` containing the result of the restore operation.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the backup cannot be read or the restore operation fails.
+    pub fn restore(&self, options: &RestoreOptions) -> Result<RestoreResult> {
         let mode_str = if options.dry_run { "[DRY RUN] " } else { "" };
         info!(
-            "{}📦 Restoring from backup: {:?}",
-            mode_str, options.backup_path
+            "{mode_str}📦 Restoring from backup: {:?}",
+            options.backup_path.display()
         );
 
         // Analyze the backup first
@@ -25,7 +40,8 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
         // Check manifest version compatibility
         if !analysis.is_valid {
             return Err(Error::InvalidBackup(format!(
-                "Backup manifest version {} is not supported (supported: {}-{})",
+                "{}: Backup manifest version {} is not supported (supported: {}-{})",
+                options.backup_path.display(),
                 analysis.manifest.version,
                 super::types::MANIFEST_VERSION_MIN_SUPPORTED,
                 super::types::MANIFEST_VERSION_MAX_SUPPORTED
@@ -64,18 +80,15 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                 result.checksum_valid = Some(is_valid);
 
                 if !is_valid {
-                    warn!(
-                        "⚠️ Checksum mismatch! Expected: {}, Got: {}",
-                        expected_checksum, actual_checksum
-                    );
-                    return Err(Error::InvalidBackup(
-                        "Data archive checksum verification failed - backup may be corrupted"
-                            .into(),
-                    ));
+                    warn!("Checksum mismatch! Expected: {expected_checksum}, Got: {actual_checksum}");
+                    return Err(Error::InvalidBackup(format!(
+                        "{}: Data archive checksum verification failed - backup may be corrupted",
+                        options.backup_path.display()
+                    )));
                 }
-                debug!("✅ Checksum verified: {}", actual_checksum);
+                debug!("Checksum verified: {actual_checksum}");
             } else {
-                debug!("ℹ️ No checksum in manifest, skipping verification");
+                debug!("No checksum in manifest, skipping verification");
             }
         }
 
@@ -106,10 +119,10 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                     if profiles_manifest.exists() {
                         if target_manifest.exists() && !options.overwrite_existing {
                             result.skipped.push(MANIFEST_FILE.into());
-                            warn!("{}⚠️ Skipping {} (exists)", mode_str, MANIFEST_FILE);
+                            warn!("{mode_str} Skipping {MANIFEST_FILE} (exists)");
                         } else if options.dry_run {
                             result.restored.push(MANIFEST_FILE.into());
-                            debug!("{}📋 Would restore {}", mode_str, MANIFEST_FILE);
+                            debug!("{mode_str} Would restore {MANIFEST_FILE}");
                         } else {
                             fs::copy(&profiles_manifest, &target_manifest).map_err(|e| {
                                 Error::FileWrite {
@@ -136,7 +149,7 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                                 .ok()
                                 .map(|entries| {
                                     entries
-                                        .filter_map(|e| e.ok())
+                                        .filter_map(std::result::Result::ok)
                                         .map(|e| e.file_name().to_string_lossy().to_string())
                                         .collect()
                                 })
@@ -146,7 +159,7 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                         for profile_name in profiles_to_restore {
                             let src_profile_path = profiles_src_dir.join(&profile_name);
                             if !src_profile_path.exists() {
-                                warn!("⚠️ Profile '{}' not found in backup", profile_name);
+                                warn!("{mode_str} Profile '{profile_name}' not found in backup");
                                 continue;
                             }
 
@@ -175,17 +188,14 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                                 let dest_settings = target_profile_path.join("settings.json");
                                 if dest_settings.exists() && !options.overwrite_existing {
                                     result.skipped.push(format!(
-                                        "profiles/{}/settings.json",
-                                        target_profile_name
+                                        "profiles/{target_profile_name}/settings.json",
                                     ));
                                 } else if options.dry_run {
                                     result.restored.push(format!(
-                                        "profiles/{}/settings.json",
-                                        target_profile_name
+                                        "profiles/{target_profile_name}/settings.json"
                                     ));
                                     debug!(
-                                        "{}📋 Would restore settings for profile {}",
-                                        mode_str, target_profile_name
+                                        "{mode_str} Would restore settings for profile {target_profile_name}"
                                     );
                                 } else {
                                     fs::copy(&src_settings, &dest_settings).map_err(|e| {
@@ -195,12 +205,10 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                                         }
                                     })?;
                                     result.restored.push(format!(
-                                        "profiles/{}/settings.json",
-                                        target_profile_name
+                                        "profiles/{target_profile_name}/settings.json"
                                     ));
                                     debug!(
-                                        "✅ Restored settings for profile {}",
-                                        target_profile_name
+                                        "Restored settings for profile {target_profile_name}"
                                     );
                                 }
                             }
@@ -217,12 +225,11 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                         if settings_dest.exists() && !options.overwrite_existing {
                             result.skipped.push("settings.json".into());
                             warn!(
-                                "{}⚠️ Skipping settings.json (exists, overwrite disabled)",
-                                mode_str
+                                "{mode_str} Skipping settings.json (exists, overwrite disabled)"
                             );
                         } else if options.dry_run {
                             result.restored.push("settings.json".into());
-                            debug!("{}📋 Would restore settings.json", mode_str);
+                            debug!("{mode_str} Would restore settings.json");
                         } else {
                             fs::copy(&settings_src, &settings_dest).map_err(|e| {
                                 Error::FileWrite {
@@ -231,7 +238,7 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                                 }
                             })?;
                             result.restored.push("settings.json".into());
-                            debug!("✅ Restored settings.json");
+                            debug!("Restored settings.json");
                         }
                     }
                 }
@@ -250,15 +257,9 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
             let sub_src_dir = extract_dir.join(&sub_type);
 
             // Get sub-settings handler
-            let sub = match self.manager.sub_settings(&sub_type) {
-                Ok(s) => s,
-                Err(_) => {
-                    warn!(
-                        "⚠️ Sub-settings type '{}' not registered, skipping",
-                        sub_type
-                    );
-                    continue;
-                }
+            let Ok(sub) = self.manager.sub_settings(&sub_type) else {
+                warn!("Sub-settings type '{sub_type}' not registered, skipping");
+                continue;
             };
 
             // Check if we are dealing with a profiled backup for this entry
@@ -310,7 +311,7 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                                     .ok()
                                     .map(|entries| {
                                         entries
-                                            .filter_map(|e| e.ok())
+                                            .filter_map(std::result::Result::ok)
                                             .map(|e| e.file_name().to_string_lossy().to_string())
                                             .collect()
                                     })
@@ -333,13 +334,13 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                                     profile_name.clone()
                                 };
 
-                                let target_profile_dir =
+                                let dest_profile_path =
                                     target_profiles_dir.join(&target_profile_name);
 
                                 // Restore content of profile (SingleFile or MultiFile)
                                 // We scan src_profile_path for .json files
                                 if let Ok(entries) = fs::read_dir(&src_profile_path) {
-                                    for entry in entries.filter_map(|e| e.ok()) {
+                                    for entry in entries.filter_map(std::result::Result::ok) {
                                         let path = entry.path();
                                         if path.extension().and_then(|s| s.to_str()) == Some("json")
                                         {
@@ -357,26 +358,23 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                                             }
 
                                             // Target file
-                                            let dest = target_profile_dir.join(&file_name);
+                                            let dest = dest_profile_path.join(&file_name);
 
                                             if dest.exists() && !options.overwrite_existing {
                                                 result.skipped.push(format!(
-                                                    "{}/{}/{}",
-                                                    sub_type, target_profile_name, stem
+                                                    "{sub_type}/{target_profile_name}/{stem}",
                                                 ));
                                             } else if options.dry_run {
                                                 result.restored.push(format!(
-                                                    "{}/{}/{}",
-                                                    sub_type, target_profile_name, stem
+                                                    "{sub_type}/{target_profile_name}/{stem}",
                                                 ));
                                                 debug!(
-                                                    "{}📋 Would restore {} to profile {}",
-                                                    mode_str, stem, target_profile_name
+                                                    "{mode_str} Would restore {stem} to profile {target_profile_name}",
                                                 );
                                             } else {
-                                                fs::create_dir_all(&target_profile_dir).map_err(
+                                                fs::create_dir_all(&dest_profile_path).map_err(
                                                     |e| Error::DirectoryCreate {
-                                                        path: target_profile_dir
+                                                        path: dest_profile_path
                                                             .display()
                                                             .to_string(),
                                                         source: e,
@@ -390,13 +388,9 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                                                     }
                                                 })?;
                                                 result.restored.push(format!(
-                                                    "{}/{}/{}",
-                                                    sub_type, target_profile_name, stem
+                                                    "{sub_type}/{target_profile_name}/{stem}"
                                                 ));
-                                                debug!(
-                                                    "✅ Restored {} to profile {}",
-                                                    stem, target_profile_name
-                                                );
+                                                debug!("Restored {stem} to profile {target_profile_name}");
                                             }
                                         }
                                     }
@@ -416,7 +410,7 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                                 // But we need to load json first.
 
                                 if let Ok(entries) = fs::read_dir(&src_profile_path) {
-                                    for entry in entries.filter_map(|e| e.ok()) {
+                                    for entry in entries.filter_map(std::result::Result::ok) {
                                         let path = entry.path();
                                         if path.extension().and_then(|s| s.to_str()) == Some("json")
                                         {
@@ -441,32 +435,26 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                                                 serde_json::from_str(&content)?;
 
                                             if sub.exists(&stem)? && !options.overwrite_existing {
-                                                result
-                                                    .skipped
-                                                    .push(format!("{}/{}", sub_type, stem));
+                                                result.skipped.push(format!("{sub_type}/{stem}"));
                                             } else if options.dry_run {
-                                                result
-                                                    .restored
-                                                    .push(format!("{}/{}", sub_type, stem));
+                                                result.restored.push(format!("{sub_type}/{stem}"));
                                             } else {
                                                 sub.set(&stem, &value)?;
-                                                result
-                                                    .restored
-                                                    .push(format!("{}/{}", sub_type, stem));
+                                                result.restored.push(format!("{sub_type}/{stem}"));
                                             }
                                         }
                                     }
                                 }
                             }
                         } else {
-                            warn!("⚠️ Cannot restore profiled backup of '{}' to non-profiled target without specifying --restore-profile", sub_type);
+                            warn!("Cannot restore profiled backup of '{sub_type}' to non-profiled target without specifying --restore-profile");
                         }
                     }
                 }
             } else {
                 // Not profiled backup, or profiles not compiled in.
                 // Standard flat restore logic (existing code adapted)
-                let sub_single_file_src = extract_dir.join(format!("{}.json", sub_type));
+                let sub_single_file_src = extract_dir.join(format!("{sub_type}.json"));
 
                 // ... [Existing Logic] ...
                 // To minimize diff complexity, I'll inline the existing logic here for the flat case
@@ -528,7 +516,7 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                         continue;
                     }
 
-                    let entry_id = format!("{}/{}", sub_type, entry_name);
+                    let entry_id = format!("{sub_type}/{entry_name}");
 
                     // Check if exists
                     if !options.overwrite_existing && sub.exists(&entry_name)? {
@@ -538,14 +526,14 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
 
                     if options.dry_run {
                         result.restored.push(entry_id.clone());
-                        debug!("{}📋 Would restore {}", mode_str, entry_id);
+                        debug!("{mode_str} Would restore {entry_id}");
                         continue;
                     }
 
                     sub.set(&entry_name, &value)?;
 
                     result.restored.push(entry_id.clone());
-                    debug!("✅ Restored {}", entry_id);
+                    debug!("Restored {entry_id}");
                 }
             }
         }
@@ -562,133 +550,112 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
                         continue;
                     }
 
-                    match self.resolve_external_config(config_name) {
-                        Some(external_config) => {
-                            // Read data from backup
-                            let src = external_dir.join(&external_config.archive_filename);
-                            let data = fs::read(&src).map_err(|e| Error::FileRead {
-                                path: src.display().to_string(),
-                                source: e,
-                            })?;
+                    if let Some(external_config) = self.resolve_external_config(config_name) {
+                        // Read data from backup
+                        let src = external_dir.join(&external_config.archive_filename);
+                        let data = fs::read(&src).map_err(|e| Error::FileRead {
+                            path: src.display().to_string(),
+                            source: e,
+                        })?;
 
-                            // Handle different import targets
-                            match &external_config.import_target {
-                                super::types::ImportTarget::ReadOnly => {
-                                    debug!(
-                                        "⏭️ Skipping read-only external config: {}",
-                                        config_name
-                                    );
+                        // Handle different import targets
+                        match &external_config.import_target {
+                            super::types::ImportTarget::ReadOnly => {
+                                debug!("Skipping read-only external config: {config_name}");
+                                result.skipped.push(config_name.clone());
+                            }
+                            super::types::ImportTarget::File(dest_path) => {
+                                if dest_path.exists() && !options.overwrite_existing {
                                     result.skipped.push(config_name.clone());
-                                    continue;
-                                }
-                                super::types::ImportTarget::File(dest_path) => {
-                                    if dest_path.exists() && !options.overwrite_existing {
-                                        result.skipped.push(config_name.clone());
-                                        debug!(
-                                            "{}⚠️ Skipping external {} (exists)",
-                                            mode_str, config_name
-                                        );
-                                    } else if options.dry_run {
-                                        result.restored.push(config_name.clone());
-                                        debug!(
-                                            "{}📋 Would restore external {}",
-                                            mode_str, config_name
-                                        );
-                                    } else {
-                                        if let Some(parent) = dest_path.parent() {
-                                            fs::create_dir_all(parent).map_err(|e| {
-                                                Error::FileWrite {
-                                                    path: parent.display().to_string(),
-                                                    source: e,
-                                                }
-                                            })?;
-                                        }
-                                        fs::write(dest_path, &data).map_err(|e| {
+                                    debug!("{mode_str} Skipping external {config_name} (exists)");
+                                } else if options.dry_run {
+                                    result.restored.push(config_name.clone());
+                                    debug!("{mode_str} Would restore external {config_name}");
+                                } else {
+                                    if let Some(parent) = dest_path.parent() {
+                                        fs::create_dir_all(parent).map_err(|e| {
                                             Error::FileWrite {
-                                                path: dest_path.display().to_string(),
+                                                path: parent.display().to_string(),
                                                 source: e,
                                             }
                                         })?;
-                                        result.restored.push(config_name.clone());
-                                        debug!("✅ Restored external {}", config_name);
                                     }
-                                }
-                                super::types::ImportTarget::Command { program, args } => {
-                                    if options.dry_run {
-                                        result.restored.push(config_name.clone());
-                                        debug!("{}📋 Would pipe to command: {}", mode_str, program);
-                                    } else {
-                                        use std::io::Write;
-                                        use std::process::{Command, Stdio};
-
-                                        let mut child = Command::new(program)
-                                            .args(args)
-                                            .stdin(Stdio::piped())
-                                            .spawn()
-                                            .map_err(|e| {
-                                                Error::BackupFailed(format!(
-                                                    "Failed to spawn command '{}': {}",
-                                                    program, e
-                                                ))
-                                            })?;
-
-                                        if let Some(mut stdin) = child.stdin.take() {
-                                            stdin.write_all(&data).map_err(|e| {
-                                                Error::BackupFailed(format!(
-                                                    "Failed to write to command stdin: {}",
-                                                    e
-                                                ))
-                                            })?;
+                                    fs::write(dest_path, &data).map_err(|e| {
+                                        Error::FileWrite {
+                                            path: dest_path.display().to_string(),
+                                            source: e,
                                         }
+                                    })?;
+                                    result.restored.push(config_name.clone());
+                                    debug!("Restored external {config_name}");
+                                }
+                            }
+                            super::types::ImportTarget::Command { program, args } => {
+                                if options.dry_run {
+                                    result.restored.push(config_name.clone());
+                                    debug!("{mode_str} Would pipe to command: {program}");
+                                } else {
+                                    use std::io::Write;
+                                    use std::process::{Command, Stdio};
 
-                                        let status = child.wait().map_err(|e| {
+                                    let mut child = Command::new(program)
+                                        .args(args)
+                                        .stdin(Stdio::piped())
+                                        .spawn()
+                                        .map_err(|e| {
                                             Error::BackupFailed(format!(
-                                                "Command '{}' failed: {}",
-                                                program, e
+                                                "Failed to spawn command '{program}': {e}"
                                             ))
                                         })?;
 
-                                        if !status.success() {
-                                            return Err(Error::BackupFailed(format!(
-                                                "Command '{}' exited with code {:?}",
-                                                program,
-                                                status.code()
-                                            )));
-                                        }
+                                    if let Some(mut stdin) = child.stdin.take() {
+                                        stdin.write_all(&data).map_err(|e| {
+                                            Error::BackupFailed(format!(
+                                                "Failed to write to command stdin: {e}"
+                                            ))
+                                        })?;
+                                    }
 
-                                        result.restored.push(config_name.clone());
-                                        debug!("✅ Restored external {} via command", config_name);
+                                    let status = child.wait().map_err(|e| {
+                                        Error::BackupFailed(format!(
+                                            "Command '{program}' failed: {e}"
+                                        ))
+                                    })?;
+
+                                    if !status.success() {
+                                        return Err(Error::BackupFailed(format!(
+                                            "Command '{program}' exited with code {:?}",
+                                            status.code()
+                                        )));
                                     }
+
+                                    result.restored.push(config_name.clone());
+                                    debug!("Restored external {config_name} via command");
                                 }
-                                super::types::ImportTarget::Handler(handler) => {
-                                    if options.dry_run {
-                                        result.restored.push(config_name.clone());
-                                        debug!(
-                                            "{}📋 Would call custom handler for {}",
-                                            mode_str, config_name
-                                        );
-                                    } else {
-                                        handler(&data)?;
-                                        result.restored.push(config_name.clone());
-                                        debug!("✅ Restored external {} via handler", config_name);
-                                    }
+                            }
+                            super::types::ImportTarget::Handler(handler) => {
+                                if options.dry_run {
+                                    result.restored.push(config_name.clone());
+                                    debug!("{mode_str} Would call custom handler for {config_name}");
+                                } else {
+                                    handler(&data)?;
+                                    result.restored.push(config_name.clone());
+                                    debug!("Restored external {config_name} via handler");
                                 }
                             }
                         }
-                        None => {
-                            result.external_pending.push(config_name.clone());
-                            warn!(
-                                "⚠️ Unknown external config ID: {}, requires manual restore",
-                                config_name
-                            );
-                        }
+                    } else {
+                        result.external_pending.push(config_name.clone());
+                        warn!(
+                            "Unknown external config ID: {config_name}, requires manual restore"
+                        );
                     }
                 }
             }
         }
 
         info!(
-            "✅ Restore complete: {} restored, {} skipped",
+            "Restore complete: {} restored, {} skipped",
             result.restored.len(),
             result.skipped.len()
         );
@@ -697,7 +664,21 @@ impl<'a, S: StorageBackend + 'static> super::BackupManager<'a, S> {
     }
 
     /// Get the path to an external config from a backup (for manual restoration)
-    pub fn get_external_config_from_backup(
+    /// 
+    /// # Arguments
+    /// 
+    /// * `backup_path` - The path to the backup file
+    /// * `config_name` - The name of the external config to restore
+    /// * `password` - The password for the backup file (if encrypted)
+    /// 
+    /// # Returns
+    /// 
+    /// Returns a vector of bytes containing the external config data.
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the backup cannot be read or the external config cannot be restored.
+pub fn get_external_config_from_backup(
         &self,
         backup_path: &Path,
         config_name: &str,
@@ -777,16 +758,19 @@ pub struct RestoreResult {
 
 impl RestoreResult {
     /// Check if anything was restored
+    #[must_use]
     pub fn has_changes(&self) -> bool {
         !self.restored.is_empty()
     }
 
     /// Get total item count
+    #[must_use]
     pub fn total(&self) -> usize {
         self.restored.len() + self.skipped.len()
     }
 
     /// Would this restore have made changes (for dry run results)
+    #[must_use]
     pub fn would_change(&self) -> bool {
         !self.restored.is_empty() || self.checksum_valid == Some(false)
     }
@@ -799,6 +783,7 @@ impl RestoreResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BackupOptions;
     use crate::config::SettingsConfig;
     use crate::manager::SettingsManager;
     use crate::storage::JsonStorage;
@@ -826,6 +811,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
+            _schema: std::marker::PhantomData,
         };
 
         fs::create_dir_all(&config.config_dir).unwrap();
@@ -844,7 +830,7 @@ mod tests {
         // Create backup
         let backup = manager.backup();
         let backup_path = backup
-            .create(BackupOptions {
+            .create(&BackupOptions {
                 output_dir: temp.path().join("backups"),
                 include_sub_settings: vec!["items".into()],
                 ..Default::default()
@@ -868,6 +854,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
+            _schema: std::marker::PhantomData,
         };
 
         let manager2 = SettingsManager::new(config2).unwrap();
@@ -876,7 +863,7 @@ mod tests {
         // Restore
         let result = manager2
             .backup()
-            .restore(RestoreOptions {
+            .restore(&RestoreOptions {
                 backup_path,
                 restore_settings: true,
                 ..Default::default()
@@ -913,6 +900,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
+            _schema: std::marker::PhantomData,
         };
 
         fs::create_dir_all(&config.config_dir).unwrap();
@@ -921,7 +909,7 @@ mod tests {
         let manager = SettingsManager::new(config).unwrap();
         let backup_path = manager
             .backup()
-            .create(BackupOptions {
+            .create(&BackupOptions {
                 output_dir: temp.path().join("backups"),
                 ..Default::default()
             })
@@ -930,7 +918,7 @@ mod tests {
         // Restore with overwrite disabled (settings already exist)
         let result = manager
             .backup()
-            .restore(RestoreOptions {
+            .restore(&RestoreOptions {
                 backup_path,
                 overwrite_existing: false,
                 ..Default::default()

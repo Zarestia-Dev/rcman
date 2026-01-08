@@ -21,6 +21,10 @@ use std::path::Path;
 /// let path = Path::new("/tmp/sensitive.json");
 /// set_secure_file_permissions(path).unwrap();
 /// ```
+/// 
+/// # Errors
+/// 
+/// * `Error::Io` - If the file cannot be set to secure permissions
 #[cfg(unix)]
 pub fn set_secure_file_permissions(path: &Path) -> Result<()> {
     use std::fs;
@@ -60,6 +64,10 @@ pub fn set_secure_file_permissions(path: &Path) -> Result<()> {
 /// let path = Path::new("/tmp/config");
 /// set_secure_dir_permissions(path).unwrap();
 /// ```
+/// 
+/// # Errors
+/// 
+/// * `Error::Io` - If the directory cannot be set to secure permissions
 #[cfg(unix)]
 pub fn set_secure_dir_permissions(path: &Path) -> Result<()> {
     use std::fs;

@@ -286,24 +286,28 @@ impl SettingMetadata {
     }
 
     /// Set options for Select type
+    #[must_use] 
     pub fn options(mut self, opts: Vec<SettingOption>) -> Self {
         self.options = Some(opts);
         self
     }
 
     /// Set minimum value for Number type
+    #[must_use] 
     pub fn min(mut self, val: f64) -> Self {
         self.min = Some(val);
         self
     }
 
     /// Set maximum value for Number type
+    #[must_use] 
     pub fn max(mut self, val: f64) -> Self {
         self.max = Some(val);
         self
     }
 
     /// Set step for Number type
+    #[must_use] 
     pub fn step(mut self, val: f64) -> Self {
         self.step = Some(val);
         self
@@ -316,6 +320,7 @@ impl SettingMetadata {
     }
 
     /// Mark as requiring restart
+    #[must_use] 
     pub fn requires_restart(mut self) -> Self {
         self.requires_restart = true;
         self
@@ -328,24 +333,28 @@ impl SettingMetadata {
     }
 
     /// Set display order
+    #[must_use] 
     pub fn order(mut self, ord: i32) -> Self {
         self.order = Some(ord);
         self
     }
 
     /// Mark as advanced setting
+    #[must_use] 
     pub fn advanced(mut self) -> Self {
         self.advanced = true;
         self
     }
 
     /// Mark as disabled
+    #[must_use] 
     pub fn disabled(mut self) -> Self {
         self.disabled = true;
         self
     }
 
     /// Mark as secret (stored in keychain when credentials enabled)
+    #[must_use] 
     pub fn secret(mut self) -> Self {
         self.secret = true;
         self
@@ -382,12 +391,12 @@ impl SettingMetadata {
 
                 if let Some(min) = self.min {
                     if num < min {
-                        return Err(format!("Value must be at least {}", min));
+                        return Err(format!("Value must be at least {min}"));
                     }
                 }
                 if let Some(max) = self.max {
                     if num > max {
-                        return Err(format!("Value must be at most {}", max));
+                        return Err(format!("Value must be at most {max}"));
                     }
                 }
             }
@@ -395,11 +404,11 @@ impl SettingMetadata {
                 if let Some(ref pattern) = self.pattern {
                     let text = value.as_str().unwrap_or_default();
                     let re = regex::Regex::new(pattern)
-                        .map_err(|e| format!("Invalid regex pattern: {}", e))?;
+                        .map_err(|e| format!("Invalid regex pattern: {e}"))?;
 
                     if !re.is_match(text) {
                         return Err(self.pattern_error.clone().unwrap_or_else(|| {
-                            format!("Value does not match pattern: {}", pattern)
+                            format!("Value does not match pattern: {pattern}")
                         }));
                     }
                 }
@@ -463,10 +472,11 @@ impl SettingOption {
 pub trait SettingsSchema: Default + Serialize + for<'de> Deserialize<'de> {
     /// Get metadata for all settings
     ///
-    /// The key format should be "category.setting_name" (e.g., "general.language")
+    /// The key format should be "`category.setting_name`" (e.g., "general.language")
     fn get_metadata() -> HashMap<String, SettingMetadata>;
 
     /// Get list of categories in display order
+    #[must_use] 
     fn get_categories() -> Vec<String> {
         let metadata = Self::get_metadata();
         let mut categories: Vec<String> = metadata
@@ -479,11 +489,18 @@ pub trait SettingsSchema: Default + Serialize + for<'de> Deserialize<'de> {
     }
 }
 
+// Default implementation for () to allow DynamicManager (no schema)
+impl SettingsSchema for () {
+    fn get_metadata() -> HashMap<String, SettingMetadata> {
+        HashMap::new()
+    }
+}
+
 // =============================================================================
 // Helper Functions
 // =============================================================================
 
-/// Shorthand for creating a SettingOption
+/// Shorthand for creating a `SettingOption`
 ///
 /// # Example
 /// ```rust
@@ -494,7 +511,7 @@ pub fn opt(value: impl Into<String>, label: impl Into<String>) -> SettingOption 
     SettingOption::new(value, label)
 }
 
-/// Macro for building settings metadata HashMap more cleanly
+/// Macro for building settings metadata `HashMap` more cleanly
 ///
 /// # Example
 /// ```rust,compile_fail

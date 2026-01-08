@@ -1,9 +1,10 @@
-//! Builder for SettingsManager
+//! Builder for `SettingsManager`
 //!
 //! This module contains [`SettingsManagerBuilder`] which provides a fluent API
 //! for creating a [`SettingsManager`](super::SettingsManager).
 
 use crate::config::SettingsConfigBuilder;
+use crate::config::SettingsSchema;
 use crate::error::Result;
 use crate::storage::JsonStorage;
 use crate::sub_settings::SubSettingsConfig;
@@ -30,7 +31,7 @@ use super::SettingsManager;
 ///     .unwrap();
 /// ```
 pub struct SettingsManagerBuilder {
-    config_builder: SettingsConfigBuilder,
+    config_builder: SettingsConfigBuilder<JsonStorage>,
     sub_settings: Vec<SubSettingsConfig>,
 }
 
@@ -42,22 +43,27 @@ impl SettingsManagerBuilder {
             sub_settings: Vec::new(),
         }
     }
+}
 
+impl SettingsManagerBuilder {
     /// Set the configuration directory.
     ///
     /// Supports `~` expansion for home directory.
+    #[must_use]
     pub fn config_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.config_builder = self.config_builder.config_dir(path);
         self
     }
 
     /// Set the settings filename (default: "settings.json").
+    #[must_use]
     pub fn settings_file(mut self, filename: impl Into<String>) -> Self {
         self.config_builder = self.config_builder.settings_file(filename);
         self
     }
 
     /// Use compact JSON (no pretty printing).
+    #[must_use] 
     pub fn compact_json(mut self) -> Self {
         self.config_builder = self.config_builder.compact_json();
         self
@@ -67,6 +73,7 @@ impl SettingsManagerBuilder {
     ///
     /// When enabled, settings marked as `secret: true` in metadata
     /// will be stored in the OS keychain instead of the settings file.
+    #[must_use] 
     pub fn with_credentials(mut self) -> Self {
         self.config_builder = self.config_builder.with_credentials();
         self
@@ -89,6 +96,7 @@ impl SettingsManagerBuilder {
     ///
     /// // Now MYAPP_UI_THEME=dark will override the "ui.theme" setting
     /// ```
+    #[must_use]
     pub fn with_env_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.config_builder = self.config_builder.with_env_prefix(prefix);
         self
@@ -98,6 +106,7 @@ impl SettingsManagerBuilder {
     ///
     /// By default, secrets stored in the OS keychain are NOT affected by env vars.
     /// Enable this for Docker/CI environments where secrets are passed via env.
+    #[must_use] 
     pub fn env_overrides_secrets(mut self, allow: bool) -> Self {
         self.config_builder = self.config_builder.env_overrides_secrets(allow);
         self
@@ -109,6 +118,7 @@ impl SettingsManagerBuilder {
     /// If the function modifies the value, the migrated version is saved back.
     ///
     /// Use this to upgrade old data formats to new ones transparently.
+    #[must_use]
     pub fn with_migrator<F>(mut self, migrator: F) -> Self
     where
         F: Fn(serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
@@ -122,8 +132,15 @@ impl SettingsManagerBuilder {
     /// External configs are files managed outside of rcman (like rclone.conf)
     /// that can be included in backups.
     #[cfg(feature = "backup")]
+    #[must_use] 
     pub fn with_external_config(mut self, config: crate::backup::ExternalConfig) -> Self {
         self.config_builder = self.config_builder.with_external_config(config);
+        self
+    }
+
+    /// Specify the schema type for the settings (no-op for backward compatibility)
+    #[must_use] 
+    pub fn with_schema<NewSchema: SettingsSchema>(self) -> Self {
         self
     }
 
@@ -146,6 +163,7 @@ impl SettingsManagerBuilder {
     /// # Ok::<(), rcman::Error>(())
     /// ```
     #[cfg(feature = "profiles")]
+    #[must_use] 
     pub fn with_profiles(mut self) -> Self {
         self.config_builder = self.config_builder.with_profiles();
         self
@@ -167,6 +185,7 @@ impl SettingsManagerBuilder {
     ///     .build()
     ///     .unwrap();
     /// ```
+    #[must_use] 
     pub fn with_sub_settings(mut self, config: SubSettingsConfig) -> Self {
         self.sub_settings.push(config);
         self

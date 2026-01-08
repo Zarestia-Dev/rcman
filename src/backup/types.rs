@@ -7,7 +7,7 @@ use std::path::PathBuf;
 /// Category of exportable data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportCategory {
-    /// Unique identifier (e.g., "remotes", "backend", "rclone_config")
+    /// Unique identifier (e.g., "remotes", "backend", "`rclone_config`")
     pub id: String,
 
     /// Human-readable name for display
@@ -82,7 +82,7 @@ pub struct BackupOptions {
     /// External configs to include (by id)
     pub include_external_configs: Vec<String>,
 
-    /// Custom filename suffix (e.g. "remotes" -> "app_timestamp_remotes.rcman")
+    /// Custom filename suffix (e.g. "remotes" -> "`app_timestamp_remotes.rcman`")
     pub filename_suffix: Option<String>,
 
     /// Progress callback (processed bytes, total bytes)
@@ -93,7 +93,7 @@ pub struct BackupOptions {
     pub include_profiles: Vec<String>,
 }
 
-/// Callback function for progress reporting (current_bytes, total_bytes)
+/// Callback function for progress reporting (`current_bytes`, `total_bytes`)
 #[derive(Clone)]
 pub struct ProgressCallback(pub std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>);
 
@@ -167,7 +167,7 @@ impl BackupOptions {
         self
     }
 
-    /// Set the export type (Full, SettingsOnly, or Single)
+    /// Set the export type (Full, `SettingsOnly`, or Single)
     #[must_use]
     pub fn export_type(mut self, export_type: ExportType) -> Self {
         self.export_type = export_type;
@@ -255,7 +255,7 @@ pub struct RestoreOptions {
     pub restore_settings: bool,
 
     /// Sub-settings to restore (category -> items, empty vec = all items in category)
-    /// If empty HashMap, restores all sub-settings from backup
+    /// If empty `HashMap`, restores all sub-settings from backup
     pub restore_sub_settings: std::collections::HashMap<String, Vec<String>>,
 
     /// External config IDs to restore (empty = all from backup)
@@ -274,7 +274,7 @@ pub struct RestoreOptions {
     #[cfg(feature = "profiles")]
     pub restore_profile: Option<String>,
 
-    /// Rename restored profile to this name (requires restore_profile)
+    /// Rename restored profile to this name (requires `restore_profile`)
     #[cfg(feature = "profiles")]
     pub restore_profile_as: Option<String>,
 }
@@ -387,7 +387,7 @@ impl RestoreOptions {
         self
     }
 
-    /// Set target name for restored profile (requires restore_profile)
+    /// Set target name for restored profile (requires `restore_profile`)
     #[cfg(feature = "profiles")]
     #[must_use]
     pub fn restore_profile_as(mut self, name: impl Into<String>) -> Self {
@@ -479,7 +479,7 @@ impl std::fmt::Debug for ImportTarget {
 /// ```
 #[derive(Debug, Clone)]
 pub struct ExternalConfig {
-    /// Unique identifier for referencing in BackupOptions
+    /// Unique identifier for referencing in `BackupOptions`
     pub id: String,
 
     /// Filename used inside the backup archive
@@ -514,16 +514,14 @@ impl ExternalConfig {
     /// Both export and import will use the same file path.
     ///
     /// # Arguments
-    /// * `id` - Unique identifier (used in BackupOptions::include_external)
+    /// * `id` - Unique identifier (used in `BackupOptions::include_external`)
     /// * `path` - Path to the file or directory
     pub fn new(id: impl Into<String>, path: impl Into<PathBuf>) -> Self {
         let id = id.into();
         let path = path.into();
         let archive_filename = path
             .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| format!("{}.dat", id));
-
+            .map_or_else(|| format!("{id}.dat"), |s| s.to_string_lossy().to_string());
         Self {
             display_name: id.clone(),
             id,
@@ -586,30 +584,34 @@ impl ExternalConfig {
     }
 
     /// Set the export command (for Command source)
+    #[must_use]
     pub fn export_command(mut self, program: impl Into<String>, args: &[&str]) -> Self {
         self.export_source = ExportSource::Command {
             program: program.into(),
-            args: args.iter().map(|s| s.to_string()).collect(),
+            args: args.iter().map(std::string::ToString::to_string).collect(),
         };
         self
     }
 
     /// Set import to write to a file
+    #[must_use]
     pub fn import_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.import_target = ImportTarget::File(path.into());
         self
     }
 
     /// Set import to pipe to a command's stdin
+    #[must_use]
     pub fn import_command(mut self, program: impl Into<String>, args: &[&str]) -> Self {
         self.import_target = ImportTarget::Command {
             program: program.into(),
-            args: args.iter().map(|s| s.to_string()).collect(),
+            args: args.iter().map(std::string::ToString::to_string).collect(),
         };
         self
     }
 
     /// Set import to use a custom handler
+    #[must_use]
     pub fn import_handler<F>(mut self, handler: F) -> Self
     where
         F: Fn(&[u8]) -> crate::error::Result<()> + Send + Sync + 'static,
@@ -619,47 +621,53 @@ impl ExternalConfig {
     }
 
     /// Mark import as read-only (cannot be restored)
+    #[must_use]
     pub fn import_read_only(mut self) -> Self {
         self.import_target = ImportTarget::ReadOnly;
         self
     }
 
     /// Set a human-readable display name
+    #[must_use]
     pub fn display_name(mut self, name: impl Into<String>) -> Self {
         self.display_name = name.into();
         self
     }
 
     /// Set a description
+    #[must_use]
     pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());
         self
     }
 
     /// Mark this config as containing sensitive data
+    #[must_use]
     pub fn sensitive(mut self) -> Self {
         self.is_sensitive = true;
         self
     }
 
     /// Mark this config as optional (not included by default in full backup)
+    #[must_use]
     pub fn optional(mut self) -> Self {
         self.optional = true;
         self
     }
 
     /// Mark this as a directory instead of a file (only for File source)
+    #[must_use]
     pub fn directory(mut self) -> Self {
         self.is_directory = true;
         self
     }
 
     /// Check if the source exists (only meaningful for File source)
+    #[must_use]
     pub fn exists(&self) -> bool {
         match &self.export_source {
             ExportSource::File(path) => path.exists(),
-            ExportSource::Command { .. } => true, // Commands are assumed to work
-            ExportSource::Content(_) => true,     // Content is always present
+            ExportSource::Command { .. } | ExportSource::Content(_) => true,
         }
     }
 }
@@ -684,6 +692,7 @@ pub const MANIFEST_VERSION_MIN_SUPPORTED: u32 = 1;
 pub const MANIFEST_VERSION_MAX_SUPPORTED: u32 = 1;
 
 /// Check if a manifest version is supported for restore
+#[must_use]
 pub fn is_manifest_version_supported(version: u32) -> bool {
     version >= MANIFEST_VERSION_MIN_SUPPORTED && version <= MANIFEST_VERSION_MAX_SUPPORTED
 }
@@ -767,7 +776,7 @@ pub struct BackupIntegrity {
 ///
 /// This supports the "Enterprise" polymorphic schema:
 /// - Single-file settings (e.g. "backend") -> stores filename string "backend.json"
-/// - Multi-file settings (e.g. "remotes") -> stores list of items ["gdrive", "s3"]
+/// - Multi-file settings (e.g. "remotes") -> stores list of items [`gdrive`, `s3`]
 /// - Profiled settings -> stores profile names and mode
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -801,16 +810,22 @@ pub struct BackupContents {
     /// External configs included (by id)
     pub external_configs: Vec<String>,
 
+    /// Profiles included
+    #[cfg(feature = "profiles")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profiles: Option<Vec<String>>,
+
     /// Total file count
     pub file_count: u32,
 }
 
 impl BackupContents {
-    /// Convert manifest entries to a simple HashMap for processing
+    /// Convert manifest entries to a simple `HashMap` for processing
     ///
     /// This is used during restore to get a list of (type, items) to process.
-    /// For SingleFile entries, returns an empty vec (meaning "all items").
-    /// For MultiFile entries, returns the list of item names.
+    /// For `SingleFile` entries, returns an empty vec (meaning "all items").
+    /// For `MultiFile` entries, returns the list of item names.
+    #[must_use]
     pub fn sub_settings_list(&self) -> std::collections::HashMap<String, Vec<String>> {
         self.sub_settings
             .iter()

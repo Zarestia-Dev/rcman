@@ -73,29 +73,49 @@ cargo add rcman --features full
 
 ## Quick Start
 
-```rust
-use rcman::{SettingsManager, SubSettingsConfig};
+### Choosing Your API Pattern
 
-// Initialize with fluent builder API
-let manager = SettingsManager::builder("my-app", "1.0.0")
-    .config_dir("~/.config/my-app")
-    .with_credentials()      // Enable automatic secret storage
-    .with_env_prefix("MYAPP") // Enable env var overrides (MYAPP_UI_THEME=dark)
-    .with_sub_settings(SubSettingsConfig::new("remotes"))  // Per-entity config
-    .with_migrator(|mut value| {
-        // Transparent schema upgrades (runs once on first load)
-        if let Some(obj) = value.as_object_mut() {
-            // Example: rename old field to new field
-            if let Some(ui) = obj.get_mut("ui").and_then(|v| v.as_object_mut()) {
-                if let Some(color) = ui.remove("color") {
-                    ui.insert("theme".to_string(), color);
-                }
-            }
-        }
-        value
-    })
+rcman offers two primary patterns depending on your needs:
+
+#### 🎯 Type-Safe Pattern (Recommended)
+
+Best for: Applications with a defined schema and need compile-time safety.
+
+```rust
+use rcman::{TypedManager, SettingsSchema, SettingMetadata, settings};
+use serde::{Serialize, Deserialize};
+
+#[derive(Default, Serialize, Deserialize)]
+struct MySettings { theme: String }
+
+impl SettingsSchema for MySettings {
+    fn get_metadata() -> std::collections::HashMap<String, SettingMetadata> {
+        settings! { "ui.theme" => SettingMetadata::text("Theme", "dark") }
+    }
+}
+
+let manager = TypedManager::<MySettings>::builder("my-app", "1.0.0")
+    .with_schema::<MySettings>()
     .build()?;
+
+// Type-safe access!
+let settings: MySettings = manager.settings()?;
 ```
+
+#### 🔧 Dynamic Pattern
+
+Best for: Plugins, dynamic configs, or when schema is defined externally.
+
+```rust
+use rcman::DynamicManager;
+
+let manager = DynamicManager::builder("my-app", "1.0.0").build()?;
+
+// Runtime access via HashMap
+let settings = manager.load_settings()?;
+```
+
+> **📖 See [examples/api_patterns.rs](examples/api_patterns.rs) for comprehensive comparisons**
 
 ---
 
@@ -529,6 +549,206 @@ for (key, meta) in settings {
 >     .env_overrides_secrets(true)  // Allow MYAPP_API_KEY to override keychain
 >     .build()
 > ```
+
+---
+
+## Migration & Schema Evolution
+
+rcman supports transparent schema migration for evolving your settings over time without breaking existing user configs.
+
+### How Migration Works
+
+Migrations run **lazily** on first settings load. If the migrator returns a modified value, rcman automatically saves the upgraded config.
+
+### Basic Migration Example
+
+```rust
+use rcman::SettingsConfig;
+use serde_json::Value;
+
+let config = SettingsConfig::builder("my-app", "2.0.0")
+    .with_migrator(|mut value| {
+        // Runs once on load if config exists
+        if let Some(obj) = value.as_object_mut() {
+            // Example: Rename field
+            if let Some(ui) = obj.get_mut("ui").and_then(|v| v.as_object_mut()) {
+                if let Some(old_field) = ui.remove("color") {
+                    ui.insert("theme".to_string(), old_field);
+                }
+            }
+            
+            // Example: Add new field with default
+            if !obj.contains_key("features") {
+                obj.insert("features".to_string(), serde_json::json!({
+                    "telemetry": false
+                }));
+            }
+        }
+        value  // Return modified value
+    })
+    .build();
+```
+
+### Common Migration Patterns
+
+#### 1. Renaming Settings
+
+```rust
+.with_migrator(|mut value| {
+    if let Some(obj) = value.as_object_mut() {
+        // Rename "network.timeout_ms" → "network.request_timeout"
+        if let Some(net) = obj.get_mut("network").and_then(|v| v.as_object_mut()) {
+            if let Some(timeout) = net.remove("timeout_ms") {
+                net.insert("request_timeout".to_string(), timeout);
+            }
+        }
+    }
+    value
+})
+```
+
+#### 2. Adding New Settings with Defaults
+
+```rust
+.with_migrator(|mut value| {
+    if let Some(obj) = value.as_object_mut() {
+        // Add new category if missing
+        if !obj.contains_key("experimental") {
+            obj.insert("experimental".to_string(), serde_json::json!({
+                "beta_features": false,
+                "debug_mode": false
+            }));
+        }
+    }
+    value
+})
+```
+
+#### 3. Type Conversions
+
+```rust
+.with_migrator(|mut value| {
+    if let Some(obj) = value.as_object_mut() {
+        // Convert port from string to number
+        if let Some(port) = obj.get("server").and_then(|v| v.get("port")) {
+            if let Some(port_str) = port.as_str() {
+                if let Ok(port_num) = port_str.parse::<u16>() {
+                    obj.get_mut("server")
+                        .and_then(|v| v.as_object_mut())
+                        .map(|server| {
+                            server.insert("port".to_string(), serde_json::json!(port_num));
+                        });
+                }
+            }
+        }
+    }
+    value
+})
+```
+
+#### 4. Multi-Version Migrations
+
+```rust
+.with_migrator(|mut value| {
+    // Check current schema version
+    let version = value.get("_schema_version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1);
+    
+    if version < 2 {
+        // Migrate v1 → v2
+        if let Some(obj) = value.as_object_mut() {
+            // ... migration logic ...
+            obj.insert("_schema_version".to_string(), serde_json::json!(2));
+        }
+    }
+    
+    if version < 3 {
+        // Migrate v2 → v3
+        if let Some(obj) = value.as_object_mut() {
+            // ... migration logic ...
+            obj.insert("_schema_version".to_string(), serde_json::json!(3));
+        }
+    }
+    
+    value
+})
+```
+
+### Profile-Specific Migrations
+
+When using profiles, you can migrate all profiles automatically:
+
+```rust
+#[cfg(feature = "profiles")]
+use rcman::profiles::ProfileMigrator;
+
+let config = SettingsConfig::builder("my-app", "2.0.0")
+    .enable_profiles(ProfileMigrator::Auto)  // Applies main migrator to all profiles
+    .with_migrator(|mut value| {
+        // This runs for main settings AND all profiles
+        // ... migration logic ...
+        value
+    })
+    .build();
+```
+
+### Testing Migrations
+
+Always test your migrations with real user data:
+
+```rust
+#[test]
+fn test_migration_v1_to_v2() {
+    use serde_json::json;
+    
+    // Old format
+    let old_config = json!({
+        "ui": { "color": "dark" }
+    });
+    
+    // Apply migration
+    let migrator = |mut value: Value| {
+        if let Some(obj) = value.as_object_mut() {
+            if let Some(ui) = obj.get_mut("ui").and_then(|v| v.as_object_mut()) {
+                if let Some(color) = ui.remove("color") {
+                    ui.insert("theme".to_string(), color);
+                }
+            }
+        }
+        value
+    };
+    
+    let new_config = migrator(old_config);
+    
+    // Verify
+    assert_eq!(new_config["ui"]["theme"], "dark");
+    assert!(new_config["ui"].get("color").is_none());
+}
+```
+
+### Migration Best Practices
+
+1. **Never delete data** - Rename or move instead
+2. **Version your schema** - Use `_schema_version` field to track changes
+3. **Test with real data** - Use copies of actual user configs
+4. **Document breaking changes** - In CHANGELOG.md and migration comments
+5. **Keep migrations forever** - Users might upgrade from any version
+6. **One-way only** - Don't try to support downgrade paths
+7. **Fail gracefully** - Log errors, don't crash on migration failure
+
+### Migration Logging
+
+```rust
+.with_migrator(|mut value| {
+    log::info!("Running schema migration to v2.0.0");
+    
+    // ... migration logic ...
+    
+    log::info!("Migration completed successfully");
+    value
+})
+```
 
 ---
 

@@ -23,7 +23,7 @@ pub enum ProfileMigrator {
     #[default]
     Auto,
     /// Custom migration logic
-    /// Arguments: (root_dir) -> Result<()>
+    /// Arguments: (`root_dir`) -> Result<()>
     Custom(MigrationFn),
     /// No migration (error if flat structure found but profiles enabled)
     None,
@@ -40,6 +40,17 @@ impl std::fmt::Debug for ProfileMigrator {
 }
 
 /// Execute migration if needed
+///
+/// # Arguments
+///
+/// * `root_dir` - The root directory to migrate
+/// * `target_name` - The name of the target
+/// * `single_file_mode` - Whether to migrate in single file mode
+/// * `strategy` - The migration strategy to use
+///
+/// # Errors
+///
+/// Returns an error if the migration fails.
 pub fn migrate(
     root_dir: &Path,
     target_name: &str,
@@ -51,7 +62,7 @@ pub fn migrate(
 
     // If manifest exists, we are already profiled
     if manifest_path.exists() {
-        debug!("Profiles already initialized for '{}'", target_name);
+        debug!("Profiles already initialized for '{target_name}'");
         return Ok(());
     }
 
@@ -74,13 +85,12 @@ pub fn migrate(
         return Ok(());
     }
 
-    info!("Migrating '{}' to profile structure...", target_name);
+    info!("Migrating '{target_name}' to profile structure...");
 
     match strategy {
         ProfileMigrator::None => {
             warn!(
-                "Profiles enabled for '{}' but flat structure detected and migration is disabled.",
-                target_name
+                "Profiles enabled for '{target_name}' but flat structure detected and migration is disabled."
             );
             Ok(())
         }
@@ -116,7 +126,7 @@ fn run_auto_migration(root_dir: &Path, target_name: &str, _single_file_mode: boo
 
             if let Some(name) = path.file_name() {
                 let dest = default_profile_dir.join(name);
-                debug!("Moving {:?} -> {:?}", path, dest);
+                debug!("Moving {:?} -> {:?}", path.display(), dest.display());
                 std::fs::rename(&path, &dest).map_err(|e| Error::FileWrite {
                     path: dest.display().to_string(),
                     source: e,
@@ -129,12 +139,12 @@ fn run_auto_migration(root_dir: &Path, target_name: &str, _single_file_mode: boo
     let manifest = crate::profiles::ProfileManifest::default();
     let manifest_path = root_dir.join(MANIFEST_FILE);
     let content = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| Error::Parse(format!("Failed to serialize profile manifest: {}", e)))?;
+        .map_err(|e| Error::Parse(format!("Failed to serialize profile manifest: {e}")))?;
     std::fs::write(&manifest_path, content).map_err(|e| Error::FileWrite {
         path: manifest_path.display().to_string(),
         source: e,
     })?;
 
-    info!("Successfully migrated '{}' to profiles", target_name);
+    info!("Successfully migrated '{target_name}' to profiles");
     Ok(())
 }

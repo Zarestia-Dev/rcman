@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Graceful handling of poisoned locks with `read_recovered()`, `write_recovered()`, `lock_recovered()`
   - Comprehensive tests for poison recovery scenarios
 
-- **Atomic Cache Generation Counters** 
+- **Atomic Cache Generation Counters**
   - `AtomicU64` generation counters in `SettingsManager` for race-free cache invalidation
   - Lock-free concurrent cache invalidation detection
 
@@ -52,16 +52,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Profile migrator properly propagates serialization errors (removed `unwrap()`)
   - Added `MigrationFn` type alias for cleaner signatures
 
-- **All Lock Operations Use Poison Recovery**
-  - 62 lock acquisitions converted from `.unwrap()` to `.read_recovered()`/`.write_recovered()`
-  - Consistent error handling across all modules
-
 ### Fixed
 
-- **File permissions security** - All configuration files/directories created with secure permissions
+- **File permissions security** - All configuration files/directories created with secure permissions (Unix)
 - **Clippy warnings** - Fixed `type_complexity`, `derivable_impls`, unused variables
 - **Edge case test** - Updated readonly directory test to properly verify permission enforcement
-
 
 ## [v0.1.1] - 2026-01-2
 

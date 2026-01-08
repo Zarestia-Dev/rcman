@@ -1,14 +1,16 @@
 //! Core types for rcman library
 
+use std::marker::PhantomData;
 use std::path::PathBuf;
 
+use crate::config::SettingsSchema;
 use crate::storage::{JsonStorage, StorageBackend};
 
 #[cfg(feature = "backup")]
 use crate::backup::ExternalConfig;
 
-/// Configuration for initializing the SettingsManager
-pub struct SettingsConfig<S: StorageBackend = JsonStorage> {
+/// Configuration for initializing the `SettingsManager`
+pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchema = ()> {
     /// Directory where settings files will be stored
     pub config_dir: PathBuf,
 
@@ -27,7 +29,7 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage> {
     /// Enable credential management for secret settings
     pub enable_credentials: bool,
 
-    /// Environment variable prefix for setting overrides (e.g., "MYAPP" -> MYAPP_UI_THEME)
+    /// Environment variable prefix for setting overrides (e.g., "MYAPP" -> `MYAPP_UI_THEME`)
     /// If None, env var overrides are disabled
     pub env_prefix: Option<String>,
 
@@ -52,9 +54,13 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage> {
     /// Profile migration strategy (defaults to Auto)
     #[cfg(feature = "profiles")]
     pub profile_migrator: crate::profiles::ProfileMigrator,
+
+    /// Marker for schema type (internal use)
+    #[doc(hidden)]
+    pub _schema: PhantomData<Schema>,
 }
 
-impl Default for SettingsConfig<JsonStorage> {
+impl Default for SettingsConfig<JsonStorage, ()> {
     fn default() -> Self {
         Self {
             config_dir: PathBuf::from("."),
@@ -72,19 +78,20 @@ impl Default for SettingsConfig<JsonStorage> {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::default(),
+            _schema: PhantomData,
         }
     }
 }
 
-impl<S: StorageBackend> SettingsConfig<S> {
+impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfig<S, Schema> {
     /// Get the full path to the main settings file
     pub fn settings_path(&self) -> PathBuf {
         self.config_dir.join(&self.settings_file)
     }
 }
 
-impl SettingsConfig<JsonStorage> {
-    /// Create a new builder for SettingsConfig
+impl SettingsConfig<JsonStorage, ()> {
+    /// Create a new builder for `SettingsConfig`
     ///
     /// # Example
     /// ```rust
@@ -97,14 +104,54 @@ impl SettingsConfig<JsonStorage> {
     pub fn builder(
         app_name: impl Into<String>,
         app_version: impl Into<String>,
-    ) -> SettingsConfigBuilder {
+    ) -> SettingsConfigBuilder<JsonStorage, ()> {
         SettingsConfigBuilder::new(app_name, app_version)
     }
 }
 
-/// Builder for creating SettingsConfig with a fluent API
+/// Builder for creating `SettingsConfig` with a fluent API.
+///
+/// This is the recommended way to create a settings manager. It provides a clean,
+/// chainable interface for configuring all aspects of your settings.
+///
+/// # Type Parameters
+///
+/// - `S`: Storage backend (defaults to `JsonStorage`)
+/// - `Schema`: Settings schema type (defaults to `()` for dynamic/runtime validation)
+///
+/// # Two Usage Patterns
+///
+/// ## Pattern 1: Type-Safe (With Schema)
+/// ```no_run
+/// use rcman::{SettingsConfig, SettingsSchema, SettingMetadata, settings};
+/// use serde::{Serialize, Deserialize};
+/// use std::collections::HashMap;
+///
+/// #[derive(Default, Serialize, Deserialize)]
+/// struct MySettings { theme: String }
+///
+/// impl SettingsSchema for MySettings {
+///     fn get_metadata() -> HashMap<String, SettingMetadata> {
+///         settings! { "ui.theme" => SettingMetadata::text("Theme", "dark") }
+///     }
+/// }
+///
+/// let config = SettingsConfig::builder("my-app", "1.0.0")
+///     .with_schema::<MySettings>()  // Type-safe!
+///     .config_dir("~/.config/my-app")
+///     .build();
+/// ```
+///
+/// ## Pattern 2: Dynamic (Without Schema)
+/// ```no_run
+/// use rcman::SettingsConfig;
+///
+/// let config = SettingsConfig::builder("my-app", "1.0.0")
+///     .config_dir("~/.config/my-app")
+///     .build();  // No schema - work with HashMap at runtime
+/// ```
 #[derive(Clone)]
-pub struct SettingsConfigBuilder {
+pub struct SettingsConfigBuilder<S: StorageBackend = JsonStorage, Schema: SettingsSchema = ()> {
     config_dir: Option<PathBuf>,
     settings_file: String,
     app_name: String,
@@ -120,9 +167,14 @@ pub struct SettingsConfigBuilder {
     profiles_enabled: bool,
     #[cfg(feature = "profiles")]
     profile_migrator: Option<crate::profiles::ProfileMigrator>,
+
+    storage: S,
+    _schema: PhantomData<Schema>,
 }
 
-impl std::fmt::Debug for SettingsConfigBuilder {
+impl<S: StorageBackend, Schema: SettingsSchema> std::fmt::Debug
+    for SettingsConfigBuilder<S, Schema>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = f.debug_struct("SettingsConfigBuilder");
         debug
@@ -144,11 +196,12 @@ impl std::fmt::Debug for SettingsConfigBuilder {
         debug.field("profile_migrator", &self.profile_migrator);
 
         debug.field("migrator", &self.migrator.as_ref().map(|_| "Some(Fn)"));
-        debug.finish()
+        // storage field excluded as S may not implement Debug
+        debug.finish_non_exhaustive()
     }
 }
 
-impl SettingsConfigBuilder {
+impl SettingsConfigBuilder<JsonStorage, ()> {
     /// Create a new builder with required app name and version
     pub fn new(app_name: impl Into<String>, app_version: impl Into<String>) -> Self {
         Self {
@@ -167,12 +220,38 @@ impl SettingsConfigBuilder {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: None,
+            storage: JsonStorage::new(), // Start with pretty printing
+            _schema: PhantomData,
         }
     }
+}
 
+impl<Schema: SettingsSchema> SettingsConfigBuilder<JsonStorage, Schema> {
+    /// Use compact JSON (no pretty printing)
+    ///
+    /// Note: This method is only available when using `JsonStorage`.
+    ///
+    /// # Example
+    /// ```
+    /// use rcman::SettingsConfig;
+    ///
+    /// let config = SettingsConfig::builder("my-app", "1.0.0")
+    ///     .compact_json()  // Use compact JSON format
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn compact_json(mut self) -> Self {
+        self.pretty_json = false;
+        self.storage = JsonStorage::compact();
+        self
+    }
+}
+
+impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema> {
     /// Set the configuration directory
     ///
     /// Supports `~` expansion for home directory.
+    #[must_use]
     pub fn config_dir(mut self, path: impl Into<PathBuf>) -> Self {
         let path: PathBuf = path.into();
         // Expand ~ to home directory
@@ -190,14 +269,9 @@ impl SettingsConfigBuilder {
     }
 
     /// Set the settings filename (default: "settings.json")
+    #[must_use]
     pub fn settings_file(mut self, filename: impl Into<String>) -> Self {
         self.settings_file = filename.into();
-        self
-    }
-
-    /// Use compact JSON (no pretty printing)
-    pub fn compact_json(mut self) -> Self {
-        self.pretty_json = false;
         self
     }
 
@@ -205,6 +279,7 @@ impl SettingsConfigBuilder {
     ///
     /// When enabled, settings marked as `secret: true` in metadata
     /// will be stored in the OS keychain instead of the settings file.
+    #[must_use]
     pub fn with_credentials(mut self) -> Self {
         self.enable_credentials = true;
         self
@@ -225,6 +300,7 @@ impl SettingsConfigBuilder {
     ///     .build();
     /// ```
     #[cfg(feature = "backup")]
+    #[must_use]
     pub fn with_external_config(mut self, config: ExternalConfig) -> Self {
         self.external_configs.push(config);
         self
@@ -245,6 +321,7 @@ impl SettingsConfigBuilder {
     ///
     /// // Now MYAPP_UI_THEME=dark will override the "ui.theme" setting
     /// ```
+    #[must_use]
     pub fn with_env_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.env_prefix = Some(prefix.into());
         self
@@ -264,6 +341,7 @@ impl SettingsConfigBuilder {
     ///     .env_overrides_secrets(true)  // MYAPP_API_KEY will override keychain
     ///     .build();
     /// ```
+    #[must_use]
     pub fn env_overrides_secrets(mut self, allow: bool) -> Self {
         self.env_overrides_secrets = allow;
         self
@@ -296,6 +374,7 @@ impl SettingsConfigBuilder {
     ///     })
     ///     .build();
     /// ```
+    #[must_use]
     pub fn with_migrator<F>(mut self, migrator: F) -> Self
     where
         F: Fn(serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
@@ -322,27 +401,76 @@ impl SettingsConfigBuilder {
     /// manager.switch_profile("work")?;
     /// ```
     #[cfg(feature = "profiles")]
+    #[must_use]
     pub fn with_profiles(mut self) -> Self {
         self.profiles_enabled = true;
         self
     }
 
-    /// Build the SettingsConfig
+    /// Specify the schema type for compile-time type safety.
+    ///
+    /// This binds your settings struct to the manager, enabling:
+    /// - Type-safe `settings()` method returning your struct
+    /// - Compile-time validation of setting keys
+    /// - Better IDE autocomplete and refactoring support
+    ///
+    /// # Example
+    /// ```no_run
+    /// use rcman::{SettingsConfig, SettingsSchema, SettingMetadata, settings};
+    /// use serde::{Serialize, Deserialize};
+    /// use std::collections::HashMap;
+    ///
+    /// #[derive(Default, Serialize, Deserialize)]
+    /// struct AppSettings {
+    ///     theme: String,
+    ///     font_size: f64,
+    /// }
+    ///
+    /// impl SettingsSchema for AppSettings {
+    ///     fn get_metadata() -> HashMap<String, SettingMetadata> {
+    ///         settings! {
+    ///             "ui.theme" => SettingMetadata::text("Theme", "dark"),
+    ///             "ui.font_size" => SettingMetadata::number("Font Size", 14.0)
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let config = SettingsConfig::builder("my-app", "1.0.0")
+    ///     .with_schema::<AppSettings>()  // Bind the schema
+    ///     .build();
+    /// ```
+    pub fn with_schema<NewSchema: SettingsSchema>(self) -> SettingsConfigBuilder<S, NewSchema> {
+        SettingsConfigBuilder {
+            config_dir: self.config_dir,
+            settings_file: self.settings_file,
+            app_name: self.app_name,
+            app_version: self.app_version,
+            pretty_json: self.pretty_json,
+            enable_credentials: self.enable_credentials,
+            env_prefix: self.env_prefix,
+            env_overrides_secrets: self.env_overrides_secrets,
+            #[cfg(feature = "backup")]
+            external_configs: self.external_configs,
+            migrator: self.migrator,
+            #[cfg(feature = "profiles")]
+            profiles_enabled: self.profiles_enabled,
+            #[cfg(feature = "profiles")]
+            profile_migrator: self.profile_migrator,
+            storage: self.storage,
+            _schema: PhantomData,
+        }
+    }
+
+    /// Build the `SettingsConfig`
     ///
     /// If `config_dir` is not set, uses the system config directory for the app.
-    pub fn build(self) -> SettingsConfig<JsonStorage> {
+    pub fn build(self) -> SettingsConfig<S, Schema> {
         let config_dir = self.config_dir.unwrap_or_else(|| {
             // Use system config dir if available, otherwise current dir
-            dirs::config_dir()
-                .map(|d| d.join(&self.app_name))
-                .unwrap_or_else(|| PathBuf::from("."))
+            dirs::config_dir().map_or_else(|| PathBuf::from("."), |d| d.join(&self.app_name))
         });
 
-        let storage = if self.pretty_json {
-            JsonStorage::new()
-        } else {
-            JsonStorage::compact()
-        };
+        let storage = self.storage;
 
         SettingsConfig {
             config_dir,
@@ -362,6 +490,7 @@ impl SettingsConfigBuilder {
             profile_migrator: self
                 .profile_migrator
                 .unwrap_or(crate::profiles::ProfileMigrator::Auto),
+            _schema: PhantomData,
         }
     }
 }

@@ -72,12 +72,14 @@ impl CredentialConfig {
     }
 
     /// Set fallback path for encrypted file storage
+    #[must_use]
     pub fn with_fallback(mut self, path: std::path::PathBuf) -> Self {
         self.fallback_path = Some(path);
         self
     }
 
     /// Disable auto-fallback
+    #[must_use]
     pub fn no_fallback(mut self) -> Self {
         self.auto_fallback = false;
         self

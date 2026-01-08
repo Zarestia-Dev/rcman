@@ -50,28 +50,29 @@ pub const PROFILES_DIR: &str = "profiles";
 ///
 /// Valid names contain only alphanumeric characters, underscores, and hyphens.
 /// Names cannot be empty, start with a dot, or contain path separators.
+/// 
+/// # Errors
+/// 
+/// Returns an error if the name is invalid.
 pub fn validate_profile_name(name: &str) -> crate::Result<()> {
     use crate::Error;
 
     if name.is_empty() {
-        return Err(Error::InvalidProfileName {
-            name: name.to_string(),
-            reason: "Profile name cannot be empty".to_string(),
-        });
+        return Err(Error::InvalidProfileName(format!(
+            "{name}: Profile name cannot be empty",
+        )));
     }
 
     if name.starts_with('.') {
-        return Err(Error::InvalidProfileName {
-            name: name.to_string(),
-            reason: "Profile name cannot start with a dot".to_string(),
-        });
+        return Err(Error::InvalidProfileName(format!(
+            "{name}: Profile name cannot start with a dot",
+        )));
     }
 
     if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err(Error::InvalidProfileName {
-            name: name.to_string(),
-            reason: "Profile name cannot contain path separators".to_string(),
-        });
+        return Err(Error::InvalidProfileName(format!(
+            "{name}: Profile name cannot contain path separators",
+        )));
     }
 
     // Allow only alphanumeric, underscore, hyphen
@@ -79,12 +80,9 @@ pub fn validate_profile_name(name: &str) -> crate::Result<()> {
         .chars()
         .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
     {
-        return Err(Error::InvalidProfileName {
-            name: name.to_string(),
-            reason:
-                "Profile name can only contain alphanumeric characters, underscores, and hyphens"
-                    .to_string(),
-        });
+        return Err(Error::InvalidProfileName(format!(
+            "{name}: Profile name can only contain alphanumeric characters, underscores, and hyphens"
+        )));
     }
 
     Ok(())

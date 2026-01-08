@@ -12,6 +12,7 @@ pub struct MemoryBackend {
 
 impl MemoryBackend {
     /// Create a new memory backend
+    #[must_use]
     pub fn new() -> Self {
         Self {
             store: RwLock::new(HashMap::new()),

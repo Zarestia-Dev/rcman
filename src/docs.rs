@@ -19,6 +19,7 @@ pub struct DocsConfig {
 }
 
 impl DocsConfig {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             show_advanced: true,
@@ -27,16 +28,19 @@ impl DocsConfig {
         }
     }
 
+    #[must_use]
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
 
+    #[must_use]
     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());
         self
     }
 
+    #[must_use] 
     pub fn hide_advanced(mut self) -> Self {
         self.show_advanced = false;
         self
@@ -44,27 +48,31 @@ impl DocsConfig {
 }
 
 /// Generate markdown documentation from a settings schema
+#[must_use] 
 pub fn generate_docs<T: SettingsSchema>(config: DocsConfig) -> String {
     let metadata = T::get_metadata();
     generate_docs_from_metadata(&metadata, config)
 }
 
 /// Generate docs from raw metadata (useful when schema isn't available)
-pub fn generate_docs_from_metadata(
-    metadata: &HashMap<String, SettingMetadata>,
+#[must_use] 
+pub fn generate_docs_from_metadata<S: std::hash::BuildHasher>(
+    metadata: &HashMap<String, SettingMetadata, S>,
     config: DocsConfig,
 ) -> String {
+    use std::fmt::Write;
+    
     let mut output = String::new();
 
     // Title
     let title = config
         .title
         .unwrap_or_else(|| "Settings Reference".to_string());
-    output.push_str(&format!("# {}\n\n", title));
+    writeln!(output, "# {title}\n").unwrap();
 
     // Description
     if let Some(desc) = config.description {
-        output.push_str(&format!("{}\n\n", desc));
+        writeln!(output, "{desc}\n").unwrap();
     }
 
     // Filter and sort settings
@@ -91,28 +99,28 @@ pub fn generate_docs_from_metadata(
 
             // New category header
             if current_category != Some(category) {
-                output.push_str(&format!("\n## {}\n\n", capitalize(category)));
+                writeln!(output, "\n## {}\n", capitalize(category)).unwrap();
                 current_category = Some(category);
             }
 
-            output.push_str(&format_setting(key, meta));
+            format_setting(&mut output, key, meta);
         }
     } else {
         // Flat list
         output.push_str("## Settings\n\n");
         for (key, meta) in &settings {
-            output.push_str(&format_setting(key, meta));
+            format_setting(&mut output, key, meta);
         }
     }
 
     output
 }
 
-fn format_setting(key: &str, meta: &SettingMetadata) -> String {
-    let mut out = String::new();
+fn format_setting(out: &mut String, key: &str, meta: &SettingMetadata) {
+    use std::fmt::Write;
 
     // Setting name with badges
-    out.push_str(&format!("### `{}`\n\n", key));
+    writeln!(out, "### `{key}`\n").unwrap();
 
     // Badges
     let mut badges = Vec::new();
@@ -129,39 +137,33 @@ fn format_setting(key: &str, meta: &SettingMetadata) -> String {
         badges.push("Disabled");
     }
     if !badges.is_empty() {
-        out.push_str(&format!("{}\n\n", badges.join(" • ")));
+        writeln!(out, "{}\n", badges.join(" • ")).unwrap();
     }
 
     // Description
     if let Some(ref desc) = meta.description {
-        out.push_str(&format!("{}\n\n", desc));
+        writeln!(out, "{desc}\n").unwrap();
     }
 
     // Type and default
     out.push_str("| Property | Value |\n");
     out.push_str("|----------|-------|\n");
-    out.push_str(&format!(
-        "| **Type** | {} |\n",
-        format_type(&meta.setting_type)
-    ));
-    out.push_str(&format!(
-        "| **Default** | `{}` |\n",
-        format_value(&meta.default)
-    ));
+    writeln!(out, "| **Type** | {} |", format_type(&meta.setting_type)).unwrap();
+    writeln!(out, "| **Default** | `{}` |", format_value(&meta.default)).unwrap();
 
     // Range for numbers
     if meta.setting_type == SettingType::Number {
         if let (Some(min), Some(max)) = (meta.min, meta.max) {
-            out.push_str(&format!("| **Range** | {} - {} |\n", min, max));
+            writeln!(out, "| **Range** | {min} - {max} |").unwrap();
         }
         if let Some(step) = meta.step {
-            out.push_str(&format!("| **Step** | {} |\n", step));
+            writeln!(out, "| **Step** | {step} |").unwrap();
         }
     }
 
     // Pattern for text
     if let Some(ref pattern) = meta.pattern {
-        out.push_str(&format!("| **Pattern** | `{}` |\n", pattern));
+        writeln!(out, "| **Pattern** | `{pattern}` |").unwrap();
     }
 
     out.push('\n');
@@ -171,25 +173,26 @@ fn format_setting(key: &str, meta: &SettingMetadata) -> String {
         out.push_str("**Options:**\n\n");
         for opt in options {
             if let Some(ref desc) = opt.description {
-                out.push_str(&format!(
-                    "- `{}` - {} ({})\n",
+                writeln!(
+                    out,
+                    "- `{}` - {} ({})",
                     format_value(&opt.value),
                     opt.label,
                     desc
-                ));
+                ).unwrap();
             } else {
-                out.push_str(&format!(
-                    "- `{}` - {}\n",
+                writeln!(
+                    out,
+                    "- `{}` - {}",
                     format_value(&opt.value),
                     opt.label
-                ));
+                ).unwrap();
             }
         }
         out.push('\n');
     }
 
     out.push_str("---\n\n");
-    out
 }
 
 fn format_type(t: &SettingType) -> &'static str {
@@ -210,7 +213,7 @@ fn format_type(t: &SettingType) -> &'static str {
 
 fn format_value(v: &serde_json::Value) -> String {
     match v {
-        serde_json::Value::String(s) => format!("\"{}\"", s),
+        serde_json::Value::String(s) => format!("\"{s}\""),
         serde_json::Value::Bool(b) => b.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::Null => "null".to_string(),

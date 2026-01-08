@@ -41,11 +41,13 @@ impl Default for ProfileManifest {
 
 impl ProfileManifest {
     /// Create a new manifest with a single default profile
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Check if a profile exists
+    #[must_use]
     pub fn has_profile(&self, name: &str) -> bool {
         self.profiles.iter().any(|p| p == name)
     }
@@ -70,7 +72,7 @@ impl ProfileManifest {
     /// Rename a profile in the manifest
     pub fn rename_profile(&mut self, from: &str, to: String) -> bool {
         if let Some(pos) = self.profiles.iter().position(|p| p == from) {
-            self.profiles[pos] = to.clone();
+            self.profiles[pos].clone_from(&to);
             if self.active == from {
                 self.active = to;
             }
@@ -223,7 +225,15 @@ impl ProfileManager {
     }
 
     /// Get the path to the active profile's directory
-    pub fn active_path(&self) -> Result<PathBuf> {
+    ///
+    /// # Returns
+    ///
+    /// Returns the path to the active profile's directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest cannot be read.
+pub fn active_path(&self) -> Result<PathBuf> {
         let active = self.active()?;
         Ok(self.profile_path(&active))
     }
@@ -295,6 +305,19 @@ impl ProfileManager {
     // =========================================================================
 
     /// Get the currently active profile name
+    ///
+    /// # Returns
+    ///
+    /// Returns the name of the currently active profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest cannot be read.
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances. The `.unwrap()` call
+    /// is safe because `ensure_manifest()` is called first, which guarantees the manifest
+    /// is populated.
     pub fn active(&self) -> Result<String> {
         self.ensure_manifest()?;
         let guard = self.manifest.read();
@@ -302,6 +325,19 @@ impl ProfileManager {
     }
 
     /// List all profile names
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of profile names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest cannot be read.
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances. The `.unwrap()` call
+    /// is safe because `ensure_manifest()` is called first, which guarantees the manifest
+    /// is populated.
     pub fn list(&self) -> Result<Vec<String>> {
         self.ensure_manifest()?;
         let guard = self.manifest.read();
@@ -309,6 +345,23 @@ impl ProfileManager {
     }
 
     /// Check if a profile exists
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the profile to check
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if the profile exists, `false` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest cannot be read.
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances. The `.unwrap()` call
+    /// is safe because `ensure_manifest()` is called first, which guarantees the manifest
+    /// is populated.
     pub fn exists(&self, name: &str) -> Result<bool> {
         self.ensure_manifest()?;
         let guard = self.manifest.read();
@@ -318,6 +371,19 @@ impl ProfileManager {
     /// Create a new profile
     ///
     /// Creates an empty profile directory and updates the manifest.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `name` - The name of the profile to create
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the profile cannot be created.
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances. The `.unwrap()` calls
+    /// are safe because `ensure_manifest()` is called first, which guarantees the manifest
+    /// is populated.
     pub fn create(&self, name: &str) -> Result<()> {
         validate_profile_name(name)?;
         self.ensure_manifest()?;
@@ -356,6 +422,19 @@ impl ProfileManager {
     /// Switch to a different profile
     ///
     /// Updates the active profile in the manifest and invalidates caches.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `name` - The name of the profile to switch to
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the profile cannot be switched.
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances. The `.unwrap()` calls
+    /// are safe because `ensure_manifest()` is called first, which guarantees the manifest
+    /// is populated.
     pub fn switch(&self, name: &str) -> Result<()> {
         self.ensure_manifest()?;
 
@@ -369,7 +448,7 @@ impl ProfileManager {
         };
 
         if from == name {
-            debug!("Profile '{}' is already active", name);
+            debug!("Profile '{name}' is already active");
             return Ok(());
         }
 
@@ -400,6 +479,19 @@ impl ProfileManager {
     ///
     /// Removes the profile directory and updates the manifest.
     /// Cannot delete the active profile or the last remaining profile.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `name` - The name of the profile to delete
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the profile cannot be deleted.
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances. The `.unwrap()` calls
+    /// are safe because `ensure_manifest()` is called first, which guarantees the manifest
+    /// is populated.
     pub fn delete(&self, name: &str) -> Result<()> {
         self.ensure_manifest()?;
 
@@ -445,6 +537,20 @@ impl ProfileManager {
     }
 
     /// Rename a profile
+    /// 
+    /// # Arguments
+    /// 
+    /// * `from` - The name of the profile to rename
+    /// * `to` - The new name for the profile
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the profile cannot be renamed.
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances. The `.unwrap()` calls
+    /// are safe because `ensure_manifest()` is called first, which guarantees the manifest
+    /// is populated.
     pub fn rename(&self, from: &str, to: &str) -> Result<()> {
         validate_profile_name(to)?;
         self.ensure_manifest()?;
@@ -502,6 +608,20 @@ impl ProfileManager {
     /// Duplicate a profile
     ///
     /// Copies all contents from the source profile to a new profile.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `source` - The name of the source profile
+    /// * `target` - The name of the target profile
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the profile cannot be duplicated.
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances. The `.unwrap()` calls
+    /// are safe because `ensure_manifest()` is called first, which guarantees the manifest
+    /// is populated.
     pub fn duplicate(&self, source: &str, target: &str) -> Result<()> {
         validate_profile_name(target)?;
         self.ensure_manifest()?;
@@ -556,7 +676,19 @@ impl ProfileManager {
     ///
     /// If files exist in the base directory but no manifest exists,
     /// moves them into a "default" profile.
-    pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
+    ///
+    /// # Arguments
+    ///
+    /// * `detect_existing` - A function that returns `true` if there are existing files to migrate
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if migration was needed, `false` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest cannot be read or saved.
+pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
     where
         F: FnOnce() -> bool,
     {
@@ -607,6 +739,10 @@ impl ProfileManager {
     }
 
     /// Mark migration as complete and save manifest
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the manifest cannot be saved.
     pub fn complete_migration(&self) -> Result<()> {
         self.save_manifest()?;
         info!("Profile migration complete for '{}'", self.target_name);
@@ -614,6 +750,15 @@ impl ProfileManager {
     }
 
     /// Get the manifest (for advanced use cases)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest cannot be read.
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances. The `.unwrap()` call
+    /// is safe because `ensure_manifest()` is called first, which guarantees the manifest
+    /// is populated.
     pub fn manifest(&self) -> Result<ProfileManifest> {
         self.ensure_manifest()?;
         let guard = self.manifest.read();

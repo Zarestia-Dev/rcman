@@ -59,7 +59,7 @@ impl EncryptedFileBackend {
         Ok(Self {
             path,
             cipher: Aes256Gcm::new_from_slice(key)
-                .map_err(|_| Error::Credential("Invalid key length".into()))?,
+                .map_err(|_| Error::Credential("encryption_key: Invalid key length".into()))?,
             salt,
             cache: RwLock::new(HashMap::new()),
         })
@@ -82,6 +82,10 @@ impl EncryptedFileBackend {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or parsed.
     pub fn with_password(path: PathBuf, password: &str) -> Result<Self> {
         let salt = Self::read_salt(&path)?.unwrap_or_else(Self::generate_salt);
         let key = Self::derive_key(password, &salt)?;
@@ -92,6 +96,10 @@ impl EncryptedFileBackend {
     ///
     /// Returns `None` if the file doesn't exist or has no salt (v1 format).
     /// Call this FIRST, then derive the key, then create the backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or parsed.
     pub fn read_salt(path: &PathBuf) -> Result<Option<[u8; 16]>> {
         use base64::Engine;
 
@@ -104,17 +112,18 @@ impl EncryptedFileBackend {
             source: e,
         })?;
 
-        let store: EncryptedStore = serde_json::from_str(&content)
-            .map_err(|e| Error::Credential(format!("Failed to parse encrypted store: {}", e)))?;
+        let store: EncryptedStore = serde_json::from_str(&content).map_err(|e| {
+            Error::Credential(format!("encrypted_store: Failed to parse encrypted store: {e}"))
+        })?;
 
         if let Some(salt_b64) = store.salt {
             let salt_vec = base64::engine::general_purpose::STANDARD
                 .decode(&salt_b64)
-                .map_err(|e| Error::Credential(format!("Invalid salt encoding: {}", e)))?;
+                .map_err(|e| Error::Credential(format!("salt: Invalid salt encoding: {e}")))?;
 
             if salt_vec.len() != 16 {
                 return Err(Error::Credential(format!(
-                    "Invalid salt length: expected 16, got {}",
+                    "salt: Invalid salt length: expected 16, got {}",
                     salt_vec.len()
                 )));
             }
@@ -128,11 +137,13 @@ impl EncryptedFileBackend {
     }
 
     /// Generate a random 32-byte encryption key
+    #[must_use]
     pub fn generate_key() -> [u8; 32] {
         rand::rng().random()
     }
 
     /// Generate a random 16-byte salt for Argon2
+    #[must_use]
     pub fn generate_salt() -> [u8; 16] {
         rand::rng().random()
     }
@@ -155,22 +166,22 @@ impl EncryptedFileBackend {
 
         // Convert salt to B64 for Argon2
         let salt_string = SaltString::encode_b64(salt)
-            .map_err(|e| Error::Credential(format!("Invalid salt bytes: {}", e)))?;
+            .map_err(|e| Error::Credential(format!("salt: Invalid salt bytes: {e}")))?;
 
         // Hash password
         let argon2 = Argon2::default();
         let password_hash = argon2
             .hash_password(password.as_bytes(), &salt_string)
-            .map_err(|e| Error::Credential(format!("Argon2 hashing failed: {}", e)))?;
+            .map_err(|e| Error::Credential(format!("password: Argon2 hashing failed: {e}")))?;
 
         let output = password_hash
             .hash
-            .ok_or_else(|| Error::Credential("Hash output missing".into()))?;
+            .ok_or_else(|| Error::Credential("password_hash: Hash output missing".into()))?;
         let bytes = output.as_bytes();
 
         if bytes.len() < 32 {
             return Err(Error::Credential(format!(
-                "Argon2 output too short: {}",
+                "password_hash: Argon2 output too short: {}",
                 bytes.len()
             )));
         }
@@ -190,8 +201,11 @@ impl EncryptedFileBackend {
             source: e,
         })?;
 
-        serde_json::from_str(&content)
-            .map_err(|e| Error::Credential(format!("Failed to parse encrypted store: {}", e)))
+        serde_json::from_str(&content).map_err(|e| {
+            Error::Credential(format!(
+                "encrypted_store: Failed to parse encrypted store: {e}",
+            ))
+        })
     }
 
     fn save_store(&self, store: &mut EncryptedStore) -> Result<()> {
@@ -202,7 +216,9 @@ impl EncryptedFileBackend {
         store.salt = Some(base64::engine::general_purpose::STANDARD.encode(self.salt));
 
         let content = serde_json::to_string_pretty(store).map_err(|e| {
-            Error::Credential(format!("Failed to serialize encrypted store: {}", e))
+            Error::Credential(format!(
+                "encrypted_store: Failed to serialize encrypted store: {e}",
+            ))
         })?;
 
         // Ensure parent directory exists
@@ -228,7 +244,7 @@ impl EncryptedFileBackend {
         let ciphertext = self
             .cipher
             .encrypt(nonce, plaintext.as_bytes())
-            .map_err(|e| Error::Credential(format!("Encryption failed: {}", e)))?;
+            .map_err(|e| Error::Credential(format!("encryption: Encryption failed: {e}")))?;
 
         Ok(EncryptedEntry {
             nonce: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, nonce_bytes),
@@ -244,20 +260,21 @@ impl EncryptedFileBackend {
 
         let nonce_bytes = base64::engine::general_purpose::STANDARD
             .decode(&entry.nonce)
-            .map_err(|e| Error::Credential(format!("Invalid nonce: {}", e)))?;
+            .map_err(|e| Error::Credential(format!("nonce: Invalid nonce: {e}")))?;
 
         let ciphertext = base64::engine::general_purpose::STANDARD
             .decode(&entry.ciphertext)
-            .map_err(|e| Error::Credential(format!("Invalid ciphertext: {}", e)))?;
+            .map_err(|e| Error::Credential(format!("ciphertext: Invalid ciphertext: {e}")))?;
 
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let plaintext = self
             .cipher
             .decrypt(nonce, ciphertext.as_ref())
-            .map_err(|_| Error::Credential("Decryption failed (wrong key?)".into()))?;
+            .map_err(|_| Error::Credential("decryption: Decryption failed (wrong key?)".into()))?;
 
-        String::from_utf8(plaintext).map_err(|e| Error::Credential(format!("Invalid UTF-8: {}", e)))
+        String::from_utf8(plaintext)
+            .map_err(|e| Error::Credential(format!("utf8: Invalid UTF-8: {e}")))
     }
 }
 
@@ -276,7 +293,7 @@ impl CredentialBackend for EncryptedFileBackend {
             cache.insert(key.to_string(), value.to_string());
         }
 
-        debug!("Credential stored in encrypted file: {}", key);
+        debug!("Credential stored in encrypted file: {key}");
         Ok(())
     }
 
@@ -300,7 +317,7 @@ impl CredentialBackend for EncryptedFileBackend {
                 cache.insert(key.to_string(), value.clone());
             }
 
-            debug!("Credential retrieved from encrypted file: {}", key);
+            debug!("Credential retrieved from encrypted file: {key}");
             Ok(Some(value))
         } else {
             Ok(None)
@@ -318,7 +335,7 @@ impl CredentialBackend for EncryptedFileBackend {
             cache.remove(key);
         }
 
-        debug!("Credential removed from encrypted file: {}", key);
+        debug!("Credential removed from encrypted file: {key}");
         Ok(())
     }
 

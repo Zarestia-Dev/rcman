@@ -25,20 +25,40 @@ use std::sync::Arc;
 /// Trait for credential storage backends
 pub trait CredentialBackend: Send + Sync {
     /// Store a credential
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the backend fails to store the key.
     fn store(&self, key: &str, value: &str) -> Result<()>;
 
     /// Retrieve a credential
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the backend fails to retrieve the key.
     fn get(&self, key: &str) -> Result<Option<String>>;
 
     /// Remove a credential
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the backend fails to remove the key.
     fn remove(&self, key: &str) -> Result<()>;
 
     /// Check if a credential exists
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the backend fails to check if the key exists.
     fn exists(&self, key: &str) -> Result<bool> {
         Ok(self.get(key)?.is_some())
     }
 
     /// List all stored credential keys
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the backend fails to list keys.
     fn list_keys(&self) -> Result<Vec<String>>;
 
     /// Backend name for logging/debugging
@@ -138,6 +158,7 @@ impl CredentialManager {
     /// This causes all operations to be namespaced under the profile.
     /// Key format becomes: `service:profiles:profile_name:key`
     #[cfg(feature = "profiles")]
+    #[must_use]
     pub fn with_profile_context(&self, profile_name: &str) -> Self {
         Self {
             primary: self.primary.clone(),
@@ -148,11 +169,24 @@ impl CredentialManager {
     }
 
     /// Store a credential
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the primary backend fails to store the key or if the fallback backend fails to store the key.
     pub fn store(&self, key: &str, value: &str) -> Result<()> {
         self.store_with_profile(key, value, None)
     }
 
     /// Store a credential with optional profile context
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary backend fails to store the key or if the fallback backend fails to store the key.
+    /// # Panics
+    ///
+    /// This function will not panic under normal circumstances. The `.unwrap()` call
+    /// on `self.fallback` is safe because it only executes within an `if let Some(...)`
+    /// block that has already confirmed the fallback exists.
     pub fn store_with_profile(&self, key: &str, value: &str, profile: Option<&str>) -> Result<()> {
         let full_key = self.make_key_with_profile(key, profile);
 
@@ -180,11 +214,19 @@ impl CredentialManager {
     }
 
     /// Retrieve a credential
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary backend fails to retrieve the key or if the fallback backend fails to retrieve the key.
     pub fn get(&self, key: &str) -> Result<Option<String>> {
         self.get_with_profile(key, None)
     }
 
     /// Retrieve a credential with optional profile context
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary backend fails to retrieve the key or if the fallback backend fails to retrieve the key.
     pub fn get_with_profile(&self, key: &str, profile: Option<&str>) -> Result<Option<String>> {
         let full_key = self.make_key_with_profile(key, profile);
 
@@ -193,7 +235,7 @@ impl CredentialManager {
             Ok(Some(value)) => return Ok(Some(value)),
             Ok(None) => {}
             Err(e) => {
-                log::debug!("Primary backend error: {}", e);
+                log::debug!("Primary backend error: {e}");
             }
         }
 
@@ -206,6 +248,10 @@ impl CredentialManager {
     }
 
     /// Remove a credential
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary backend fails to remove the key or if the fallback backend fails to remove the key.
     pub fn remove(&self, key: &str) -> Result<()> {
         let full_key = self.make_key(key);
 
@@ -219,6 +265,7 @@ impl CredentialManager {
     }
 
     /// Check if a credential exists
+    #[must_use]
     pub fn exists(&self, key: &str) -> bool {
         let full_key = self.make_key(key);
 
@@ -234,6 +281,9 @@ impl CredentialManager {
     }
 
     /// Clear all credentials for this service
+    /// 
+    /// # Errors
+    /// Returns an error if the primary backend fails to list keys or if the fallback backend fails to remove keys.
     pub fn clear(&self) -> Result<()> {
         // Warning: clear() operates on the service level, ignores profile context for now
         // to avoid accidentally deleting everything if context logic is wrong.
@@ -271,11 +321,13 @@ impl CredentialManager {
     }
 
     /// Get service name
+    #[must_use]
     pub fn service_name(&self) -> &str {
         &self.service_name
     }
 
     /// Get active backend name
+    #[must_use]
     pub fn backend_name(&self) -> &'static str {
         self.primary.backend_name()
     }

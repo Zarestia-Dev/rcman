@@ -23,8 +23,9 @@ impl KeychainBackend {
     }
 
     fn get_entry(&self, key: &str) -> Result<Entry> {
-        Entry::new(&self.service_name, key)
-            .map_err(|e| Error::Credential(format!("Failed to create keychain entry: {}", e)))
+        Entry::new(&self.service_name, key).map_err(|e| {
+            Error::Credential(format!("{key}: Failed to create keychain entry: {e}"))
+        })
     }
 
     fn track_key(&self, key: &str) {
@@ -45,11 +46,13 @@ impl CredentialBackend for KeychainBackend {
         let entry = self.get_entry(key)?;
 
         entry.set_password(value).map_err(|e| {
-            Error::Credential(format!("Failed to store credential in keychain: {}", e))
+            Error::Credential(format!(
+                "{key}: Failed to store credential in keychain: {e}",
+            ))
         })?;
 
         self.track_key(key);
-        debug!("Credential stored in keychain: {}", key);
+        debug!("Credential stored in keychain: {key}");
         Ok(())
     }
 
@@ -58,15 +61,14 @@ impl CredentialBackend for KeychainBackend {
 
         match entry.get_password() {
             Ok(password) => {
-                debug!("Credential retrieved from keychain: {}", key);
+                debug!("Credential retrieved from keychain: {key}");
                 Ok(Some(password))
             }
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => {
-                warn!("Failed to retrieve credential from keychain: {}", e);
+                warn!("Failed to retrieve credential from keychain: {e}");
                 Err(Error::Credential(format!(
-                    "Failed to retrieve credential: {}",
-                    e
+                    "{key}: Failed to retrieve credential: {e}",
                 )))
             }
         }
@@ -78,7 +80,7 @@ impl CredentialBackend for KeychainBackend {
         match entry.delete_credential() {
             Ok(()) => {
                 self.untrack_key(key);
-                debug!("Credential removed from keychain: {}", key);
+                debug!("Credential removed from keychain: {key}");
                 Ok(())
             }
             Err(keyring::Error::NoEntry) => {
@@ -86,8 +88,7 @@ impl CredentialBackend for KeychainBackend {
                 Ok(()) // Already gone
             }
             Err(e) => Err(Error::Credential(format!(
-                "Failed to remove credential: {}",
-                e
+                "{key}: Failed to remove credential: {e}"
             ))),
         }
     }

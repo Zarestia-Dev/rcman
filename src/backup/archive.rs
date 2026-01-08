@@ -120,7 +120,7 @@ fn add_directory_to_zip<W: Write + std::io::Seek>(
 
         if path.is_dir() {
             // Add directory entry
-            zip.add_directory(format!("{}/", name), *options)
+            zip.add_directory(format!("{name}/"), *options)
                 .map_err(|e| Error::Archive(e.to_string()))?;
 
             // Recurse into directory
@@ -236,7 +236,7 @@ pub fn read_file_from_zip(archive_path: &Path, filename: &str) -> Result<Vec<u8>
     let mut archive = ZipArchive::new(file)?;
     let mut zip_file = archive
         .by_name(filename)
-        .map_err(|e| Error::Archive(format!("File '{}' not found in archive: {}", filename, e)))?;
+        .map_err(|e| Error::Archive(format!("File '{filename}' not found in archive: {e}")))?;
 
     let mut contents = Vec::new();
     zip_file

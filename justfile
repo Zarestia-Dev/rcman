@@ -1,7 +1,5 @@
 # Common development tasks
 
-alias lint := clippy
-
 fmt:
 	cargo fmt --all
 
@@ -10,6 +8,11 @@ clippy:
 
 check:
 	cargo check --all --all-features
+
+lint:
+	cargo fmt --all -- --check
+	cargo clippy --all-targets --all-features -- -D warnings
+	cargo clippy --all-features -- -W clippy::pedantic
 
 test:
 	cargo test --all --all-features

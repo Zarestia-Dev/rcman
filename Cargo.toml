@@ -10,8 +10,8 @@ description = "Framework-agnostic settings management with schema, backup/restor
 license = "MIT"
 repository = "https://github.com/Zarestia-Dev/rcman"
 readme = "README.md"
-keywords = ["settings", "config", "backup", "preferences", "schema"]
-categories = ["config", "filesystem"]
+keywords = ["settings", "configuration", "backup", "preferences", "keychain"]
+categories = ["config", "filesystem", "development-tools"]
 rust-version = "1.70"
 
 [package.metadata.docs.rs]

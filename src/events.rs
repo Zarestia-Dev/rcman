@@ -27,6 +27,7 @@ pub struct EventManager {
 
 impl EventManager {
     /// Create a new event manager
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             global_listeners: RwLock::new(Vec::new()),
@@ -38,7 +39,7 @@ impl EventManager {
     /// Register a global change listener (called for all settings changes)
     ///
     /// # Arguments
-    /// * `callback` - Function receiving (full_key, old_value, new_value)
+    /// * `callback` - Function receiving (`full_key`, `old_value`, `new_value`)
     pub fn on_change<F>(&self, callback: F)
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
@@ -50,8 +51,8 @@ impl EventManager {
     /// Register a listener for a specific setting key
     ///
     /// # Arguments
-    /// * `key` - The setting key (e.g., "general.dark_mode")
-    /// * `callback` - Function receiving (full_key, old_value, new_value)
+    /// * `key` - The setting key (e.g., "`general.dark_mode`")
+    /// * `callback` - Function receiving (`full_key`, `old_value`, `new_value`)
     pub fn watch<F>(&self, key: &str, callback: F)
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
@@ -81,6 +82,10 @@ impl EventManager {
     /// Validate a value before saving
     ///
     /// Returns Ok(()) if all validators pass, or Err with the first error message.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first validation error message if any validator fails.
     pub fn validate(&self, key: &str, value: &Value) -> Result<(), String> {
         let guard = self.validators.read();
         if let Some(validators) = guard.get(key) {

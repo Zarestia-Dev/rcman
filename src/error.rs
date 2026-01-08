@@ -61,18 +61,24 @@ pub enum Error {
     // -------------------------------------------------------------------------
     // Settings Errors
     // -------------------------------------------------------------------------
-    #[error("Setting not found: {category}.{key}")]
-    SettingNotFound { category: String, key: String },
+    #[error("Setting not found: {0}")]
+    SettingNotFound(String),
 
-    #[error("Invalid setting value for {category}.{key}: {reason}")]
-    InvalidSettingValue {
-        category: String,
-        key: String,
-        reason: String,
-    },
+    #[error("Invalid setting value for {key}: {reason}")]
+    InvalidSettingValue { key: String, reason: String },
+
+    #[error("Invalid setting metadata for {key}: {reason}")]
+    InvalidSettingMetadata { key: String, reason: String },
 
     #[error("Settings schema not registered")]
     SchemaNotRegistered,
+
+    #[error("Type mismatch for {key}: expected {expected}, got {actual}")]
+    TypeMismatch {
+        key: String,
+        expected: String,
+        actual: String,
+    },
 
     // -------------------------------------------------------------------------
     // Sub-Settings Errors
@@ -80,8 +86,8 @@ pub enum Error {
     #[error("Sub-settings type '{0}' not registered")]
     SubSettingsNotRegistered(String),
 
-    #[error("Sub-settings entry '{name}' not found in '{settings_type}'")]
-    SubSettingsEntryNotFound { settings_type: String, name: String },
+    #[error("Sub-settings entry '{0}' not found")]
+    SubSettingsEntryNotFound(String),
 
     // -------------------------------------------------------------------------
     // Backup Errors
@@ -92,7 +98,7 @@ pub enum Error {
     #[error("Restore failed: {0}")]
     RestoreFailed(String),
 
-    #[error("Invalid backup file: {0}")]
+    #[error("Invalid backup: {0}")]
     InvalidBackup(String),
 
     #[error("Backup password required")]
@@ -101,7 +107,7 @@ pub enum Error {
     #[error("Invalid backup password")]
     InvalidPassword,
 
-    #[error("Backup version mismatch: expected {expected}, found {found}")]
+    #[error("Version mismatch: expected {expected}, found {found}")]
     VersionMismatch { expected: String, found: String },
 
     // -------------------------------------------------------------------------
@@ -150,12 +156,12 @@ pub enum Error {
     CannotDeleteLastProfile,
 
     #[cfg(feature = "profiles")]
-    #[error("Invalid profile name '{name}': {reason}")]
-    InvalidProfileName { name: String, reason: String },
+    #[error("Invalid profile name: {0}")]
+    InvalidProfileName(String),
 
     #[cfg(feature = "profiles")]
-    #[error("Profiles not enabled for '{0}'")]
-    ProfilesNotEnabled(String),
+    #[error("Profiles not enabled")]
+    ProfilesNotEnabled,
 
     // -------------------------------------------------------------------------
     // Concurrency Errors
@@ -166,16 +172,16 @@ pub enum Error {
 
 impl Error {
     /// Check if this is a "not found" type error
+    #[must_use] 
     pub fn is_not_found(&self) -> bool {
         matches!(
             self,
-            Error::PathNotFound(_)
-                | Error::SettingNotFound { .. }
-                | Error::SubSettingsEntryNotFound { .. }
+            Error::PathNotFound(_) | Error::SettingNotFound(_) | Error::SubSettingsEntryNotFound(_)
         )
     }
 
     /// Check if this is a backup-related error
+    #[must_use] 
     pub fn is_backup_error(&self) -> bool {
         matches!(
             self,
@@ -187,4 +193,55 @@ impl Error {
                 | Error::VersionMismatch { .. }
         )
     }
+}
+
+// =============================================================================
+// Filesystem Helper Functions (backup feature)
+// =============================================================================
+// These reduce repetitive map_err patterns in the backup module.
+
+#[cfg(feature = "backup")]
+use std::path::Path;
+
+/// Create a directory (and parents) with proper error handling
+#[cfg(feature = "backup")]
+pub fn create_dir(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).map_err(|e| Error::DirectoryCreate {
+        path: path.display().to_string(),
+        source: e,
+    })
+}
+
+/// Copy a file with proper error handling
+#[cfg(feature = "backup")]
+pub fn copy_file(src: &Path, dest: &Path) -> Result<u64> {
+    std::fs::copy(src, dest).map_err(|e| Error::FileRead {
+        path: src.display().to_string(),
+        source: e,
+    })
+}
+
+/// Write content to a file with proper error handling
+#[cfg(feature = "backup")]
+pub fn write_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
+    std::fs::write(path, contents).map_err(|e| Error::FileWrite {
+        path: path.display().to_string(),
+        source: e,
+    })
+}
+
+/// Read directory entries with proper error handling
+#[cfg(all(feature = "backup", feature = "profiles"))]
+pub fn read_dir(path: &Path) -> Result<std::fs::ReadDir> {
+    std::fs::read_dir(path).map_err(|e| Error::DirectoryRead {
+        path: path.display().to_string(),
+        source: e,
+    })
+}
+
+/// Get file size (returns 0 if metadata unavailable)
+#[cfg(feature = "backup")]
+#[inline]
+pub fn file_size(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }

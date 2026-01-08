@@ -16,12 +16,18 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use rcman::{SettingsManager, SubSettingsConfig};
+//! use rcman::{SettingsConfig, SettingsManager, SubSettingsConfig};
 //!
+//! # use rcman::*;
+//! # use serde::{Serialize, Deserialize};
+//! # use std::collections::HashMap;
+//! # #[derive(Default, Serialize, Deserialize)] struct MySettings;
+//! # impl SettingsSchema for MySettings { fn get_metadata() -> HashMap<String, SettingMetadata> { HashMap::new() } }
 //! let manager = SettingsManager::builder("my-app", "1.0.0")
 //!     .config_dir("~/.config/my-app")
 //!     .with_credentials()  // Enable automatic secret storage
 //!     .with_sub_settings(SubSettingsConfig::new("remotes"))
+//!     .with_schema::<MySettings>()
 //!     .build()
 //!     .unwrap();
 //! ```
@@ -80,10 +86,16 @@
 //! use serde_json::json;
 //!
 //! # fn example() -> rcman::Result<()> {
+//! # use rcman::*;
+//! # use serde::{Serialize, Deserialize};
+//! # use std::collections::HashMap;
+//! # #[derive(Default, Serialize, Deserialize)] struct MySettings;
+//! # impl SettingsSchema for MySettings { fn get_metadata() -> HashMap<String, SettingMetadata> { HashMap::new() } }
 //! // Register sub-settings via builder
 //! let manager = SettingsManager::builder("my-app", "1.0.0")
 //!     .with_sub_settings(SubSettingsConfig::new("remotes"))  // Multi-file mode
 //!     .with_sub_settings(SubSettingsConfig::new("backends").single_file())  // Single-file mode
+//!     .with_schema::<MySettings>()
 //!     .build()?;
 //!
 //! // Access sub-settings
@@ -102,9 +114,17 @@
 //! use rcman::{SettingsManager, SubSettingsConfig};
 //!
 //! # fn example() -> rcman::Result<()> {
+//! # #[cfg(feature = "profiles")]
+//! # {
+//! # use rcman::*;
+//! # use serde::{Serialize, Deserialize};
+//! # use std::collections::HashMap;
+//! # #[derive(Default, Serialize, Deserialize)] struct MySettings;
+//! # impl SettingsSchema for MySettings { fn get_metadata() -> HashMap<String, SettingMetadata> { HashMap::new() } }
 //! let manager = SettingsManager::builder("my-app", "1.0.0")
 //!     .with_profiles() // Enable profiles for main settings
 //!     .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles()) // Enable for sub-settings
+//!     .with_schema::<MySettings>()
 //!     .build()?;
 //!
 //! // Create and switch profiles
@@ -115,6 +135,7 @@
 //! let remotes = manager.sub_settings("remotes")?;
 //! // This will save to .../remotes/profiles/work/gdrive.json
 //! remotes.set("gdrive", &serde_json::json!({"type": "drive"}))?;
+//! # }
 //! # Ok(())
 //! # }
 //! ```
@@ -125,12 +146,19 @@
 //! use rcman::{SettingsManager, SettingsConfig, BackupOptions, RestoreOptions};
 //!
 //! # fn example() -> rcman::Result<()> {
-//! let config = SettingsConfig::builder("my-app", "1.0.0").build();
+//! # use rcman::*;
+//! # use serde::{Serialize, Deserialize};
+//! # use std::collections::HashMap;
+//! # #[derive(Default, Serialize, Deserialize)] struct MySettings;
+//! # impl SettingsSchema for MySettings { fn get_metadata() -> HashMap<String, SettingMetadata> { HashMap::new() } }
+//! let config = SettingsConfig::builder("my-app", "1.0.0")
+//!     .with_schema::<MySettings>()
+//!     .build();
 //! let manager = SettingsManager::new(config)?;
 //!
 //! // Create encrypted backup using builder pattern
 //! let path = manager.backup()
-//!     .create(BackupOptions::new()
+//!     .create(&BackupOptions::new()
 //!         .output_dir("backups/")
 //!         .password("secret")
 //!         .note("Weekly backup"))?;
@@ -143,7 +171,7 @@
 //!
 //! // Restore from backup
 //! manager.backup()
-//!     .restore(RestoreOptions::from_path(&path)
+//!     .restore(&RestoreOptions::from_path(&path)
 //!         .password("secret")
 //!         .overwrite(true))?;
 //! # Ok(())
@@ -171,7 +199,7 @@ mod error;
 mod events;
 mod manager;
 pub mod security;
-mod storage;
+pub mod storage;
 mod sub_settings;
 
 // Grouped modules
@@ -195,10 +223,66 @@ pub use manager::{SettingsManager, SettingsManagerBuilder};
 pub use storage::{JsonStorage, StorageBackend};
 pub use sub_settings::{SubSettings, SubSettingsConfig};
 
-/// Convenient type alias for the common JSON-based SettingsManager.
+// =============================================================================
+// Convenient Type Aliases
+// =============================================================================
+
+/// Settings manager with type-checked schema validation.
 ///
-/// This saves you from writing `SettingsManager<JsonStorage>` everywhere.
-pub type JsonSettingsManager = SettingsManager<JsonStorage>;
+/// Use this when you have a struct that implements `SettingsSchema` and want
+/// compile-time type safety for your settings.
+///
+/// # Example
+/// ```no_run
+/// use rcman::{TypedManager, SettingsConfig, SettingsSchema, SettingMetadata, settings};
+/// use serde::{Serialize, Deserialize};
+/// use std::collections::HashMap;
+///
+/// #[derive(Default, Serialize, Deserialize)]
+/// struct AppSettings {
+///     theme: String,
+///     font_size: f64,
+/// }
+///
+/// impl SettingsSchema for AppSettings {
+///     fn get_metadata() -> HashMap<String, SettingMetadata> {
+///         settings! {
+///             "ui.theme" => SettingMetadata::text("Theme", "dark"),
+///             "ui.font_size" => SettingMetadata::number("Font Size", 14.0)
+///         }
+///     }
+/// }
+///
+/// // Type-safe manager
+/// let config = SettingsConfig::builder("my-app", "1.0.0")
+///     .with_schema::<AppSettings>()
+///     .build();
+/// let manager = TypedManager::<AppSettings>::new(config)?;
+///
+/// // Get settings with automatic type checking
+/// let settings: AppSettings = manager.settings()?;
+/// # Ok::<(), rcman::Error>(())
+/// ```
+pub type TypedManager = SettingsManager<JsonStorage>;
+
+/// Settings manager without schema (dynamic/runtime validation).
+///
+/// Use this when you don't need compile-time schema validation and want to
+/// work with settings dynamically at runtime.
+///
+/// # Example
+/// ```no_run
+/// use rcman::DynamicManager;
+/// use serde_json::json;
+///
+/// // Dynamic manager - no schema required
+/// let manager = DynamicManager::builder("my-app", "1.0.0").build()?;
+///
+/// // Get settings as HashMap
+/// let settings = manager.load_settings()?;
+/// # Ok::<(), rcman::Error>(())
+/// ```
+pub type DynamicManager = SettingsManager<JsonStorage>;
 
 // Re-exports from config
 pub use config::{

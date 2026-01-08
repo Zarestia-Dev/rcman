@@ -19,7 +19,44 @@ pub enum SubSettingsMode {
     SingleFile,
 }
 
-/// Configuration for a sub-settings type
+/// Configuration for a sub-settings type.
+///
+/// Sub-settings allow storing multiple related configuration entities separately
+/// from the main settings file. Two storage modes are available:
+///
+/// # Storage Modes
+///
+/// ## `MultiFile` Mode (Default)
+/// **Best for**: Dynamic entity lists (remotes, profiles, connections)
+///
+/// - Each entity stored in separate file: `config/remotes/gdrive.json`
+/// - Easy to add/remove entities
+/// - Git-friendly: each change is isolated
+/// - Performance: O(1) for single entity operations
+///
+/// ## `SingleFile` Mode
+/// **Best for**: Fixed configuration groups (backends, plugins, themes)
+///
+/// - All entities in one file: `config/backends.json`
+/// - Atomic updates to all entities
+/// - Better for small, related configs
+/// - Performance: O(n) for operations, but entire file is cached
+///
+/// # Example Comparison
+/// ```no_run
+/// use rcman::{SubSettingsConfig, SettingsManager};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let manager = SettingsManager::builder("app", "1.0")
+///     // MultiFile: one file per remote (remotes/gdrive.json, remotes/s3.json, ...)
+///     .with_sub_settings(SubSettingsConfig::new("remotes"))
+///     
+///     // SingleFile: all backends in one file (backends.json)
+///     .with_sub_settings(SubSettingsConfig::new("backends").single_file())
+///     .build()?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct SubSettingsConfig {
     /// Name of this sub-settings type
@@ -33,7 +70,7 @@ pub struct SubSettingsConfig {
     /// Optional migration function for schema changes
     pub migrator: Option<Arc<dyn Fn(Value) -> Value + Send + Sync>>,
 
-    /// Storage mode (MultiFile or SingleFile)
+    /// Storage mode (`MultiFile` or `SingleFile`)
     pub mode: SubSettingsMode,
 
     /// Whether profiles are enabled for this sub-settings type
@@ -76,6 +113,7 @@ impl SubSettingsConfig {
     }
 
     /// Set a custom file extension
+    #[must_use]
     pub fn with_extension(mut self, ext: impl Into<String>) -> Self {
         self.extension = ext.into();
         self
@@ -85,16 +123,16 @@ impl SubSettingsConfig {
     ///
     /// The migrator function is called automatically when loading.
     ///
-    /// # MultiFile Mode
+    /// # `MultiFile` Mode
     /// The migrator is called for each entry when loaded.
     /// `value` is the content of the entry.
     ///
-    /// # SingleFile Mode
+    /// # `SingleFile` Mode
     /// The migrator is called for the ENTIRE file when loaded.
     /// `value` is the root JSON object containing all entries.
     /// Use this to migrate the file structure or iterate over entries to migrate them.
     ///
-    /// # Example (MultiFile Mode)
+    /// # Example (`MultiFile` Mode)
     ///
     /// ```rust
     /// use rcman::SubSettingsConfig;
@@ -113,7 +151,7 @@ impl SubSettingsConfig {
     ///     });
     /// ```
     ///
-    /// # Example (SingleFile Mode)
+    /// # Example (`SingleFile` Mode)
     ///
     /// ```rust
     /// use rcman::SubSettingsConfig;
@@ -134,6 +172,7 @@ impl SubSettingsConfig {
     ///         value
     ///     });
     /// ```
+    #[must_use]
     pub fn with_migrator<F>(mut self, migrator: F) -> Self
     where
         F: Fn(Value) -> Value + Send + Sync + 'static,
@@ -158,6 +197,7 @@ impl SubSettingsConfig {
     /// // Single-file mode: creates backends.json containing {"gdrive": {...}, "s3": {...}}
     /// let config = SubSettingsConfig::new("backends").single_file();
     /// ```
+    #[must_use]
     pub fn single_file(mut self) -> Self {
         self.mode = SubSettingsMode::SingleFile;
         self
@@ -177,6 +217,7 @@ impl SubSettingsConfig {
     /// let config = SubSettingsConfig::new("remotes").with_profiles();
     /// ```
     #[cfg(feature = "profiles")]
+    #[must_use]
     pub fn with_profiles(mut self) -> Self {
         self.profiles_enabled = true;
         self
@@ -184,6 +225,7 @@ impl SubSettingsConfig {
 
     /// Set a custom profile migration strategy (default: Auto)
     #[cfg(feature = "profiles")]
+    #[must_use]
     pub fn with_profile_migrator(mut self, migrator: crate::profiles::ProfileMigrator) -> Self {
         self.profile_migrator = migrator;
         self
@@ -237,6 +279,12 @@ pub enum SubSettingsAction {
 
 impl<S: StorageBackend> SubSettings<S> {
     /// Create a new sub-settings handler
+    ///
+    /// # Panics
+    ///
+    /// Panics if the profile migration fails when profiles are enabled. This is a critical
+    /// error indicating the sub-settings directory structure is corrupted and cannot be
+    /// recovered automatically.
     pub fn new(config_dir: &std::path::Path, config: SubSettingsConfig, storage: S) -> Self {
         // Determine the root directory for this sub-settings type
         // For multi-file mode: config_dir/name/
@@ -311,7 +359,7 @@ impl<S: StorageBackend> SubSettings<S> {
         self.active_profile_dir()
     }
 
-    /// Get the active profile's directory path, or base_dir if profiles disabled
+    /// Get the active profile's directory path, or `base_dir` if profiles disabled
     fn active_profile_dir(&self) -> PathBuf {
         #[cfg(feature = "profiles")]
         if let Some(pm) = &self.profile_manager {
@@ -377,11 +425,15 @@ impl<S: StorageBackend> SubSettings<S> {
     /// remotes.profiles()?.create("work")?;
     /// remotes.profiles()?.switch("work")?;
     /// ```
+    /// 
+    /// # Errors
+    /// 
+    /// * `Error::ProfilesNotEnabled` - If profiles are not enabled
     #[cfg(feature = "profiles")]
     pub fn profiles(&self) -> Result<&crate::profiles::ProfileManager> {
         self.profile_manager
             .as_ref()
-            .ok_or_else(|| Error::ProfilesNotEnabled(self.config.name.clone()))
+            .ok_or(Error::ProfilesNotEnabled)
     }
 
     /// Switch to a different profile
@@ -397,6 +449,19 @@ impl<S: StorageBackend> SubSettings<S> {
     /// // Now all operations use the "work" profile
     /// remotes.set("company-drive", &json!({...}))?;
     /// ```
+    /// 
+    /// # Arguments
+    /// 
+    /// * `name` - Name of the profile to switch to
+    /// 
+    /// # Returns
+    /// 
+    /// * `Result<()>` - Success or error
+    /// 
+    /// # Errors
+    /// 
+    /// * `Error::ProfilesNotEnabled` - If profiles are not enabled
+    /// * `Error::ProfileNotFound` - If the profile does not exist
     #[cfg(feature = "profiles")]
     pub fn switch_profile(&self, name: &str) -> Result<()> {
         let pm = self.profiles()?;
@@ -479,10 +544,13 @@ impl<S: StorageBackend> SubSettings<S> {
             }
 
             let obj = file_data.as_object().ok_or_else(|| {
-                Error::InvalidBackup("Single-file sub-settings is not a JSON object".to_string())
+                Error::InvalidBackup(format!(
+                    "{}: Single-file sub-settings is not a JSON object",
+                    path.display()
+                ))
             })?;
 
-            // Populate cache with all entries
+            // Populate cache - move ownership to avoid cloning the entire map
             *cache_guard = Some(obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         } else {
             // MultiFile: just init empty map
@@ -493,6 +561,25 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Load an entry (returns raw JSON Value)
+    /// 
+    /// # Arguments
+    /// 
+    /// * `name` - The name of the entry to load
+    /// 
+    /// # Returns
+    /// 
+    /// * `Ok(Value)` - The loaded entry
+    /// 
+    /// # Errors
+    /// 
+    /// * `Error::SubSettingsEntryNotFound` - If the entry does not exist
+    /// * `Error::FileRead` - If the file cannot be read
+    /// * `Error::InvalidBackup` - If the file is not a valid JSON object
+    /// # Panics
+    ///
+    /// This function will not panic. The `.unwrap()` on line 612 is safe because the function
+    /// returns early with an error if the value is not found, ensuring `value` is always `Some(_)`
+    /// at that point.
     pub fn get_value(&self, name: &str) -> Result<Value> {
         self.ensure_cache_populated()?;
 
@@ -507,10 +594,10 @@ impl<S: StorageBackend> SubSettings<S> {
         if value.is_none() {
             if self.is_single_file() {
                 // In SingleFile mode, if not in cache (and cache is populated), it doesn't exist
-                return Err(Error::SubSettingsEntryNotFound {
-                    settings_type: self.config.name.clone(),
-                    name: name.to_string(),
-                });
+                return Err(Error::SubSettingsEntryNotFound(format!(
+                    "{}/{}",
+                    self.config.name, name
+                )));
             }
 
             // Multi-file mode: read from individual file
@@ -518,10 +605,10 @@ impl<S: StorageBackend> SubSettings<S> {
 
             if let Err(e) = std::fs::metadata(&path) {
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    return Err(Error::SubSettingsEntryNotFound {
-                        settings_type: self.config.name.clone(),
-                        name: name.to_string(),
-                    });
+                    return Err(Error::SubSettingsEntryNotFound(format!(
+                        "{}/{}",
+                        self.config.name, name
+                    )));
                 }
                 return Err(Error::FileRead {
                     path: path.display().to_string(),
@@ -542,7 +629,7 @@ impl<S: StorageBackend> SubSettings<S> {
 
             // If migration changed the value, persist it
             if value != original {
-                debug!("Migrated sub-settings entry: {}", name);
+                debug!("Migrated sub-settings entry: {name}");
 
                 // Persist the migrated value
                 if self.is_single_file() {
@@ -575,7 +662,7 @@ impl<S: StorageBackend> SubSettings<S> {
             }
         }
 
-        // Update cache
+        // Update cache (cache already has the value we just processed)
         {
             let mut cache = self.cache.write();
             if let Some(map) = cache.as_mut() {
@@ -587,12 +674,29 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Load a typed entry
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the entry to load
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry cannot be loaded.
     pub fn get<T: DeserializeOwned>(&self, name: &str) -> Result<T> {
         let value = self.get_value(name)?;
         serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
     }
 
     /// Save an entry
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the entry to save
+    /// * `value` - The value to save
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry cannot be saved.
     pub fn set<T: Serialize + Sync>(&self, name: &str, value: &T) -> Result<()> {
         // Ensure cache structure is initialized
         self.ensure_cache_populated()?;
@@ -674,6 +778,14 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Delete an entry
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the entry to delete
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry cannot be deleted.
     pub fn delete(&self, name: &str) -> Result<()> {
         self.ensure_cache_populated()?;
 
@@ -750,6 +862,14 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// List all entries
+    /// 
+    /// # Returns
+    /// 
+    /// A vector of entry names
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the cache cannot be populated.
     pub fn list(&self) -> Result<Vec<String>> {
         self.ensure_cache_populated()?;
 
@@ -808,6 +928,18 @@ impl<S: StorageBackend> SubSettings<S> {
     ///
     /// Returns `Ok(true)` if exists, `Ok(false)` if not found.
     /// Returns `Err` for I/O errors (e.g., permission denied).
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - Name of the entry
+    ///
+    /// # Returns
+    ///
+    /// * `Result<bool>` - Success or error
+    /// 
+    /// # Errors
+    /// 
+    /// * `Error::FileRead` - If the file cannot be read
     pub fn exists(&self, name: &str) -> Result<bool> {
         self.ensure_cache_populated()?;
 
