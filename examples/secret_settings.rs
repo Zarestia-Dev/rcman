@@ -50,16 +50,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Secrets are stored in your OS keychain, not in the settings file.\n");
 
     // Load settings
-    manager.load_settings::<AppSettings>()?;
+    manager.load_settings()?;
 
     // Save a secret (stored in keychain)
     println!("💾 Saving API key to keychain...");
-    manager.save_setting::<AppSettings>("secrets", "api_key", json!("sk_test_1234567890"))?;
+    manager.save_setting("secrets", "api_key", json!("sk_test_1234567890"))?;
     println!("✅ API key saved securely\n");
 
     // Save another secret
     println!("💾 Saving database password to keychain...");
-    manager.save_setting::<AppSettings>(
+    manager.save_setting(
         "secrets",
         "db_password",
         json!("super_secret_password"),
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load settings again - secrets will be retrieved from keychain
     println!("📖 Loading settings (including secrets from keychain)...");
-    let settings = manager.load_settings::<AppSettings>()?;
+    let settings = manager.load_settings()?;
 
     // Note: In the JSON output, secrets will show their values
     // But they are NOT stored in the settings.json file

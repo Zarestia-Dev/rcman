@@ -55,29 +55,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📦 rcman Basic Usage Example\n");
 
     // Load settings (creates file with defaults if it doesn't exist)
-    let settings = manager.load_settings::<AppSettings>()?;
+    let settings = manager.load_settings()?;
     println!("✅ Loaded settings:");
     println!("{}\n", serde_json::to_string_pretty(&settings)?);
 
     // Update a setting
     println!("🔧 Changing theme to 'dark'...");
-    manager.save_setting::<AppSettings>("app", "theme", json!("dark"))?;
+    manager.save_setting("app", "theme", json!("dark"))?;
 
     // Load again to see the change
-    let updated = manager.load_settings::<AppSettings>()?;
+    let updated = manager.load_settings()?;
     println!("✅ Updated settings:");
     println!("{}\n", serde_json::to_string_pretty(&updated)?);
 
     // Reset a setting to default
     println!("🔄 Resetting theme to default...");
-    let default_theme = manager.reset_setting::<AppSettings>("app", "theme")?;
+    let default_theme = manager.reset_setting("app", "theme")?;
     println!("✅ Theme reset to: {}\n", default_theme);
 
     // Working with list settings
     println!("📋 Working with List Settings:");
 
     // Load settings with metadata to see current values
-    let settings_meta = manager.load_settings::<AppSettings>()?;
+    let settings_meta = manager.load_settings()?;
     if let Some(meta) = settings_meta.get("network.allowed_origins") {
         if let Some(value) = &meta.value {
             println!("Current allowed origins: {}", value);
@@ -85,14 +85,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n🔧 Adding new origin...");
-    manager.save_setting::<AppSettings>(
+    manager.save_setting(
         "network",
         "allowed_origins",
         json!(["http://localhost:3000", "https://example.com"]),
     )?;
 
     // Load settings with metadata to see the change
-    let updated = manager.load_settings::<AppSettings>()?;
+    let updated = manager.load_settings()?;
     if let Some(meta) = updated.get("network.allowed_origins") {
         if let Some(value) = &meta.value {
             println!("✅ Updated allowed origins: {}\n", value);

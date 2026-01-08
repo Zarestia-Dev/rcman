@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // Load settings
-    let settings = manager.load_settings::<AppSettings>()?;
+    let settings = manager.load_settings()?;
     println!("✅ Loaded {} settings\n", settings.len());
 
     // =========================================================================
@@ -86,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "newcorp.com".to_string(),
     ];
 
-    manager.save_setting::<AppSettings>("security", "allowed_domains", json!(allowed_domains))?;
+    manager.save_setting("security", "allowed_domains", json!(allowed_domains))?;
     println!("Saved allowed domains: {:?}\n", allowed_domains);
 
     // =========================================================================
@@ -98,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Add some blocked IPs
     let new_blocked = vec!["192.168.1.100".to_string(), "10.0.0.50".to_string()];
-    manager.save_setting::<AppSettings>("security", "blocked_ips", json!(new_blocked))?;
+    manager.save_setting("security", "blocked_ips", json!(new_blocked))?;
     println!("After adding blocked IPs: {:?}\n", new_blocked);
 
     // =========================================================================
@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Enabled feature: {}", feature_to_add);
     }
 
-    manager.save_setting::<AppSettings>("features", "enabled", json!(features))?;
+    manager.save_setting("features", "enabled", json!(features))?;
     println!("Updated features: {:?}\n", features);
 
     // =========================================================================
@@ -134,7 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("❌ Endpoint '{}' is NOT configured", check_endpoint);
     }
 
-    manager.save_setting::<AppSettings>("network", "endpoints", json!(endpoints))?;
+    manager.save_setting("network", "endpoints", json!(endpoints))?;
 
     // =========================================================================
     // Example 5: Sorting and deduplicating lists
@@ -153,7 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tags.sort();
     tags.dedup();
 
-    manager.save_setting::<AppSettings>("app", "tags", json!(tags))?;
+    manager.save_setting("app", "tags", json!(tags))?;
     println!("After sort + dedup: {:?}\n", tags);
 
     // =========================================================================
@@ -161,14 +161,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     println!("🔄 Example 6: Resetting to default");
     println!("Resetting allowed_domains to default...");
-    let default_value = manager.reset_setting::<AppSettings>("security", "allowed_domains")?;
+    let default_value = manager.reset_setting("security", "allowed_domains")?;
     println!("Default value: {:?}\n", default_value);
 
     // =========================================================================
     // Example 7: View all list settings with metadata
     // =========================================================================
     println!("📊 Example 7: View all list settings");
-    let all_settings = manager.load_settings::<AppSettings>()?;
+    let all_settings = manager.load_settings()?;
     for (key, meta) in all_settings {
         if meta.setting_type == SettingType::List {
             println!("  {} = {:?}", key, meta.value.unwrap_or(meta.default));

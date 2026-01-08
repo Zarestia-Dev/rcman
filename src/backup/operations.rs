@@ -70,14 +70,14 @@ fn collect_settings_files(
 }
 
 /// Backup manager for creating and analyzing backups
-pub struct BackupManager<'a, S: StorageBackend + 'static> {
+pub struct BackupManager<'a, S: StorageBackend + 'static, Schema: SettingsSchema = ()> {
     /// Reference to the settings manager
-    pub(crate) manager: &'a SettingsManager<S>,
+    pub(crate) manager: &'a SettingsManager<S, Schema>,
 }
 
-impl<'a, S: StorageBackend + 'static> BackupManager<'a, S> {
+impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, S, Schema> {
     /// Create a new backup manager
-    pub fn new(manager: &'a SettingsManager<S>) -> Self {
+    pub fn new(manager: &'a SettingsManager<S, Schema>) -> Self {
         Self { manager }
     }
 
@@ -670,7 +670,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<()>,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -723,7 +723,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<()>,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -772,7 +772,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<()>,
         };
 
         let manager = SettingsManager::new(config).unwrap();

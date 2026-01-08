@@ -45,7 +45,7 @@ fn test_profile_backup_restore_full() {
     // 5. Backup ALL profiles
     let backup_mgr = manager.backup();
     let backup_path = backup_mgr
-        .create(BackupOptions {
+        .create(&BackupOptions {
             output_dir: temp.path().join("backups"),
             include_settings: true,
             include_sub_settings: vec!["items".into()],
@@ -70,7 +70,7 @@ fn test_profile_backup_restore_full() {
     // Restore ALL
     let result = manager2
         .backup()
-        .restore(RestoreOptions {
+        .restore(&RestoreOptions {
             backup_path: backup_path.clone(),
             restore_settings: true,
             restore_sub_settings: vec!["items".into()]

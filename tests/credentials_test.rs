@@ -29,11 +29,12 @@ fn unique_app_name() -> String {
 // Helper to create manager with credentials enabled
 // =============================================================================
 
-fn create_manager_with_credentials() -> (TempDir, SettingsManager) {
+fn create_manager_with_credentials() -> (TempDir, SettingsManager<rcman::storage::JsonStorage, TestSettings>) {
     let temp_dir = TempDir::new().unwrap();
     let app_name = unique_app_name();
     let config = SettingsConfig::builder(&app_name, "1.0.0")
         .config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
         .with_credentials()
         .build();
     let manager = SettingsManager::new(config).unwrap();
@@ -50,11 +51,11 @@ fn test_secret_not_in_json_file() {
     let (temp_dir, manager) = create_manager_with_credentials();
 
     // Load settings
-    let _ = manager.settings::<TestSettings>().unwrap();
+    let _ = manager.settings().unwrap();
 
     // Save a secret setting
     manager
-        .save_setting::<TestSettings>("api", "key", json!("super_secret_api_key_123"))
+        .save_setting("api", "key", json!("super_secret_api_key_123"))
         .unwrap();
 
     // Read the JSON file directly
@@ -73,15 +74,15 @@ fn test_secret_retrieved_correctly() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
     // Load settings
-    let _ = manager.settings::<TestSettings>().unwrap();
+    let _ = manager.settings().unwrap();
 
     // Save a secret
     manager
-        .save_setting::<TestSettings>("api", "key", json!("my_secret_value"))
+        .save_setting("api", "key", json!("my_secret_value"))
         .unwrap();
 
     // Load settings again
-    let metadata = manager.load_settings::<TestSettings>().unwrap();
+    let metadata = manager.load_settings().unwrap();
     let api_key_meta = metadata.get("api.key").unwrap();
 
     // Should have the correct value
@@ -98,26 +99,26 @@ fn test_reset_secret_clears_value() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
     // Load and set secret
-    let _ = manager.settings::<TestSettings>().unwrap();
+    let _ = manager.settings().unwrap();
     manager
-        .save_setting::<TestSettings>("api", "key", json!("secret_to_reset"))
+        .save_setting("api", "key", json!("secret_to_reset"))
         .unwrap();
 
     // Verify it's set
-    let metadata = manager.load_settings::<TestSettings>().unwrap();
+    let metadata = manager.load_settings().unwrap();
     assert_eq!(
         metadata.get("api.key").unwrap().value,
         Some(json!("secret_to_reset"))
     );
 
     // Reset
-    let default_value = manager.reset_setting::<TestSettings>("api", "key").unwrap();
+    let default_value = manager.reset_setting("api", "key").unwrap();
 
     // Default is empty string
     assert_eq!(default_value, json!(""));
 
     // Should now be the default (empty)
-    let metadata = manager.load_settings::<TestSettings>().unwrap();
+    let metadata = manager.load_settings().unwrap();
     assert_eq!(metadata.get("api.key").unwrap().value, Some(json!("")));
 }
 
@@ -127,16 +128,16 @@ fn test_reset_all_clears_secrets() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
     // Load and set secret
-    let _ = manager.settings::<TestSettings>().unwrap();
+    let _ = manager.settings().unwrap();
     manager
-        .save_setting::<TestSettings>("api", "key", json!("will_be_cleared"))
+        .save_setting("api", "key", json!("will_be_cleared"))
         .unwrap();
 
     // Reset all
     manager.reset_all().unwrap();
 
     // Secret should be cleared
-    let metadata = manager.load_settings::<TestSettings>().unwrap();
+    let metadata = manager.load_settings().unwrap();
     let api_key_value = metadata.get("api.key").unwrap().value.clone();
 
     // Should be back to default (empty string)
@@ -153,20 +154,20 @@ fn test_secret_default_not_stored() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
     // Load settings
-    let _ = manager.settings::<TestSettings>().unwrap();
+    let _ = manager.settings().unwrap();
 
     // Set to non-default first
     manager
-        .save_setting::<TestSettings>("api", "key", json!("temporary_key"))
+        .save_setting("api", "key", json!("temporary_key"))
         .unwrap();
 
     // Now set back to default (empty string)
     manager
-        .save_setting::<TestSettings>("api", "key", json!(""))
+        .save_setting("api", "key", json!(""))
         .unwrap();
 
     // Load again - should get default
-    let metadata = manager.load_settings::<TestSettings>().unwrap();
+    let metadata = manager.load_settings().unwrap();
     assert_eq!(metadata.get("api.key").unwrap().value, Some(json!("")));
 }
 
@@ -180,20 +181,20 @@ fn test_multiple_secrets() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
     // Load settings
-    let _ = manager.settings::<TestSettings>().unwrap();
+    let _ = manager.settings().unwrap();
 
     // Save secret
     manager
-        .save_setting::<TestSettings>("api", "key", json!("secret1"))
+        .save_setting("api", "key", json!("secret1"))
         .unwrap();
 
     // Also save a non-secret
     manager
-        .save_setting::<TestSettings>("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", json!("light"))
         .unwrap();
 
     // Verify both are retrievable
-    let metadata = manager.load_settings::<TestSettings>().unwrap();
+    let metadata = manager.load_settings().unwrap();
 
     assert_eq!(
         metadata.get("api.key").unwrap().value,
@@ -252,9 +253,9 @@ fn test_secret_persists_across_sessions() {
             .build();
         let manager = SettingsManager::new(config).unwrap();
 
-        let _ = manager.settings::<TestSettings>().unwrap();
+        let _ = manager.settings().unwrap();
         manager
-            .save_setting::<TestSettings>("api", "key", json!("persistent_secret"))
+            .save_setting("api", "key", json!("persistent_secret"))
             .unwrap();
     }
 
@@ -269,7 +270,7 @@ fn test_secret_persists_across_sessions() {
         // In a real keychain scenario, this would retrieve "persistent_secret"
         // With memory backend (default for tests unless feature enabled), it might be empty
         // BUT since we are running with --all-features, keychain IS enabled.
-        let metadata = manager.load_settings::<TestSettings>().unwrap();
+        let metadata = manager.load_settings().unwrap();
         let value = metadata.get("api.key").unwrap().value.clone();
 
         // If using keychain, it should persist.
@@ -291,9 +292,9 @@ fn test_secret_persists_across_sessions() {
 fn test_secret_has_correct_metadata() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
-    let _ = manager.settings::<TestSettings>().unwrap();
+    let _ = manager.settings().unwrap();
 
-    let metadata = manager.load_settings::<TestSettings>().unwrap();
+    let metadata = manager.load_settings().unwrap();
     let api_key_meta = metadata.get("api.key").unwrap();
 
     // Should be marked as secret

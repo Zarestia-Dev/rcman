@@ -21,7 +21,7 @@ fn test_create_and_load_settings() {
     let fixture = TestFixture::new();
 
     // Load settings (should get defaults)
-    let settings = fixture.manager.settings::<TestSettings>().unwrap();
+    let settings = fixture.manager.settings().unwrap();
 
     // Verify defaults match schema
     assert_eq!(settings.ui.theme, "dark");
@@ -35,16 +35,16 @@ fn test_save_setting_updates_cache() {
     let fixture = TestFixture::new();
 
     // Load initial settings
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Save a new value
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", json!("light"))
         .unwrap();
 
     // Load again - should get the cached/saved value
-    let metadata = fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = fixture.manager.load_settings().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
     assert_eq!(theme_meta.value, Some(json!("light")));
 }
@@ -58,12 +58,13 @@ fn test_save_and_reload_persists() {
     {
         let config = rcman::SettingsConfig::builder("test-app", "1.0.0")
             .config_dir(&config_path)
+            .with_schema::<common::TestSettings>()
             .build();
         let manager = rcman::SettingsManager::new(config).unwrap();
 
-        let _ = manager.settings::<TestSettings>().unwrap();
+        let _ = manager.settings().unwrap();
         manager
-            .save_setting::<TestSettings>("ui", "font_size", json!(20.0))
+            .save_setting("ui", "font_size", json!(20.0))
             .unwrap();
     }
 
@@ -71,10 +72,11 @@ fn test_save_and_reload_persists() {
     {
         let config = rcman::SettingsConfig::builder("test-app", "1.0.0")
             .config_dir(&config_path)
+            .with_schema::<common::TestSettings>()
             .build();
         let manager = rcman::SettingsManager::new(config).unwrap();
 
-        let settings = manager.settings::<TestSettings>().unwrap();
+        let settings = manager.settings().unwrap();
         assert_eq!(settings.ui.font_size, 20.0);
     }
 }
@@ -88,22 +90,22 @@ fn test_reset_single_setting() {
     let fixture = TestFixture::new();
 
     // Load and modify
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", json!("light"))
         .unwrap();
 
     // Reset to default
     let default_value = fixture
         .manager
-        .reset_setting::<TestSettings>("ui", "theme")
+        .reset_setting("ui", "theme")
         .unwrap();
 
     assert_eq!(default_value, json!("dark"));
 
     // Verify it's back to default
-    let metadata = fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = fixture.manager.load_settings().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
     assert_eq!(theme_meta.value, Some(json!("dark")));
 }
@@ -113,25 +115,25 @@ fn test_reset_all_settings() {
     let fixture = TestFixture::new();
 
     // Load and modify multiple settings
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", json!("light"))
         .unwrap();
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "font_size", json!(20.0))
+        .save_setting("ui", "font_size", json!(20.0))
         .unwrap();
     fixture
         .manager
-        .save_setting::<TestSettings>("general", "language", json!("tr"))
+        .save_setting("general", "language", json!("tr"))
         .unwrap();
 
     // Reset all
     fixture.manager.reset_all().unwrap();
 
     // Verify all are back to defaults
-    let settings = fixture.manager.settings::<TestSettings>().unwrap();
+    let settings = fixture.manager.settings().unwrap();
     assert_eq!(settings.ui.theme, "dark");
     assert_eq!(settings.ui.font_size, 14.0);
     assert_eq!(settings.general.language, "en");
@@ -146,12 +148,12 @@ fn test_default_value_not_stored_in_file() {
     let fixture = TestFixture::new();
 
     // Initially load settings
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Save a non-default value first
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", json!("light"))
         .unwrap();
 
     // Verify it's stored - checking for the category first
@@ -161,7 +163,7 @@ fn test_default_value_not_stored_in_file() {
     // Now save the default value back
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("dark"))
+        .save_setting("ui", "theme", json!("dark"))
         .unwrap();
 
     // Default value should be REMOVED from the file
@@ -179,16 +181,16 @@ fn test_only_non_defaults_stored() {
     let fixture = TestFixture::new();
 
     // Load settings
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Save one default and one non-default
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("dark")) // default
+        .save_setting("ui", "theme", json!("dark")) // default
         .unwrap();
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "font_size", json!(20.0)) // non-default
+        .save_setting("ui", "font_size", json!(20.0)) // non-default
         .unwrap();
 
     let json = read_settings_file(&fixture).unwrap();
@@ -207,12 +209,12 @@ fn test_only_non_defaults_stored() {
 #[test]
 fn test_invalid_number_rejected() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Try to save a value outside the valid range (min=8, max=32)
     let result = fixture
         .manager
-        .save_setting::<TestSettings>("ui", "font_size", json!(100.0));
+        .save_setting("ui", "font_size", json!(100.0));
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -222,13 +224,13 @@ fn test_invalid_number_rejected() {
 #[test]
 fn test_invalid_select_option_rejected() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Try to save an invalid option
     let result =
         fixture
             .manager
-            .save_setting::<TestSettings>("ui", "theme", json!("invalid_theme"));
+            .save_setting("ui", "theme", json!("invalid_theme"));
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -238,13 +240,13 @@ fn test_invalid_select_option_rejected() {
 #[test]
 fn test_setting_not_found_error() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Try to save a non-existent setting
     let result =
         fixture
             .manager
-            .save_setting::<TestSettings>("nonexistent", "setting", json!("value"));
+            .save_setting("nonexistent", "setting", json!("value"));
 
     assert!(result.is_err());
 }
@@ -261,7 +263,7 @@ fn test_env_var_override() {
     let fixture = TestFixture::with_env_prefix("TESTAPP");
 
     // Load settings
-    let metadata = fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = fixture.manager.load_settings().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
 
     // Value should be overridden by env var
@@ -280,12 +282,13 @@ fn test_env_override_priority() {
     {
         let config = rcman::SettingsConfig::builder("test-app", "1.0.0")
             .config_dir(temp_dir.path())
+            .with_schema::<common::TestSettings>()
             .build();
         let manager = rcman::SettingsManager::new(config).unwrap();
 
-        let _ = manager.settings::<TestSettings>().unwrap();
+        let _ = manager.settings().unwrap();
         manager
-            .save_setting::<TestSettings>("ui", "theme", json!("light"))
+            .save_setting("ui", "theme", json!("light"))
             .unwrap();
     }
 
@@ -294,11 +297,12 @@ fn test_env_override_priority() {
 
     let config = rcman::SettingsConfig::builder("test-app", "1.0.0")
         .config_dir(temp_dir.path())
+        .with_schema::<common::TestSettings>()
         .with_env_prefix("TEST2")
         .build();
     let manager = rcman::SettingsManager::new(config).unwrap();
 
-    let metadata = manager.load_settings::<TestSettings>().unwrap();
+    let metadata = manager.load_settings().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
 
     // Env var should override stored value
@@ -317,7 +321,7 @@ fn test_invalidate_cache() {
     let fixture = TestFixture::new();
 
     // Load settings (populates cache)
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Modify file directly (simulating external change)
     let path = fixture.settings_path();
@@ -325,7 +329,7 @@ fn test_invalidate_cache() {
     std::fs::write(&path, r#"{"ui": {"theme": "light"}}"#).unwrap();
 
     // Cache still has old value
-    let metadata = fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = fixture.manager.load_settings().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
     assert_eq!(theme_meta.value, Some(json!("dark"))); // cached default
 
@@ -333,7 +337,7 @@ fn test_invalidate_cache() {
     fixture.manager.invalidate_cache();
 
     // Now should pick up the file change
-    let metadata = fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = fixture.manager.load_settings().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
     assert_eq!(theme_meta.value, Some(json!("light")));
 }
@@ -345,22 +349,22 @@ fn test_invalidate_cache() {
 #[test]
 fn test_path_and_file_settings() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Save directory path
     fixture
         .manager
-        .save_setting::<TestSettings>("paths", "config_dir", json!("/home/user/.config/myapp"))
+        .save_setting("paths", "config_dir", json!("/home/user/.config/myapp"))
         .unwrap();
 
     // Save file path
     fixture
         .manager
-        .save_setting::<TestSettings>("paths", "log_file", json!("/var/log/myapp.log"))
+        .save_setting("paths", "log_file", json!("/var/log/myapp.log"))
         .unwrap();
 
     // Reload and verify
-    let metadata = fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = fixture.manager.load_settings().unwrap();
 
     let config_dir_meta = metadata.get("paths.config_dir").unwrap();
     assert_eq!(
@@ -389,7 +393,7 @@ fn test_concurrent_access() {
         let fixture = Arc::clone(&fixture);
         handles.push(thread::spawn(move || {
             for _ in 0..50 {
-                let _ = fixture.manager.load_settings::<TestSettings>().unwrap();
+                let _ = fixture.manager.load_settings().unwrap();
             }
         }));
     }
@@ -406,7 +410,7 @@ fn test_concurrent_access() {
                 };
                 fixture
                     .manager
-                    .save_setting::<TestSettings>("ui", "theme", val)
+                    .save_setting("ui", "theme", val)
                     .unwrap();
             }
         }));
@@ -418,7 +422,7 @@ fn test_concurrent_access() {
     }
 
     // Verify consistency: data should be readable and valid JSON
-    let metadata = fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = fixture.manager.load_settings().unwrap();
     let theme = metadata.get("ui.theme").unwrap();
     assert!(theme.value.is_some());
 }

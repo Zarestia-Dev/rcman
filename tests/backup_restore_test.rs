@@ -21,14 +21,14 @@ fn create_fixture_with_data() -> TestFixture {
     let fixture = TestFixture::with_sub_settings();
 
     // Load and set some non-default settings
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", json!("light"))
         .unwrap();
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "font_size", json!(18.0))
+        .save_setting("ui", "font_size", json!(18.0))
         .unwrap();
 
     // Add some sub-settings data
@@ -55,7 +55,7 @@ fn test_create_unencrypted_backup() {
     let backup_path = fixture
         .manager
         .backup()
-        .create(BackupOptions::new().output_dir(backup_dir.path()))
+        .create(&BackupOptions::new().output_dir(backup_dir.path()))
         .unwrap();
 
     // Verify backup file exists
@@ -78,7 +78,7 @@ fn test_create_encrypted_backup() {
         .manager
         .backup()
         .create(
-            BackupOptions::new()
+            &BackupOptions::new()
                 .output_dir(backup_dir.path())
                 .password("test_password_123"),
         )
@@ -102,7 +102,7 @@ fn test_create_backup_with_note() {
         .manager
         .backup()
         .create(
-            BackupOptions::new()
+            &BackupOptions::new()
                 .output_dir(backup_dir.path())
                 .note("Weekly backup before update"),
         )
@@ -127,7 +127,7 @@ fn test_analyze_backup_contents() {
     let backup_path = fixture
         .manager
         .backup()
-        .create(BackupOptions::new().output_dir(backup_dir.path()))
+        .create(&BackupOptions::new().output_dir(backup_dir.path()))
         .unwrap();
 
     let analysis = fixture.manager.backup().analyze(&backup_path).unwrap();
@@ -151,7 +151,7 @@ fn test_analyze_encrypted_backup() {
         .manager
         .backup()
         .create(
-            BackupOptions::new()
+            &BackupOptions::new()
                 .output_dir(backup_dir.path())
                 .password("secret123"),
         )
@@ -177,7 +177,7 @@ fn test_restore_backup() {
     let backup_path = original_fixture
         .manager
         .backup()
-        .create(BackupOptions::new().output_dir(backup_dir.path()))
+        .create(&BackupOptions::new().output_dir(backup_dir.path()))
         .unwrap();
 
     // Create a new fresh fixture (simulating fresh install)
@@ -187,7 +187,7 @@ fn test_restore_backup() {
     let result = new_fixture
         .manager
         .backup()
-        .restore(RestoreOptions::from_path(&backup_path).overwrite(true))
+        .restore(&RestoreOptions::from_path(&backup_path).overwrite(true))
         .unwrap();
 
     // Verify restoration happened
@@ -197,7 +197,7 @@ fn test_restore_backup() {
     new_fixture.manager.invalidate_cache();
 
     // Verify settings were restored via metadata (not struct deserialization)
-    let metadata = new_fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = new_fixture.manager.load_settings().unwrap();
     let theme_value = metadata.get("ui.theme").unwrap().value.clone();
     assert_eq!(theme_value, Some(json!("light")));
 
@@ -216,7 +216,7 @@ fn test_restore_encrypted_backup() {
         .manager
         .backup()
         .create(
-            BackupOptions::new()
+            &BackupOptions::new()
                 .output_dir(backup_dir.path())
                 .password(password),
         )
@@ -230,7 +230,7 @@ fn test_restore_encrypted_backup() {
         .manager
         .backup()
         .restore(
-            RestoreOptions::from_path(&backup_path)
+            &RestoreOptions::from_path(&backup_path)
                 .password(password)
                 .overwrite(true),
         )
@@ -241,7 +241,7 @@ fn test_restore_encrypted_backup() {
     new_fixture.manager.invalidate_cache();
 
     // Verify settings were restored
-    let metadata = new_fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = new_fixture.manager.load_settings().unwrap();
     let theme_value = metadata.get("ui.theme").unwrap().value.clone();
     assert_eq!(theme_value, Some(json!("light")));
 }
@@ -256,7 +256,7 @@ fn test_restore_wrong_password_fails() {
         .manager
         .backup()
         .create(
-            BackupOptions::new()
+            &BackupOptions::new()
                 .output_dir(backup_dir.path())
                 .password("correct_password"),
         )
@@ -267,7 +267,7 @@ fn test_restore_wrong_password_fails() {
 
     // Try to restore with wrong password
     let result = new_fixture.manager.backup().restore(
-        RestoreOptions::from_path(&backup_path)
+        &RestoreOptions::from_path(&backup_path)
             .password("wrong_password")
             .overwrite(true),
     );
@@ -285,7 +285,7 @@ fn test_restore_without_password_when_encrypted_fails() {
         .manager
         .backup()
         .create(
-            BackupOptions::new()
+            &BackupOptions::new()
                 .output_dir(backup_dir.path())
                 .password("some_password"),
         )
@@ -298,7 +298,7 @@ fn test_restore_without_password_when_encrypted_fails() {
     let result = new_fixture
         .manager
         .backup()
-        .restore(RestoreOptions::from_path(&backup_path).overwrite(true));
+        .restore(&RestoreOptions::from_path(&backup_path).overwrite(true));
 
     assert!(result.is_err());
 }
@@ -317,7 +317,7 @@ fn test_backup_includes_sub_settings() {
         .manager
         .backup()
         .create(
-            BackupOptions::new()
+            &BackupOptions::new()
                 .output_dir(backup_dir.path())
                 .include_sub_settings("remotes"),
         )
@@ -328,7 +328,7 @@ fn test_backup_includes_sub_settings() {
     let result = new_fixture
         .manager
         .backup()
-        .restore(RestoreOptions::from_path(&backup_path).overwrite(true))
+        .restore(&RestoreOptions::from_path(&backup_path).overwrite(true))
         .unwrap();
 
     // Verify sub-settings were restored
@@ -357,22 +357,22 @@ fn test_restore_skip_existing() {
     let backup_path = original_fixture
         .manager
         .backup()
-        .create(BackupOptions::new().output_dir(backup_dir.path()))
+        .create(&BackupOptions::new().output_dir(backup_dir.path()))
         .unwrap();
 
     // Create a new fixture with different settings
     let new_fixture = TestFixture::new();
-    let _ = new_fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = new_fixture.manager.settings().unwrap();
     new_fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("system"))
+        .save_setting("ui", "theme", json!("system"))
         .unwrap();
 
     // Restore WITHOUT overwrite (should skip existing)
     let result = new_fixture
         .manager
         .backup()
-        .restore(RestoreOptions::from_path(&backup_path).overwrite(false))
+        .restore(&RestoreOptions::from_path(&backup_path).overwrite(false))
         .unwrap();
 
     // The settings file should have been skipped
@@ -388,28 +388,28 @@ fn test_restore_overwrite_existing() {
     let backup_path = original_fixture
         .manager
         .backup()
-        .create(BackupOptions::new().output_dir(backup_dir.path()))
+        .create(&BackupOptions::new().output_dir(backup_dir.path()))
         .unwrap();
 
     // Create a new fixture with different settings
     let new_fixture = TestFixture::new();
-    let _ = new_fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = new_fixture.manager.settings().unwrap();
     new_fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("system"))
+        .save_setting("ui", "theme", json!("system"))
         .unwrap();
 
     // Restore WITH overwrite
     new_fixture
         .manager
         .backup()
-        .restore(RestoreOptions::from_path(&backup_path).overwrite(true))
+        .restore(&RestoreOptions::from_path(&backup_path).overwrite(true))
         .unwrap();
 
     new_fixture.manager.invalidate_cache();
 
     // Verify the restored value via metadata
-    let metadata = new_fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = new_fixture.manager.load_settings().unwrap();
     let theme_value = metadata.get("ui.theme").unwrap().value.clone();
     assert_eq!(theme_value, Some(json!("light"))); // from backup, not "system"
 }

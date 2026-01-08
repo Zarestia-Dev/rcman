@@ -25,7 +25,7 @@ use std::time::Instant;
 #[ignore]
 fn test_rapid_sequential_saves() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let start = Instant::now();
 
@@ -34,7 +34,7 @@ fn test_rapid_sequential_saves() {
         let theme = if i % 2 == 0 { "light" } else { "dark" };
         fixture
             .manager
-            .save_setting::<TestSettings>("ui", "theme", json!(theme))
+            .save_setting("ui", "theme", json!(theme))
             .unwrap();
     }
 
@@ -49,19 +49,19 @@ fn test_rapid_sequential_saves() {
 #[ignore]
 fn test_rapid_sequential_loads() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Save once
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", json!("light"))
         .unwrap();
 
     let start = Instant::now();
 
     // Load 1000 times (should be fast due to caching)
     for _ in 0..1000 {
-        let _ = fixture.manager.load_settings::<TestSettings>().unwrap();
+        let _ = fixture.manager.load_settings().unwrap();
     }
 
     let duration = start.elapsed();
@@ -75,7 +75,7 @@ fn test_rapid_sequential_loads() {
 #[ignore]
 fn test_mixed_read_write_workload() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let start = Instant::now();
 
@@ -84,11 +84,11 @@ fn test_mixed_read_write_workload() {
         let theme = if i % 2 == 0 { "light" } else { "dark" };
         fixture
             .manager
-            .save_setting::<TestSettings>("ui", "theme", json!(theme))
+            .save_setting("ui", "theme", json!(theme))
             .unwrap();
 
         // Load
-        let _ = fixture.manager.load_settings::<TestSettings>().unwrap();
+        let _ = fixture.manager.load_settings().unwrap();
     }
 
     let duration = start.elapsed();
@@ -187,11 +187,11 @@ fn test_sub_settings_bulk_operations() {
 #[ignore]
 fn test_high_concurrency_reads() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", json!("light"))
         .unwrap();
 
     let mut handles = vec![];
@@ -205,7 +205,7 @@ fn test_high_concurrency_reads() {
             for _ in 0..100 {
                 let _ = fixture_clone
                     .manager
-                    .load_settings::<TestSettings>()
+                    .load_settings()
                     .unwrap();
             }
         });
@@ -227,7 +227,7 @@ fn test_high_concurrency_reads() {
 #[ignore]
 fn test_high_concurrency_writes() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let mut handles = vec![];
 
@@ -245,7 +245,7 @@ fn test_high_concurrency_writes() {
                 };
                 fixture_clone
                     .manager
-                    .save_setting::<TestSettings>("ui", "theme", json!(theme))
+                    .save_setting("ui", "theme", json!(theme))
                     .unwrap();
             }
         });
@@ -260,7 +260,7 @@ fn test_high_concurrency_writes() {
     println!("1000 concurrent writes (20 threads) took: {:?}", duration);
 
     // Verify data integrity
-    let metadata = fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = fixture.manager.load_settings().unwrap();
     let theme = metadata.get("ui.theme").unwrap();
     let value = theme.value.as_ref().unwrap().as_str().unwrap();
     assert!(value == "light" || value == "dark");
@@ -272,7 +272,7 @@ fn test_high_concurrency_writes() {
 #[ignore]
 fn test_mixed_concurrent_operations() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let mut handles = vec![];
 
@@ -285,7 +285,7 @@ fn test_mixed_concurrent_operations() {
             for _ in 0..100 {
                 let _ = fixture_clone
                     .manager
-                    .load_settings::<TestSettings>()
+                    .load_settings()
                     .unwrap();
             }
         });
@@ -304,7 +304,7 @@ fn test_mixed_concurrent_operations() {
                 };
                 fixture_clone
                     .manager
-                    .save_setting::<TestSettings>("ui", "theme", json!(theme))
+                    .save_setting("ui", "theme", json!(theme))
                     .unwrap();
             }
         });
@@ -374,7 +374,7 @@ fn test_backup_large_settings() {
     use tempfile::TempDir;
 
     let fixture = TestFixture::with_sub_settings();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Create lots of data
     let remotes = fixture.manager.sub_settings("remotes").unwrap();
@@ -394,7 +394,7 @@ fn test_backup_large_settings() {
     let backup_path = fixture
         .manager
         .backup()
-        .create(BackupOptions::new().output_dir(backup_dir.path()))
+        .create(&BackupOptions::new().output_dir(backup_dir.path()))
         .unwrap();
 
     let duration = start.elapsed();
@@ -414,7 +414,7 @@ fn test_restore_large_backup() {
     use tempfile::TempDir;
 
     let fixture = TestFixture::with_sub_settings();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Create backup with data
     let remotes = fixture.manager.sub_settings("remotes").unwrap();
@@ -429,7 +429,7 @@ fn test_restore_large_backup() {
         .manager
         .backup()
         .create(
-            BackupOptions::new()
+            &BackupOptions::new()
                 .output_dir(backup_dir.path())
                 .include_sub_settings("remotes"),
         )
@@ -446,7 +446,7 @@ fn test_restore_large_backup() {
     fixture
         .manager
         .backup()
-        .restore(RestoreOptions::from_path(&backup_path))
+        .restore(&RestoreOptions::from_path(&backup_path))
         .unwrap();
 
     let duration = start.elapsed();

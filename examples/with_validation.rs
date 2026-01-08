@@ -48,46 +48,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔍 rcman Validation Example\n");
 
     // Load initial settings
-    manager.load_settings::<AppSettings>()?;
+    manager.load_settings()?;
 
     // Test valid email
     println!("✅ Testing valid email...");
-    match manager.save_setting::<AppSettings>("user", "email", json!("john@example.com")) {
+    match manager.save_setting("user", "email", json!("john@example.com")) {
         Ok(_) => println!("   Success: Email saved\n"),
         Err(e) => println!("   Error: {}\n", e),
     }
 
     // Test invalid email
     println!("❌ Testing invalid email...");
-    match manager.save_setting::<AppSettings>("user", "email", json!("not-an-email")) {
+    match manager.save_setting("user", "email", json!("not-an-email")) {
         Ok(_) => println!("   Unexpected success\n"),
         Err(e) => println!("   Expected error: {}\n", e),
     }
 
     // Test valid username
     println!("✅ Testing valid username...");
-    match manager.save_setting::<AppSettings>("user", "username", json!("john_doe")) {
+    match manager.save_setting("user", "username", json!("john_doe")) {
         Ok(_) => println!("   Success: Username saved\n"),
         Err(e) => println!("   Error: {}\n", e),
     }
 
     // Test invalid username (too short)
     println!("❌ Testing invalid username (too short)...");
-    match manager.save_setting::<AppSettings>("user", "username", json!("ab")) {
+    match manager.save_setting("user", "username", json!("ab")) {
         Ok(_) => println!("   Unexpected success\n"),
         Err(e) => println!("   Expected error: {}\n", e),
     }
 
     // Test port range validation
     println!("✅ Testing valid port...");
-    match manager.save_setting::<AppSettings>("network", "port", json!(8080)) {
+    match manager.save_setting("network", "port", json!(8080)) {
         Ok(_) => println!("   Success: Port saved\n"),
         Err(e) => println!("   Error: {}\n", e),
     }
 
     // Test port out of range
     println!("❌ Testing port out of range...");
-    match manager.save_setting::<AppSettings>("network", "port", json!(80)) {
+    match manager.save_setting("network", "port", json!(80)) {
         Ok(_) => println!("   Unexpected success\n"),
         Err(e) => println!("   Expected error: {}\n", e),
     }

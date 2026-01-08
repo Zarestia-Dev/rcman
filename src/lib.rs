@@ -263,7 +263,7 @@ pub use sub_settings::{SubSettings, SubSettingsConfig};
 /// let settings: AppSettings = manager.settings()?;
 /// # Ok::<(), rcman::Error>(())
 /// ```
-pub type TypedManager = SettingsManager<JsonStorage>;
+pub type TypedManager<Schema> = SettingsManager<JsonStorage, Schema>;
 
 /// Settings manager without schema (dynamic/runtime validation).
 ///

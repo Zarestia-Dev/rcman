@@ -46,19 +46,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create some settings
     println!("📝 Creating initial settings...");
-    manager.load_settings::<AppSettings>()?;
-    manager.save_setting::<AppSettings>("app", "theme", json!("dark"))?;
-    manager.save_setting::<AppSettings>("user", "name", json!("Alice"))?;
-    manager.save_setting::<AppSettings>("user", "email", json!("alice@example.com"))?;
+    manager.load_settings()?;
+    manager.save_setting("app", "theme", json!("dark"))?;
+    manager.save_setting("user", "name", json!("Alice"))?;
+    manager.save_setting("user", "email", json!("alice@example.com"))?;
 
-    let settings = manager.load_settings::<AppSettings>()?;
+    let settings = manager.load_settings()?;
     println!("✅ Initial settings:");
     println!("{}\n", serde_json::to_string_pretty(&settings)?);
 
     // Create a backup using the builder pattern
     println!("📦 Creating backup...");
     let backup_path = manager.backup().create(
-        BackupOptions::new()
+        &BackupOptions::new()
             .output_dir("./example_config/backups")
             .note("Example backup"),
     )?;
@@ -66,24 +66,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Modify settings
     println!("🔧 Modifying settings...");
-    manager.save_setting::<AppSettings>("app", "theme", json!("light"))?;
-    manager.save_setting::<AppSettings>("user", "name", json!("Bob"))?;
+    manager.save_setting("app", "theme", json!("light"))?;
+    manager.save_setting("user", "name", json!("Bob"))?;
 
-    let modified = manager.load_settings::<AppSettings>()?;
+    let modified = manager.load_settings()?;
     println!("✅ Modified settings:");
     println!("{}\n", serde_json::to_string_pretty(&modified)?);
 
     // Restore from backup using the builder pattern
     println!("♻️  Restoring from backup...");
     manager.backup().restore(
-        RestoreOptions::from_path(&backup_path)
+        &RestoreOptions::from_path(&backup_path)
             .overwrite(true)
             .verify_checksum(true),
     )?;
     println!("✅ Restored from backup\n");
 
     // Verify restoration
-    let restored = manager.load_settings::<AppSettings>()?;
+    let restored = manager.load_settings()?;
     println!("✅ Restored settings:");
     println!("{}\n", serde_json::to_string_pretty(&restored)?);
 

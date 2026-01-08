@@ -2,7 +2,7 @@
 //
 // Run with: cargo run --example derive_usage --features derive
 
-use rcman::{DeriveSettingsSchema, SettingsManager};
+use rcman::{DeriveSettingsSchema, SettingsConfig, SettingsManager};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -109,13 +109,15 @@ pub struct AppSettings {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📦 rcman Derive Macro Example\n");
 
-    // Initialize settings manager
-    let manager = SettingsManager::builder("derive-example", "1.0.0")
+    // Initialize settings manager with schema
+    let config = SettingsConfig::builder("derive-example", "1.0.0")
         .config_dir("./example_config")
-        .build()?;
+        .with_schema::<AppSettings>()
+        .build();
+    let manager = SettingsManager::new(config)?;
 
     // Load settings - derive macro generates the schema automatically
-    let settings = manager.load_settings::<AppSettings>()?;
+    let settings = manager.load_settings()?;
 
     println!("✅ Loaded {} settings:", settings.len());
     for (key, meta) in &settings {
@@ -124,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Save a setting
     println!("\n🔧 Changing theme to 'dark'...");
-    manager.save_setting::<AppSettings>("ui", "theme", json!("dark"))?;
+    manager.save_setting("ui", "theme", json!("dark"))?;
 
     // Load startup settings as struct
     let app: AppSettings = manager.settings()?;
@@ -132,7 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Reset to default
     println!("\n🔄 Resetting theme...");
-    manager.reset_setting::<AppSettings>("ui", "theme")?;
+    manager.reset_setting("ui", "theme")?;
 
     let app: AppSettings = manager.settings()?;
     println!("✅ Theme reset to: {}", app.ui.theme);
@@ -144,7 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🔧 Adding new IP to allowed list...");
     let mut new_ips = app.network.allowed_ips.clone();
     new_ips.push("192.168.1.1".to_string());
-    manager.save_setting::<AppSettings>("network", "allowed_ips", json!(new_ips))?;
+    manager.save_setting("network", "allowed_ips", json!(new_ips))?;
 
     let app: AppSettings = manager.settings()?;
     println!("✅ Updated allowed IPs: {:?}", app.network.allowed_ips);

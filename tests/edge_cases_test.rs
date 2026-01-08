@@ -25,12 +25,12 @@ use tempfile::TempDir;
 #[test]
 fn test_save_invalid_top_level_key() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let result =
         fixture
             .manager
-            .save_setting::<TestSettings>("invalid_section", "key", json!("value"));
+            .save_setting("invalid_section", "key", json!("value"));
 
     assert!(result.is_err());
     // Error should indicate setting not found
@@ -41,11 +41,11 @@ fn test_save_invalid_top_level_key() {
 #[test]
 fn test_save_invalid_nested_key() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let result = fixture
         .manager
-        .save_setting::<TestSettings>("ui", "invalid_key", json!("value"));
+        .save_setting("ui", "invalid_key", json!("value"));
 
     assert!(result.is_err());
     // Error should indicate setting not found
@@ -56,9 +56,9 @@ fn test_save_invalid_nested_key() {
 #[test]
 fn test_deeply_nested_invalid_path() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
-    let result = fixture.manager.save_setting::<TestSettings>(
+    let result = fixture.manager.save_setting(
         "ui.nested.deeply.invalid",
         "key",
         json!("value"),
@@ -74,13 +74,13 @@ fn test_deeply_nested_invalid_path() {
 #[test]
 fn test_save_wrong_type_for_number() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Try to save a string where a number is expected
     let result =
         fixture
             .manager
-            .save_setting::<TestSettings>("ui", "font_size", json!("not_a_number"));
+            .save_setting("ui", "font_size", json!("not_a_number"));
 
     assert!(result.is_err());
 }
@@ -88,12 +88,12 @@ fn test_save_wrong_type_for_number() {
 #[test]
 fn test_save_wrong_type_for_boolean() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let result =
         fixture
             .manager
-            .save_setting::<TestSettings>("general", "tray_enabled", json!(123));
+            .save_setting("general", "tray_enabled", json!(123));
 
     // Library may accept numeric values and coerce them
     // Document actual behavior rather than assert failure
@@ -103,12 +103,12 @@ fn test_save_wrong_type_for_boolean() {
 #[test]
 fn test_number_out_of_range() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // font_size has min=8, max=32
     let result = fixture
         .manager
-        .save_setting::<TestSettings>("ui", "font_size", json!(100.0));
+        .save_setting("ui", "font_size", json!(100.0));
 
     // Document: library may not enforce range validation automatically
     // This test demonstrates what actually happens
@@ -118,13 +118,13 @@ fn test_number_out_of_range() {
 #[test]
 fn test_select_invalid_option() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // theme has options ["dark", "light", "system"]
     let result =
         fixture
             .manager
-            .save_setting::<TestSettings>("ui", "theme", json!("invalid_theme"));
+            .save_setting("ui", "theme", json!("invalid_theme"));
 
     // Document: library may not enforce select options automatically
     let _ = result;
@@ -137,12 +137,12 @@ fn test_select_invalid_option() {
 #[test]
 fn test_concurrent_reads() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Save initial value
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", json!("light"))
         .unwrap();
 
     let mut handles = vec![];
@@ -153,7 +153,7 @@ fn test_concurrent_reads() {
         let handle = thread::spawn(move || {
             let metadata = fixture_clone
                 .manager
-                .load_settings::<TestSettings>()
+                .load_settings()
                 .unwrap();
             let theme = metadata.get("ui.theme").unwrap();
             assert_eq!(theme.value, Some(json!("light")));
@@ -169,7 +169,7 @@ fn test_concurrent_reads() {
 #[test]
 fn test_concurrent_writes_same_key() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let mut handles = vec![];
 
@@ -180,7 +180,7 @@ fn test_concurrent_writes_same_key() {
         let handle = thread::spawn(move || {
             fixture_clone
                 .manager
-                .save_setting::<TestSettings>("ui", "theme", json!(value))
+                .save_setting("ui", "theme", json!(value))
                 .unwrap();
         });
         handles.push(handle);
@@ -191,7 +191,7 @@ fn test_concurrent_writes_same_key() {
     }
 
     // Final value should be either "light" or "dark" (not corrupted)
-    let metadata = fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = fixture.manager.load_settings().unwrap();
     let theme = metadata.get("ui.theme").unwrap();
     let value = theme.value.as_ref().unwrap().as_str().unwrap();
     assert!(value == "light" || value == "dark");
@@ -200,7 +200,7 @@ fn test_concurrent_writes_same_key() {
 #[test]
 fn test_concurrent_writes_different_keys() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let mut handles = vec![];
 
@@ -210,7 +210,7 @@ fn test_concurrent_writes_different_keys() {
         for _ in 0..10 {
             fixture_clone
                 .manager
-                .save_setting::<TestSettings>("ui", "theme", json!("light"))
+                .save_setting("ui", "theme", json!("light"))
                 .unwrap();
         }
     }));
@@ -221,7 +221,7 @@ fn test_concurrent_writes_different_keys() {
         for _ in 0..10 {
             fixture_clone
                 .manager
-                .save_setting::<TestSettings>("ui", "font_size", json!(16.0))
+                .save_setting("ui", "font_size", json!(16.0))
                 .unwrap();
         }
     }));
@@ -232,7 +232,7 @@ fn test_concurrent_writes_different_keys() {
         for _ in 0..10 {
             fixture_clone
                 .manager
-                .save_setting::<TestSettings>("general", "language", json!("en"))
+                .save_setting("general", "language", json!("en"))
                 .unwrap();
         }
     }));
@@ -242,7 +242,7 @@ fn test_concurrent_writes_different_keys() {
     }
 
     // All values should be present and correct
-    let metadata = fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = fixture.manager.load_settings().unwrap();
     assert_eq!(
         metadata.get("ui.theme").unwrap().value,
         Some(json!("light"))
@@ -270,14 +270,14 @@ fn test_load_corrupted_json() {
     let manager = SettingsManager::new(config).unwrap();
 
     // Register schema
-    let _ = manager.settings::<TestSettings>().unwrap();
+    let _ = manager.settings().unwrap();
 
     // Write corrupted JSON to the settings file
     let settings_file = temp_dir.path().join("settings.json");
     fs::write(&settings_file, b"{invalid json content").unwrap();
 
     // Loading should handle gracefully (may return defaults or error)
-    let _ = manager.load_settings::<TestSettings>();
+    let _ = manager.load_settings();
 }
 
 #[test]
@@ -288,14 +288,14 @@ fn test_load_truncated_json() {
         .build();
     let manager = SettingsManager::new(config).unwrap();
 
-    let _ = manager.settings::<TestSettings>().unwrap();
+    let _ = manager.settings().unwrap();
 
     // Write truncated JSON
     let settings_file = temp_dir.path().join("settings.json");
     fs::write(&settings_file, b"{\"ui\": {\"theme\":").unwrap();
 
     // Loading should handle gracefully
-    let _ = manager.load_settings::<TestSettings>();
+    let _ = manager.load_settings();
 }
 
 #[test]
@@ -304,14 +304,15 @@ fn test_save_to_readonly_directory() {
     let temp_dir = TempDir::new().unwrap();
     let config = SettingsConfig::builder("test-app", "1.0.0")
         .config_dir(temp_dir.path())
+        .with_schema::<common::TestSettings>()
         .build();
     let manager = SettingsManager::new(config).unwrap();
 
-    let _ = manager.settings::<TestSettings>().unwrap();
+    let _ = manager.settings().unwrap();
 
     // First save to create the file (use a non-default value so it actually writes)
     manager
-        .save_setting::<TestSettings>("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", json!("light"))
         .unwrap();
 
     // Test that write fails when directory is readonly (Unix only)
@@ -339,7 +340,7 @@ fn test_save_to_readonly_directory() {
         dir_perms.set_mode(0o555); // Read + execute only
         fs::set_permissions(temp_dir.path(), dir_perms).unwrap();
 
-        let result = manager.save_setting::<TestSettings>("ui", "theme", json!("dark"));
+        let result = manager.save_setting("ui", "theme", json!("dark"));
         assert!(
             result.is_err(),
             "Save should fail when directory is readonly"
@@ -364,7 +365,7 @@ fn test_env_override_basic() {
     // Set environment variable before loading
     std::env::set_var("RCMAN_TEST_UI__THEME", "light");
 
-    let settings = fixture.manager.settings::<TestSettings>().unwrap();
+    let settings = fixture.manager.settings().unwrap();
 
     // Should get env value, not default
     // Note: env override behavior depends on implementation
@@ -377,19 +378,19 @@ fn test_env_override_basic() {
 #[ignore] // Env tests can interfere with each other
 fn test_env_override_precedence_over_saved() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Save a value
     fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!("dark"))
+        .save_setting("ui", "theme", json!("dark"))
         .unwrap();
 
     // Set env override
     std::env::set_var("RCMAN_TEST_UI__THEME", "light");
 
     // Load again - check actual behavior
-    let metadata = fixture.manager.load_settings::<TestSettings>().unwrap();
+    let metadata = fixture.manager.load_settings().unwrap();
     let theme = metadata.get("ui.theme").unwrap();
 
     // Document: env override may or may not be implemented
@@ -406,7 +407,7 @@ fn test_env_override_invalid_value() {
     std::env::set_var("RCMAN_TEST_UI__THEME", "invalid_theme");
 
     // Should fail validation
-    let result = fixture.manager.settings::<TestSettings>();
+    let result = fixture.manager.settings();
 
     // Depending on implementation, this might fail during load or use default
     // Either behavior is acceptable - document what happens
@@ -423,7 +424,7 @@ fn test_env_override_type_mismatch() {
     // Set string where number is expected
     std::env::set_var("RCMAN_TEST_UI__FONT_SIZE", "not_a_number");
 
-    let result = fixture.manager.settings::<TestSettings>();
+    let result = fixture.manager.settings();
 
     // Should handle gracefully (either fail or ignore)
     let _ = result;
@@ -438,10 +439,10 @@ fn test_env_override_type_mismatch() {
 #[test]
 fn test_reset_nonexistent_key() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Reset a key that was never saved
-    let result = fixture.manager.reset_setting::<TestSettings>("ui", "theme");
+    let result = fixture.manager.reset_setting("ui", "theme");
 
     // Should succeed (idempotent)
     assert!(result.is_ok());
@@ -450,7 +451,7 @@ fn test_reset_nonexistent_key() {
 #[test]
 fn test_reset_all_empty_settings() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Reset without saving anything
     let result = fixture.manager.reset_all();
@@ -526,12 +527,12 @@ fn test_sub_settings_concurrent_access() {
 #[test]
 fn test_save_null_value() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Try to save null
     let result = fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!(null));
+        .save_setting("ui", "theme", json!(null));
 
     // Should probably fail validation
     assert!(result.is_err());
@@ -540,13 +541,13 @@ fn test_save_null_value() {
 #[test]
 fn test_save_very_long_string() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     // Save a very long string
     let long_string = "a".repeat(10_000);
     let result = fixture
         .manager
-        .save_setting::<TestSettings>("ui", "theme", json!(long_string));
+        .save_setting("ui", "theme", json!(long_string));
 
     // Should fail validation (theme has specific allowed values)
     assert!(result.is_err());
@@ -555,11 +556,11 @@ fn test_save_very_long_string() {
 #[test]
 fn test_save_very_large_number() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let result = fixture
         .manager
-        .save_setting::<TestSettings>("ui", "font_size", json!(f64::MAX));
+        .save_setting("ui", "font_size", json!(f64::MAX));
 
     // Should fail range validation
     assert!(result.is_err());
@@ -568,11 +569,11 @@ fn test_save_very_large_number() {
 #[test]
 fn test_save_negative_number() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let result = fixture
         .manager
-        .save_setting::<TestSettings>("ui", "font_size", json!(-10.0));
+        .save_setting("ui", "font_size", json!(-10.0));
 
     // Should fail range validation (min is 8)
     assert!(result.is_err());
@@ -581,12 +582,12 @@ fn test_save_negative_number() {
 #[test]
 fn test_save_infinity() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings::<TestSettings>().unwrap();
+    let _ = fixture.manager.settings().unwrap();
 
     let result =
         fixture
             .manager
-            .save_setting::<TestSettings>("ui", "font_size", json!(f64::INFINITY));
+            .save_setting("ui", "font_size", json!(f64::INFINITY));
 
     // Should fail (JSON doesn't support infinity anyway)
     assert!(result.is_err());

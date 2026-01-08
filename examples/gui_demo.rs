@@ -197,7 +197,7 @@ impl DemoApp {
         let manager = Arc::new(SettingsManager::new(config).expect("Failed to create manager"));
 
         // Load initial settings
-        let settings = { manager.load_settings::<DemoSettings>().unwrap_or_default() };
+        let settings = { manager.load_settings().unwrap_or_default() };
 
         // Extract values from loaded settings (SettingMetadata has a `value` field)
         let get_value = |key: &str| -> Value {
@@ -314,7 +314,7 @@ impl DemoApp {
             if let Some(n) = note {
                 options = options.note(n);
             }
-            manager.backup().create(options)
+            manager.backup().create(&options)
         };
         match res {
             Ok(path) => {
@@ -361,7 +361,7 @@ impl DemoApp {
             if let Some(pw) = password {
                 options = options.password(pw);
             }
-            manager.backup().restore(options)
+            manager.backup().restore(&options)
         };
         match res {
             Ok(_) => {
@@ -509,7 +509,7 @@ impl DemoApp {
 
     fn save_setting(&mut self, category: &str, key: &str, value: Value) {
         let manager = self.manager.clone();
-        match manager.save_setting::<DemoSettings>(category, key, value) {
+        match manager.save_setting(category, key, value) {
             Ok(_) => {
                 self.status_message = format!("✅ Saved {}.{}", category, key);
             }
@@ -522,7 +522,7 @@ impl DemoApp {
 
     fn reset_setting(&mut self, category: &str, key: &str) {
         let manager = self.manager.clone();
-        match manager.reset_setting::<DemoSettings>(category, key) {
+        match manager.reset_setting(category, key) {
             Ok(default_value) => {
                 self.status_message = format!(
                     "🔄 Reset {}.{} to default: {}",
@@ -538,7 +538,7 @@ impl DemoApp {
 
     fn reload_settings(&mut self) {
         let manager = self.manager.clone();
-        let settings = { manager.load_settings::<DemoSettings>().unwrap_or_default() };
+        let settings = { manager.load_settings().unwrap_or_default() };
 
         let get_value = |key: &str| -> Value {
             settings

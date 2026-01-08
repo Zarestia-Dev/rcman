@@ -143,7 +143,7 @@ impl SettingsSchema for TestSettings {
 /// Test fixture that provides a temporary directory and configured SettingsManager
 pub struct TestFixture {
     pub temp_dir: TempDir,
-    pub manager: SettingsManager,
+    pub manager: SettingsManager<rcman::storage::JsonStorage, TestSettings>,
 }
 
 impl TestFixture {
@@ -152,6 +152,7 @@ impl TestFixture {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let config = SettingsConfig::builder("test-app", "1.0.0")
             .config_dir(temp_dir.path())
+            .with_schema::<TestSettings>()
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");
 
@@ -161,12 +162,15 @@ impl TestFixture {
     /// Create a fixture with sub-settings configured
     pub fn with_sub_settings() -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let manager = SettingsManager::builder("test-app", "1.0.0")
+        let config = SettingsConfig::builder("test-app", "1.0.0")
             .config_dir(temp_dir.path())
-            .with_sub_settings(SubSettingsConfig::new("remotes"))
-            .with_sub_settings(SubSettingsConfig::new("backends").single_file())
-            .build()
-            .expect("Failed to create manager");
+            .with_schema::<TestSettings>()
+            .build();
+        let manager = SettingsManager::new(config).expect("Failed to create manager");
+        
+        // Register sub-settings manually
+        manager.register_sub_settings(SubSettingsConfig::new("remotes"));
+        manager.register_sub_settings(SubSettingsConfig::new("backends").single_file());
 
         Self { temp_dir, manager }
     }
@@ -176,6 +180,7 @@ impl TestFixture {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let config = SettingsConfig::builder("test-app", "1.0.0")
             .config_dir(temp_dir.path())
+            .with_schema::<TestSettings>()
             .with_env_prefix(prefix)
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");

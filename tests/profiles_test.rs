@@ -319,7 +319,7 @@ fn test_single_file_mode_with_profiles() {
 
 #[test]
 fn test_main_settings_profiles() {
-    use rcman::{SettingMetadata, SettingsSchema};
+    use rcman::{SettingMetadata, SettingsConfig, SettingsSchema};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
@@ -368,11 +368,12 @@ fn test_main_settings_profiles() {
 
     let temp_dir = TempDir::new().unwrap();
 
-    let manager = SettingsManager::builder("test-app", "1.0.0")
+    let config = SettingsConfig::builder("test-app", "1.0.0")
         .config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
         .with_profiles() // Enable profiles for main settings
-        .build()
-        .unwrap();
+        .build();
+    let manager = SettingsManager::new(config).unwrap();
 
     // Verify profiles are enabled
     assert!(manager.is_profiles_enabled());
@@ -382,7 +383,7 @@ fn test_main_settings_profiles() {
 
     // Save setting in default profile
     manager
-        .save_setting::<TestSettings>("general", "theme", json!("dark"))
+        .save_setting("general", "theme", json!("dark"))
         .unwrap();
 
     // Create and switch to work profile
@@ -397,7 +398,7 @@ fn test_main_settings_profiles() {
 
     // Save a different theme in work profile
     manager
-        .save_setting::<TestSettings>("general", "theme", json!("ocean"))
+        .save_setting("general", "theme", json!("ocean"))
         .unwrap();
 
     // Switch back to default - should have dark theme
@@ -413,7 +414,7 @@ fn test_main_settings_profiles() {
 
 #[test]
 fn test_main_settings_profiles_directory_structure() {
-    use rcman::{SettingMetadata, SettingsSchema};
+    use rcman::{SettingMetadata, SettingsConfig, SettingsSchema};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
@@ -440,15 +441,16 @@ fn test_main_settings_profiles_directory_structure() {
 
     let temp_dir = TempDir::new().unwrap();
 
-    let manager = SettingsManager::builder("test-app", "1.0.0")
+    let config = SettingsConfig::builder("test-app", "1.0.0")
         .config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
         .with_profiles()
-        .build()
-        .unwrap();
+        .build();
+    let manager = SettingsManager::new(config).unwrap();
 
     // Save something to create the default profile directory
     manager
-        .save_setting::<TestSettings>("ui", "theme", json!("dark"))
+        .save_setting("ui", "theme", json!("dark"))
         .unwrap();
 
     manager.create_profile("work").unwrap();

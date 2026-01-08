@@ -9,6 +9,7 @@ use crate::backup::BackupManager;
 use crate::backup::ExternalConfigProvider;
 use crate::config::SettingsConfig;
 use crate::config::{SettingMetadata, SettingsSchema};
+use std::marker::PhantomData;
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 use crate::credentials::CredentialManager;
 use crate::error::{Error, Result};
@@ -76,13 +77,13 @@ use std::sync::Arc;
 ///     .unwrap();
 ///
 /// // Load settings (creates file with defaults if missing)
-/// manager.load_settings::<AppSettings>().unwrap();
+/// manager.load_settings().unwrap();
 ///
 /// // Save a setting
-/// manager.save_setting::<AppSettings>("ui", "theme", json!("light")).unwrap();
+/// manager.save_setting("ui", "theme", json!("light")).unwrap();
 ///
 /// // Load settings again to verify
-/// let metadata = manager.load_settings::<AppSettings>().unwrap();
+/// let metadata = manager.load_settings().unwrap();
 /// let theme_value = metadata.get("ui.theme").unwrap().value.as_ref().unwrap();
 /// assert_eq!(theme_value.as_str(), Some("light"));
 /// ```
@@ -90,9 +91,13 @@ use std::sync::Arc;
 /// # Type Parameters
 ///
 /// * `S`: The storage backend to use (defaults to `JsonStorage`).
-pub struct SettingsManager<S: StorageBackend + 'static = crate::storage::JsonStorage> {
+/// * `Schema`: The settings schema type (defaults to `()` for dynamic usage).
+pub struct SettingsManager<
+    S: StorageBackend + 'static = crate::storage::JsonStorage,
+    Schema: SettingsSchema = (),
+> {
     /// Configuration
-    config: SettingsConfig<S>,
+    config: SettingsConfig<S, Schema>,
 
     /// Storage backend
     storage: S,
@@ -118,11 +123,14 @@ pub struct SettingsManager<S: StorageBackend + 'static = crate::storage::JsonSto
 
     /// External config providers for backups
     #[cfg(feature = "backup")]
-    pub(crate) external_providers: Arc<RwLock<Vec<Box<dyn ExternalConfigProvider>>>>,
+    pub(crate) external_providers: RwLock<Vec<Box<dyn ExternalConfigProvider>>>,
 
     /// Profile manager for main settings (when profiles are enabled)
     #[cfg(feature = "profiles")]
     profile_manager: Option<crate::profiles::ProfileManager>,
+
+    /// Marker for schema type
+    _schema: PhantomData<Schema>,
 }
 
 /// Unified cache structure holding all settings data
@@ -171,7 +179,7 @@ impl SettingsManager<JsonStorage> {
     }
 }
 
-impl<S: StorageBackend + 'static> SettingsManager<S> {
+impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Schema> {
     /// Create a new settings manager with the given configuration.
     ///
     /// This will create the config directory if it doesn't exist.
@@ -193,7 +201,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// let manager = SettingsManager::new(config)?;
     /// # Ok::<(), rcman::Error>(())
     /// ```
-    pub fn new(config: SettingsConfig<S>) -> Result<Self> {
+    pub fn new(config: SettingsConfig<S, Schema>) -> Result<Self> {
         // Ensure config directory exists with secure permissions
         if !config.config_dir.exists() {
             std::fs::create_dir_all(&config.config_dir).map_err(|e| Error::DirectoryCreate {
@@ -252,14 +260,15 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             credentials,
             #[cfg(feature = "backup")]
-            external_providers: Arc::new(RwLock::new(Vec::new())),
+            external_providers: RwLock::new(Vec::new()),
             #[cfg(feature = "profiles")]
             profile_manager,
+            _schema: PhantomData,
         })
     }
 
     /// Get the configuration
-    pub fn config(&self) -> &SettingsConfig<S> {
+    pub fn config(&self) -> &SettingsConfig<S, Schema> {
         &self.config
     }
 
@@ -568,20 +577,21 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// #     }
     /// # }
     /// # let temp = tempfile::tempdir().unwrap();
-    /// # let manager = SettingsManager::builder("test", "1.0").config_dir(temp.path()).build().unwrap();
+    /// # let config = SettingsConfig::builder("test", "1.0").config_dir(temp.path()).with_schema::<MySettings>().build();
+    /// # let manager = SettingsManager::new(config).unwrap();
     /// // Get a setting value with automatic default fallback
-    /// let theme: String = manager.get::<String, MySettings>("ui.theme")?;
+    /// let theme: String = manager.get("ui.theme")?;;
     ///
     /// // With type inference for the return type
-    /// let restrict: bool = manager.get::<_, MySettings>("general.restrict")?;
+    /// let restrict: bool = manager.get("general.restrict")?;
     /// # Ok::<(), rcman::Error>(())
     /// ```
-    pub fn get<T, Schema>(&self, key: &str) -> Result<T>
+    pub fn get<T>(&self, key: &str) -> Result<T>
     where
         T: serde::de::DeserializeOwned,
         Schema: SettingsSchema,
     {
-        let value = self.get_value::<Schema>(key)?;
+        let value = self.get_value(key)?;
         serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
     }
 
@@ -617,11 +627,12 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// #     }
     /// # }
     /// # let temp = tempfile::tempdir().unwrap();
-    /// # let manager = SettingsManager::builder("test", "1.0").config_dir(temp.path()).build().unwrap();
-    /// let value: Value = manager.get_value::<MySettings>("core.rclone_path")?;
+    /// # let config = SettingsConfig::builder("test", "1.0").config_dir(temp.path()).with_schema::<MySettings>().build();
+    /// # let manager = SettingsManager::new(config).unwrap();
+    /// let value: Value = manager.get_value("core.rclone_path")?;
     /// # Ok::<(), rcman::Error>(())
     /// ```
-    pub fn get_value<Schema: SettingsSchema>(&self, key: &str) -> Result<Value> {
+    pub fn get_value(&self, key: &str) -> Result<Value> {
         let parts: Vec<&str> = key.split('.').collect();
         if parts.len() != 2 {
             return Err(Error::Config(
@@ -679,12 +690,13 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// #     }
     /// # }
     /// # let temp = tempfile::tempdir().unwrap();
-    /// # let manager = SettingsManager::builder("test", "1.0").config_dir(temp.path()).build().unwrap();
+    /// # let config = SettingsConfig::builder("test", "1.0").config_dir(temp.path()).with_schema::<MySettings>().build();
+    /// # let manager = SettingsManager::new(config).unwrap();
     /// let settings: MySettings = manager.settings()?;
     /// println!("Theme: {}", settings.ui.theme);
     /// # Ok::<(), rcman::Error>(())
     /// ```
-    pub fn settings<T: SettingsSchema>(&self) -> Result<T> {
+    pub fn settings(&self) -> Result<Schema> {
         // Try cache first
         {
             let cache = self.settings_cache.read();
@@ -695,7 +707,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         }
 
         // Cache miss - populate it
-        self.ensure_cache_populated::<T>()?;
+        self.ensure_cache_populated::<Schema>()?;
 
         // Retry with populated cache
         let cache = self.settings_cache.read();
@@ -779,7 +791,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         };
 
         // 6. Build merged and defaults
-        let merged = Self::merge_with_defaults::<T>(&stored)?;
+        let merged = Self::merge_with_defaults::<Schema>(&stored)?;
 
         let metadata = T::get_metadata();
         let defaults: HashMap<String, Value> = metadata
@@ -804,9 +816,9 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     ///
     /// Returns metadata map with current values populated.
     /// Uses in-memory cache when available.
-    pub fn load_settings<T: SettingsSchema>(&self) -> Result<HashMap<String, SettingMetadata>> {
+    pub fn load_settings(&self) -> Result<HashMap<String, SettingMetadata>> {
         // Ensure cache is populated
-        self.ensure_cache_populated::<T>()?;
+        self.ensure_cache_populated::<Schema>()?;
 
         // Get stored settings from cache
         let stored = {
@@ -816,7 +828,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         };
 
         // Get metadata and populate values
-        let mut metadata = T::get_metadata();
+        let mut metadata = Schema::get_metadata();
 
         for (key, option) in &mut metadata {
             let parts: Vec<&str> = key.split('.').collect();
@@ -899,11 +911,12 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     /// #     fn get_metadata() -> HashMap<String, SettingMetadata> { let mut m = HashMap::new(); m.insert("ui.theme".into(), SettingMetadata::text("T", "d")); m }
     /// # }
     /// # let temp = tempfile::tempdir().unwrap();
-    /// # let manager = SettingsManager::builder("test", "1.0").config_dir(temp.path()).build().unwrap();
-    /// manager.save_setting::<MySettings>("ui", "theme", json!("dark"))?;
+    /// # let config = SettingsConfig::builder("test", "1.0").config_dir(temp.path()).with_schema::<MySettings>().build();
+    /// # let manager = SettingsManager::new(config).unwrap();
+    /// manager.save_setting("ui", "theme", json!("dark"))?;
     /// # Ok::<(), rcman::Error>(())
     /// ```
-    pub fn save_setting<T: SettingsSchema>(
+    pub fn save_setting(
         &self,
         category: &str,
         key: &str,
@@ -926,7 +939,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         // Get metadata for this schema (needed for secret checking and validation)
         // Note: For performance-critical apps with many settings, consider implementing
         // a caching layer in your SettingsSchema implementation
-        let metadata = T::get_metadata();
+        let metadata = Schema::get_metadata();
 
         // Handle secret settings separately
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -955,7 +968,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
         }
 
         // Load current settings from cache or disk
-        self.ensure_cache_populated::<T>()?;
+        self.ensure_cache_populated::<Schema>()?;
 
         let mut stored: Value = {
             let cache = self.settings_cache.read();
@@ -1032,7 +1045,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
         // Update unified cache (both stored and merged)
         {
-            let merged = Self::merge_with_defaults::<T>(&stored)?;
+            let merged = Self::merge_with_defaults::<Schema>(&stored)?;
 
             let mut cache = self.settings_cache.write();
             if let Some(ref mut cached) = *cache {
@@ -1051,14 +1064,14 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
     }
 
     /// Reset a single setting to default
-    pub fn reset_setting<T: SettingsSchema>(&self, category: &str, key: &str) -> Result<Value> {
+    pub fn reset_setting(&self, category: &str, key: &str) -> Result<Value> {
         let metadata_key = format!("{category}.{key}");
-        let default_value = T::get_metadata()
+        let default_value = Schema::get_metadata()
             .get(&metadata_key)
             .map(|m| m.default.clone())
             .ok_or_else(|| Error::SettingNotFound(format!("{category}.{key}")))?;
 
-        self.save_setting::<T>(category, key, default_value.clone())?;
+        self.save_setting(category, key, default_value.clone())?;
 
         info!("Setting {category}.{key} reset to default");
         Ok(default_value)
@@ -1190,7 +1203,7 @@ impl<S: StorageBackend + 'static> SettingsManager<S> {
 
     /// Get the backup manager
     #[cfg(feature = "backup")]
-    pub fn backup(&self) -> BackupManager<'_, S> {
+    pub fn backup(&self) -> BackupManager<'_, S, Schema> {
         BackupManager::new(self)
     }
 
@@ -1339,7 +1352,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<TestSettings>,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1375,7 +1388,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<TestSettings>,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1405,18 +1418,18 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<TestSettings>,
         };
 
         let manager = SettingsManager::new(config).unwrap();
 
         // Save a setting
         manager
-            .save_setting::<TestSettings>("general", "language", json!("de"))
+            .save_setting("general", "language", json!("de"))
             .unwrap();
 
         // Load settings
-        let metadata = manager.load_settings::<TestSettings>().unwrap();
+        let metadata = manager.load_settings().unwrap();
         let lang = metadata.get("general.language").unwrap();
 
         assert_eq!(lang.value, Some(json!("de")));
@@ -1440,19 +1453,19 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<TestSettings>,
         };
 
         let manager = SettingsManager::new(config).unwrap();
 
         // Save a non-default value
         manager
-            .save_setting::<TestSettings>("general", "dark_mode", json!(true))
+            .save_setting("general", "dark_mode", json!(true))
             .unwrap();
 
         // Reset it
         let default = manager
-            .reset_setting::<TestSettings>("general", "dark_mode")
+            .reset_setting("general", "dark_mode")
             .unwrap();
 
         assert_eq!(default, json!(false));
@@ -1476,7 +1489,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<TestSettings>,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1513,7 +1526,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<TestSettings>,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1522,7 +1535,7 @@ mod tests {
         std::env::set_var("RCMAN_TEST_GENERAL_LANGUAGE", "fr");
 
         // Load settings - should get value from env var
-        let metadata = manager.load_settings::<TestSettings>().unwrap();
+        let metadata = manager.load_settings().unwrap();
         let lang = metadata.get("general.language").unwrap();
 
         // Value should be from env var, not default
@@ -1568,7 +1581,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<TestSettings>,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1576,7 +1589,7 @@ mod tests {
         // Set env var - should take priority over stored value
         std::env::set_var("RCMAN_TEST2_GENERAL_LANGUAGE", "es");
 
-        let metadata = manager.load_settings::<TestSettings>().unwrap();
+        let metadata = manager.load_settings().unwrap();
         let lang = metadata.get("general.language").unwrap();
 
         // Env var should win over stored value
@@ -1604,7 +1617,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<TestSettings>,
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1612,7 +1625,7 @@ mod tests {
         // Test boolean parsing
         std::env::set_var("RCMAN_TEST3_GENERAL_DARK_MODE", "true");
 
-        let metadata = manager.load_settings::<TestSettings>().unwrap();
+        let metadata = manager.load_settings().unwrap();
         let dark_mode = metadata.get("general.dark_mode").unwrap();
 
         // Should parse "true" as boolean true

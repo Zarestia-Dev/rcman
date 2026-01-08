@@ -2,6 +2,7 @@
 
 use super::archive::{extract_zip_archive, read_file_from_zip};
 use crate::RestoreOptions;
+use crate::config::SettingsSchema;
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
 use log::{debug, info, warn};
@@ -13,7 +14,7 @@ use crate::SubSettingsManifestEntry;
 #[cfg(feature = "profiles")]
 use crate::profiles::{MANIFEST_FILE, PROFILES_DIR};
 
-impl<S: StorageBackend + 'static> super::BackupManager<'_, S> {
+impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'_, S, Schema> {
     /// Restore from a backup
     /// 
     /// # Arguments
@@ -811,7 +812,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<()>,
         };
 
         fs::create_dir_all(&config.config_dir).unwrap();
@@ -854,7 +855,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<()>,
         };
 
         let manager2 = SettingsManager::new(config2).unwrap();
@@ -900,7 +901,7 @@ mod tests {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData,
+            _schema: std::marker::PhantomData::<()>,
         };
 
         fs::create_dir_all(&config.config_dir).unwrap();
