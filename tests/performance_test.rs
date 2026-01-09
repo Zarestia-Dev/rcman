@@ -11,7 +11,7 @@
 
 mod common;
 
-use common::{TestFixture, TestSettings};
+use common::TestFixture;
 use serde_json::json;
 use std::sync::Arc;
 use std::thread;
@@ -25,7 +25,7 @@ use std::time::Instant;
 #[ignore]
 fn test_rapid_sequential_saves() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let start = Instant::now();
 
@@ -49,7 +49,7 @@ fn test_rapid_sequential_saves() {
 #[ignore]
 fn test_rapid_sequential_loads() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Save once
     fixture
@@ -61,7 +61,7 @@ fn test_rapid_sequential_loads() {
 
     // Load 1000 times (should be fast due to caching)
     for _ in 0..1000 {
-        let _ = fixture.manager.load_settings().unwrap();
+        let _ = fixture.manager.metadata().unwrap();
     }
 
     let duration = start.elapsed();
@@ -75,7 +75,7 @@ fn test_rapid_sequential_loads() {
 #[ignore]
 fn test_mixed_read_write_workload() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let start = Instant::now();
 
@@ -88,7 +88,7 @@ fn test_mixed_read_write_workload() {
             .unwrap();
 
         // Load
-        let _ = fixture.manager.load_settings().unwrap();
+        let _ = fixture.manager.metadata().unwrap();
     }
 
     let duration = start.elapsed();
@@ -187,7 +187,7 @@ fn test_sub_settings_bulk_operations() {
 #[ignore]
 fn test_high_concurrency_reads() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     fixture
         .manager
@@ -205,7 +205,7 @@ fn test_high_concurrency_reads() {
             for _ in 0..100 {
                 let _ = fixture_clone
                     .manager
-                    .load_settings()
+                    .metadata()
                     .unwrap();
             }
         });
@@ -227,7 +227,7 @@ fn test_high_concurrency_reads() {
 #[ignore]
 fn test_high_concurrency_writes() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let mut handles = vec![];
 
@@ -260,7 +260,7 @@ fn test_high_concurrency_writes() {
     println!("1000 concurrent writes (20 threads) took: {:?}", duration);
 
     // Verify data integrity
-    let metadata = fixture.manager.load_settings().unwrap();
+    let metadata = fixture.manager.metadata().unwrap();
     let theme = metadata.get("ui.theme").unwrap();
     let value = theme.value.as_ref().unwrap().as_str().unwrap();
     assert!(value == "light" || value == "dark");
@@ -272,7 +272,7 @@ fn test_high_concurrency_writes() {
 #[ignore]
 fn test_mixed_concurrent_operations() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let mut handles = vec![];
 
@@ -285,7 +285,7 @@ fn test_mixed_concurrent_operations() {
             for _ in 0..100 {
                 let _ = fixture_clone
                     .manager
-                    .load_settings()
+                    .metadata()
                     .unwrap();
             }
         });
@@ -374,7 +374,7 @@ fn test_backup_large_settings() {
     use tempfile::TempDir;
 
     let fixture = TestFixture::with_sub_settings();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Create lots of data
     let remotes = fixture.manager.sub_settings("remotes").unwrap();
@@ -414,7 +414,7 @@ fn test_restore_large_backup() {
     use tempfile::TempDir;
 
     let fixture = TestFixture::with_sub_settings();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Create backup with data
     let remotes = fixture.manager.sub_settings("remotes").unwrap();

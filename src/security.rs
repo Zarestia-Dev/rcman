@@ -31,7 +31,7 @@ pub fn set_secure_file_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let metadata = fs::metadata(path).map_err(|e| Error::FileRead {
-        path: path.display().to_string(),
+        path: path.to_path_buf(),
         source: e,
     })?;
 
@@ -39,7 +39,7 @@ pub fn set_secure_file_permissions(path: &Path) -> Result<()> {
     perms.set_mode(0o600); // Owner read/write only
 
     fs::set_permissions(path, perms).map_err(|e| Error::FileWrite {
-        path: path.display().to_string(),
+        path: path.to_path_buf(),
         source: e,
     })?;
 
@@ -74,7 +74,7 @@ pub fn set_secure_dir_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let metadata = fs::metadata(path).map_err(|e| Error::FileRead {
-        path: path.display().to_string(),
+        path: path.to_path_buf(),
         source: e,
     })?;
 
@@ -82,7 +82,7 @@ pub fn set_secure_dir_permissions(path: &Path) -> Result<()> {
     perms.set_mode(0o700); // Owner read/write/execute only
 
     fs::set_permissions(path, perms).map_err(|e| Error::FileWrite {
-        path: path.display().to_string(),
+        path: path.to_path_buf(),
         source: e,
     })?;
 

@@ -24,7 +24,7 @@
 //! # #[derive(Default, Serialize, Deserialize)] struct MySettings;
 //! # impl SettingsSchema for MySettings { fn get_metadata() -> HashMap<String, SettingMetadata> { HashMap::new() } }
 //! let manager = SettingsManager::builder("my-app", "1.0.0")
-//!     .config_dir("~/.config/my-app")
+//!     .with_config_dir("~/.config/my-app")
 //!     .with_credentials()  // Enable automatic secret storage
 //!     .with_sub_settings(SubSettingsConfig::new("remotes"))
 //!     .with_schema::<MySettings>()
@@ -205,84 +205,29 @@ mod sub_settings;
 // Grouped modules
 pub mod config;
 
+// Feature-gated modules
 #[cfg(feature = "backup")]
 pub mod backup;
 
-// Profiles module (feature-gated)
 #[cfg(feature = "profiles")]
 pub mod profiles;
 
-// Credentials always available (for SecretStorage type), backends are feature-gated
 pub mod credentials;
 
-// Re-exports from core
+// Re-exports
 pub use docs::{generate_docs, generate_docs_from_metadata, DocsConfig};
 pub use error::{Error, Result};
 pub use events::EventManager;
 pub use manager::{SettingsManager, SettingsManagerBuilder};
-pub use storage::{JsonStorage, StorageBackend};
 pub use sub_settings::{SubSettings, SubSettingsConfig};
+
+pub use storage::{JsonStorage, StorageBackend};
+#[cfg(feature = "toml")]
+pub use storage::TomlStorage;
 
 // =============================================================================
 // Convenient Type Aliases
 // =============================================================================
-
-/// Settings manager with type-checked schema validation.
-///
-/// Use this when you have a struct that implements `SettingsSchema` and want
-/// compile-time type safety for your settings.
-///
-/// # Example
-/// ```no_run
-/// use rcman::{TypedManager, SettingsConfig, SettingsSchema, SettingMetadata, settings};
-/// use serde::{Serialize, Deserialize};
-/// use std::collections::HashMap;
-///
-/// #[derive(Default, Serialize, Deserialize)]
-/// struct AppSettings {
-///     theme: String,
-///     font_size: f64,
-/// }
-///
-/// impl SettingsSchema for AppSettings {
-///     fn get_metadata() -> HashMap<String, SettingMetadata> {
-///         settings! {
-///             "ui.theme" => SettingMetadata::text("Theme", "dark"),
-///             "ui.font_size" => SettingMetadata::number("Font Size", 14.0)
-///         }
-///     }
-/// }
-///
-/// // Type-safe manager
-/// let config = SettingsConfig::builder("my-app", "1.0.0")
-///     .with_schema::<AppSettings>()
-///     .build();
-/// let manager = TypedManager::<AppSettings>::new(config)?;
-///
-/// // Get settings with automatic type checking
-/// let settings: AppSettings = manager.settings()?;
-/// # Ok::<(), rcman::Error>(())
-/// ```
-pub type TypedManager<Schema> = SettingsManager<JsonStorage, Schema>;
-
-/// Settings manager without schema (dynamic/runtime validation).
-///
-/// Use this when you don't need compile-time schema validation and want to
-/// work with settings dynamically at runtime.
-///
-/// # Example
-/// ```no_run
-/// use rcman::DynamicManager;
-/// use serde_json::json;
-///
-/// // Dynamic manager - no schema required
-/// let manager = DynamicManager::builder("my-app", "1.0.0").build()?;
-///
-/// // Get settings as HashMap
-/// let settings = manager.load_settings()?;
-/// # Ok::<(), rcman::Error>(())
-/// ```
-pub type DynamicManager = SettingsManager<JsonStorage>;
 
 // Re-exports from config
 pub use config::{

@@ -2,7 +2,7 @@
 //
 // Run with: cargo run --example derive_usage --features derive
 
-use rcman::{DeriveSettingsSchema, SettingsConfig, SettingsManager};
+use rcman::{DeriveSettingsSchema, SettingsManager};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -110,14 +110,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📦 rcman Derive Macro Example\n");
 
     // Initialize settings manager with schema
-    let config = SettingsConfig::builder("derive-example", "1.0.0")
+    let manager = SettingsManager::builder("derive-example", "1.0.0")
         .config_dir("./example_config")
         .with_schema::<AppSettings>()
-        .build();
-    let manager = SettingsManager::new(config)?;
+        .build()?;
 
     // Load settings - derive macro generates the schema automatically
-    let settings = manager.load_settings()?;
+    let settings = manager.metadata()?;
 
     println!("✅ Loaded {} settings:", settings.len());
     for (key, meta) in &settings {
@@ -129,14 +128,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     manager.save_setting("ui", "theme", json!("dark"))?;
 
     // Load startup settings as struct
-    let app: AppSettings = manager.settings()?;
+    let app: AppSettings = manager.get_all()?;
     println!("✅ Theme is now: {}", app.ui.theme);
 
     // Reset to default
     println!("\n🔄 Resetting theme...");
     manager.reset_setting("ui", "theme")?;
 
-    let app: AppSettings = manager.settings()?;
+    let app: AppSettings = manager.get_all()?;
     println!("✅ Theme reset to: {}", app.ui.theme);
 
     // Working with list settings
@@ -148,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     new_ips.push("192.168.1.1".to_string());
     manager.save_setting("network", "allowed_ips", json!(new_ips))?;
 
-    let app: AppSettings = manager.settings()?;
+    let app: AppSettings = manager.get_all()?;
     println!("✅ Updated allowed IPs: {:?}", app.network.allowed_ips);
 
     println!(

@@ -74,7 +74,7 @@ pub fn migrate(
             && root_dir
                 .read_dir()
                 .map_err(|e| Error::DirectoryRead {
-                    path: root_dir.display().to_string(),
+                    path: root_dir.to_path_buf(),
                     source: e,
                 })?
                 .count()
@@ -103,18 +103,18 @@ fn run_auto_migration(root_dir: &Path, target_name: &str, _single_file_mode: boo
     // 1. Create profiles/default directory
     let default_profile_dir = root_dir.join(PROFILES_DIR).join(DEFAULT_PROFILE);
     std::fs::create_dir_all(&default_profile_dir).map_err(|e| Error::DirectoryCreate {
-        path: default_profile_dir.display().to_string(),
+        path: default_profile_dir.clone(),
         source: e,
     })?;
 
     // 2. Move files
     if root_dir.is_dir() {
         for entry in std::fs::read_dir(root_dir).map_err(|e| Error::DirectoryRead {
-            path: root_dir.display().to_string(),
+            path: root_dir.to_path_buf(),
             source: e,
         })? {
             let entry = entry.map_err(|e| Error::DirectoryRead {
-                path: root_dir.display().to_string(),
+                path: root_dir.to_path_buf(),
                 source: e,
             })?;
             let path = entry.path();
@@ -128,7 +128,7 @@ fn run_auto_migration(root_dir: &Path, target_name: &str, _single_file_mode: boo
                 let dest = default_profile_dir.join(name);
                 debug!("Moving {:?} -> {:?}", path.display(), dest.display());
                 std::fs::rename(&path, &dest).map_err(|e| Error::FileWrite {
-                    path: dest.display().to_string(),
+                    path: dest.clone(),
                     source: e,
                 })?;
             }
@@ -141,7 +141,7 @@ fn run_auto_migration(root_dir: &Path, target_name: &str, _single_file_mode: boo
     let content = serde_json::to_string_pretty(&manifest)
         .map_err(|e| Error::Parse(format!("Failed to serialize profile manifest: {e}")))?;
     std::fs::write(&manifest_path, content).map_err(|e| Error::FileWrite {
-        path: manifest_path.display().to_string(),
+        path: manifest_path.clone(),
         source: e,
     })?;
 

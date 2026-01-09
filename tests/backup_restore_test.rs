@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{TestFixture, TestSettings};
+use common::TestFixture;
 use rcman::{BackupOptions, RestoreOptions};
 use serde_json::json;
 use tempfile::TempDir;
@@ -21,7 +21,7 @@ fn create_fixture_with_data() -> TestFixture {
     let fixture = TestFixture::with_sub_settings();
 
     // Load and set some non-default settings
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
     fixture
         .manager
         .save_setting("ui", "theme", json!("light"))
@@ -197,7 +197,7 @@ fn test_restore_backup() {
     new_fixture.manager.invalidate_cache();
 
     // Verify settings were restored via metadata (not struct deserialization)
-    let metadata = new_fixture.manager.load_settings().unwrap();
+    let metadata = new_fixture.manager.metadata().unwrap();
     let theme_value = metadata.get("ui.theme").unwrap().value.clone();
     assert_eq!(theme_value, Some(json!("light")));
 
@@ -241,7 +241,7 @@ fn test_restore_encrypted_backup() {
     new_fixture.manager.invalidate_cache();
 
     // Verify settings were restored
-    let metadata = new_fixture.manager.load_settings().unwrap();
+    let metadata = new_fixture.manager.metadata().unwrap();
     let theme_value = metadata.get("ui.theme").unwrap().value.clone();
     assert_eq!(theme_value, Some(json!("light")));
 }
@@ -362,7 +362,7 @@ fn test_restore_skip_existing() {
 
     // Create a new fixture with different settings
     let new_fixture = TestFixture::new();
-    let _ = new_fixture.manager.settings().unwrap();
+    let _ = new_fixture.manager.get_all().unwrap();
     new_fixture
         .manager
         .save_setting("ui", "theme", json!("system"))
@@ -393,7 +393,7 @@ fn test_restore_overwrite_existing() {
 
     // Create a new fixture with different settings
     let new_fixture = TestFixture::new();
-    let _ = new_fixture.manager.settings().unwrap();
+    let _ = new_fixture.manager.get_all().unwrap();
     new_fixture
         .manager
         .save_setting("ui", "theme", json!("system"))
@@ -409,7 +409,7 @@ fn test_restore_overwrite_existing() {
     new_fixture.manager.invalidate_cache();
 
     // Verify the restored value via metadata
-    let metadata = new_fixture.manager.load_settings().unwrap();
+    let metadata = new_fixture.manager.metadata().unwrap();
     let theme_value = metadata.get("ui.theme").unwrap().value.clone();
     assert_eq!(theme_value, Some(json!("light"))); // from backup, not "system"
 }

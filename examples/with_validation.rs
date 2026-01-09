@@ -2,7 +2,7 @@
 //
 // Run with: cargo run --example with_validation
 
-use rcman::{settings, SettingMetadata, SettingsConfig, SettingsManager, SettingsSchema};
+use rcman::{settings, SettingMetadata, SettingsManager, SettingsSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -39,16 +39,15 @@ impl SettingsSchema for AppSettings {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = SettingsConfig::builder("validation-example", "1.0.0")
-        .config_dir("./example_config")
-        .build();
-
-    let manager = SettingsManager::new(config)?;
+    let manager = SettingsManager::builder("validation-example", "1.0.0")
+        .with_schema::<AppSettings>()
+        .with_config_dir("./example_config")
+        .build()?;
 
     println!("🔍 rcman Validation Example\n");
 
     // Load initial settings
-    manager.load_settings()?;
+    manager.metadata()?;
 
     // Test valid email
     println!("✅ Testing valid email...");

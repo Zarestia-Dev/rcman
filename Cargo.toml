@@ -19,8 +19,9 @@ all-features = true
 
 [features]
 default = ["json", "backup"]
-full = ["json", "backup", "keychain", "encrypted-file", "derive", "profiles"]
+full = ["json", "toml", "backup", "keychain", "encrypted-file", "derive", "profiles"]
 json = []
+toml = ["dep:toml"]
 backup = ["dep:zip", "dep:sha2", "dep:tempfile"]
 keychain = ["dep:keyring"]
 encrypted-file = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2"]
@@ -53,6 +54,9 @@ aes-gcm = { version = "0.10", optional = true }
 rand = { version = "0.9", optional = true }
 base64 = { version = "0.22", optional = true }
 argon2 = { version = "0.5", features = ["std"], optional = true }
+
+# TOML storage (optional)
+toml = { version = "0.9.6", optional = true }
 
 # Platform-specific keyring backends
 [target.'cfg(target_os = "linux")'.dependencies]

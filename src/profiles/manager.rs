@@ -256,7 +256,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
         if self.manifest_path.exists() {
             let content =
                 std::fs::read_to_string(&self.manifest_path).map_err(|e| Error::FileRead {
-                    path: self.manifest_path.display().to_string(),
+                    path: self.manifest_path.clone(),
                     source: e,
                 })?;
             let manifest: ProfileManifest =
@@ -279,7 +279,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
         if let Some(parent) = self.manifest_path.parent() {
             if !parent.exists() {
                 std::fs::create_dir_all(parent).map_err(|e| Error::DirectoryCreate {
-                    path: parent.display().to_string(),
+                    path: parent.to_path_buf(),
                     source: e,
                 })?;
             }
@@ -288,7 +288,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
         let content =
             serde_json::to_string_pretty(manifest).map_err(|e| Error::Parse(e.to_string()))?;
         std::fs::write(&self.manifest_path, content).map_err(|e| Error::FileWrite {
-            path: self.manifest_path.display().to_string(),
+            path: self.manifest_path.clone(),
             source: e,
         })?;
 
@@ -399,7 +399,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
         // Create profile directory
         let profile_dir = self.profile_path(name);
         std::fs::create_dir_all(&profile_dir).map_err(|e| Error::DirectoryCreate {
-            path: profile_dir.display().to_string(),
+            path: profile_dir.clone(),
             source: e,
         })?;
         crate::security::set_secure_dir_permissions(&profile_dir)?;
@@ -516,7 +516,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
         let profile_dir = self.profile_path(name);
         if profile_dir.exists() {
             std::fs::remove_dir_all(&profile_dir).map_err(|e| Error::FileDelete {
-                path: profile_dir.display().to_string(),
+                path: profile_dir.clone(),
                 source: e,
             })?;
         }
@@ -574,13 +574,13 @@ pub fn active_path(&self) -> Result<PathBuf> {
 
         if from_dir.exists() {
             std::fs::rename(&from_dir, &to_dir).map_err(|e| Error::FileWrite {
-                path: format!("{} -> {}", from_dir.display(), to_dir.display()),
+                path: std::path::PathBuf::from(format!("{} -> {}", from_dir.display(), to_dir.display())),
                 source: e,
             })?;
         } else {
             // Create the new directory if old didn't exist
             std::fs::create_dir_all(&to_dir).map_err(|e| Error::DirectoryCreate {
-                path: to_dir.display().to_string(),
+                path: to_dir.clone(),
                 source: e,
             })?;
         }
@@ -647,7 +647,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
             copy_dir_recursive(&source_dir, &target_dir)?;
         } else {
             std::fs::create_dir_all(&target_dir).map_err(|e| Error::DirectoryCreate {
-                path: target_dir.display().to_string(),
+                path: target_dir.clone(),
                 source: e,
             })?;
         }
@@ -707,7 +707,7 @@ pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
             let default_dir = self.profile_path(DEFAULT_PROFILE);
             if !default_dir.exists() {
                 std::fs::create_dir_all(&default_dir).map_err(|e| Error::DirectoryCreate {
-                    path: default_dir.display().to_string(),
+                    path: default_dir.clone(),
                     source: e,
                 })?;
             }
@@ -725,7 +725,7 @@ pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
         // Create profiles directory
         if !self.profiles_dir.exists() {
             std::fs::create_dir_all(&self.profiles_dir).map_err(|e| Error::DirectoryCreate {
-                path: self.profiles_dir.display().to_string(),
+                path: self.profiles_dir.clone(),
                 source: e,
             })?;
         }
@@ -779,17 +779,17 @@ pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     if !dst.exists() {
         std::fs::create_dir_all(dst).map_err(|e| Error::DirectoryCreate {
-            path: dst.display().to_string(),
+            path: dst.to_path_buf(),
             source: e,
         })?;
     }
 
     for entry in std::fs::read_dir(src).map_err(|e| Error::FileRead {
-        path: src.display().to_string(),
+        path: src.to_path_buf(),
         source: e,
     })? {
         let entry = entry.map_err(|e| Error::FileRead {
-            path: src.display().to_string(),
+            path: src.to_path_buf(),
             source: e,
         })?;
         let src_path = entry.path();
@@ -799,7 +799,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
             std::fs::copy(&src_path, &dst_path).map_err(|e| Error::FileWrite {
-                path: dst_path.display().to_string(),
+                path: dst_path.clone(),
                 source: e,
             })?;
         }

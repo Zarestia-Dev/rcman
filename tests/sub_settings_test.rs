@@ -275,7 +275,7 @@ fn test_migrator_adds_field() {
 
     // Create manager with migrator
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(
             SubSettingsConfig::new("configs").with_migrator(|mut value| {
                 if let Some(obj) = value.as_object_mut() {
@@ -307,7 +307,7 @@ fn test_migrator_upgrades_schema() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(
             SubSettingsConfig::new("remotes").with_migrator(|mut value| {
                 // Migrate old field name to new

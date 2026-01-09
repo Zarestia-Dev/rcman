@@ -22,7 +22,7 @@ fn test_create_profile() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
         .build()
         .unwrap();
@@ -44,7 +44,7 @@ fn test_switch_profile() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
         .build()
         .unwrap();
@@ -63,7 +63,7 @@ fn test_seamless_profile_switching() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
         .build()
         .unwrap();
@@ -102,7 +102,7 @@ fn test_delete_profile() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
         .build()
         .unwrap();
@@ -122,7 +122,7 @@ fn test_cannot_delete_active_profile() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
         .build()
         .unwrap();
@@ -140,7 +140,7 @@ fn test_rename_profile() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
         .build()
         .unwrap();
@@ -161,7 +161,7 @@ fn test_duplicate_profile() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
         .build()
         .unwrap();
@@ -197,7 +197,7 @@ fn test_profile_events() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
         .build()
         .unwrap();
@@ -229,7 +229,7 @@ fn test_profiles_not_enabled_error() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(SubSettingsConfig::new("remotes")) // No .with_profiles()
         .build()
         .unwrap();
@@ -249,7 +249,7 @@ fn test_profile_directory_structure() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
         .build()
         .unwrap();
@@ -284,7 +284,7 @@ fn test_single_file_mode_with_profiles() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(
             SubSettingsConfig::new("backends")
                 .single_file()
@@ -319,7 +319,7 @@ fn test_single_file_mode_with_profiles() {
 
 #[test]
 fn test_main_settings_profiles() {
-    use rcman::{SettingMetadata, SettingsConfig, SettingsSchema};
+    use rcman::{SettingMetadata, SettingsSchema};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
@@ -393,7 +393,7 @@ fn test_main_settings_profiles() {
     assert_eq!(manager.active_profile().unwrap(), "work");
 
     // Work profile should have default theme (light)
-    let settings: TestSettings = manager.settings().unwrap();
+    let settings: TestSettings = manager.get_all().unwrap();
     assert_eq!(settings.general.theme, "light");
 
     // Save a different theme in work profile
@@ -403,18 +403,18 @@ fn test_main_settings_profiles() {
 
     // Switch back to default - should have dark theme
     manager.switch_profile("default").unwrap();
-    let settings: TestSettings = manager.settings().unwrap();
+    let settings: TestSettings = manager.get_all().unwrap();
     assert_eq!(settings.general.theme, "dark");
 
     // Switch to work - should have ocean theme
     manager.switch_profile("work").unwrap();
-    let settings: TestSettings = manager.settings().unwrap();
+    let settings: TestSettings = manager.get_all().unwrap();
     assert_eq!(settings.general.theme, "ocean");
 }
 
 #[test]
 fn test_main_settings_profiles_directory_structure() {
-    use rcman::{SettingMetadata, SettingsConfig, SettingsSchema};
+    use rcman::{SettingMetadata, SettingsSchema};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 

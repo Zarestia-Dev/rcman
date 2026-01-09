@@ -6,7 +6,7 @@
 use crate::config::SettingsConfigBuilder;
 use crate::config::SettingsSchema;
 use crate::error::Result;
-use crate::storage::JsonStorage;
+use crate::storage::StorageBackend;
 use crate::sub_settings::SubSettingsConfig;
 use std::path::PathBuf;
 
@@ -23,49 +23,40 @@ use super::SettingsManager;
 /// use rcman::{SettingsManager, SubSettingsConfig};
 ///
 /// let manager = SettingsManager::builder("my-app", "1.0.0")
-///     .config_dir("~/.config/my-app")
+///     .with_config_dir("~/.config/my-app")
 ///     .with_credentials()
 ///     .with_sub_settings(SubSettingsConfig::new("remotes"))
 ///     .with_sub_settings(SubSettingsConfig::new("backends").single_file())
 ///     .build()
 ///     .unwrap();
 /// ```
-pub struct SettingsManagerBuilder {
-    config_builder: SettingsConfigBuilder<JsonStorage>,
+pub struct SettingsManagerBuilder<S: StorageBackend = crate::storage::JsonStorage, Schema: SettingsSchema = ()> {
+    config_builder: SettingsConfigBuilder<S, Schema>,
     sub_settings: Vec<SubSettingsConfig>,
 }
 
-impl SettingsManagerBuilder {
+impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema> {
     /// Create a new builder with required app name and version.
-    pub fn new(app_name: impl Into<String>, app_version: impl Into<String>) -> Self {
-        Self {
+    pub fn new(app_name: impl Into<String>, app_version: impl Into<String>) -> SettingsManagerBuilder {
+        SettingsManagerBuilder {
             config_builder: SettingsConfigBuilder::new(app_name, app_version),
             sub_settings: Vec::new(),
         }
     }
 }
 
-impl SettingsManagerBuilder {
-    /// Set the configuration directory.
+impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema> {
+    /// Set the configuration directory path.
     ///
-    /// Supports `~` expansion for home directory.
-    #[must_use]
-    pub fn config_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.config_builder = self.config_builder.config_dir(path);
+    /// If not set, uses the system config directory.
+    pub fn with_config_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config_builder = self.config_builder.with_config_dir(path);  // Still delegates to old name
         self
     }
 
     /// Set the settings filename (default: "settings.json").
-    #[must_use]
-    pub fn settings_file(mut self, filename: impl Into<String>) -> Self {
-        self.config_builder = self.config_builder.settings_file(filename);
-        self
-    }
-
-    /// Use compact JSON (no pretty printing).
-    #[must_use] 
-    pub fn compact_json(mut self) -> Self {
-        self.config_builder = self.config_builder.compact_json();
+    pub fn with_settings_file(mut self, filename: impl Into<String>) -> Self {
+        self.config_builder = self.config_builder.settings_file(filename);  // Still delegates to old name
         self
     }
 
@@ -138,10 +129,41 @@ impl SettingsManagerBuilder {
         self
     }
 
-    /// Specify the schema type for the settings (no-op for backward compatibility)
+    /// Specify the schema type for the settings.
+    ///
+    /// This transforms the builder to use a typed schema instead of dynamic.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use rcman::{SettingsManager, SettingsSchema, SettingMetadata, settings};
+    /// use serde::{Deserialize, Serialize};
+    /// use std::collections::HashMap;
+    ///
+    /// #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+    /// struct AppSettings {
+    ///     theme: String,
+    /// }
+    ///
+    /// impl SettingsSchema for AppSettings {
+    ///     fn get_metadata() -> HashMap<String, SettingMetadata> {
+    ///         settings! {
+    ///             "ui.theme" => SettingMetadata::text("Theme", "dark")
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// let manager = SettingsManager::builder("my-app", "1.0.0")
+    ///     .with_schema::<AppSettings>()
+    ///     .build()
+    ///     .unwrap();
+    /// ```
     #[must_use] 
-    pub fn with_schema<NewSchema: SettingsSchema>(self) -> Self {
-        self
+    pub fn with_schema<NewSchema: SettingsSchema>(self) -> SettingsManagerBuilder<S, NewSchema> {
+        SettingsManagerBuilder {
+            config_builder: self.config_builder.with_schema::<NewSchema>(),
+            sub_settings: self.sub_settings,
+        }
     }
 
     /// Enable profiles for main settings.
@@ -199,7 +221,10 @@ impl SettingsManagerBuilder {
     /// # Errors
     ///
     /// Returns an error if the config directory cannot be created.
-    pub fn build(self) -> Result<SettingsManager<JsonStorage>> {
+    pub fn build(self) -> Result<SettingsManager<S, Schema>>
+    where
+        S: Default + 'static,
+    {
         let config = self.config_builder.build();
         let manager = SettingsManager::new(config)?;
 

@@ -3,7 +3,7 @@
 // Run with: cargo run --example secret_settings --features keychain
 
 #[cfg(feature = "keychain")]
-use rcman::{settings, SettingMetadata, SettingsConfig, SettingsManager, SettingsSchema};
+use rcman::{settings, SettingMetadata, SettingsManager, SettingsSchema};
 #[cfg(feature = "keychain")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "keychain")]
@@ -38,19 +38,17 @@ impl SettingsSchema for AppSettings {
 
 #[cfg(feature = "keychain")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = SettingsConfig::builder("secret-example", "1.0.0")
+    let manager = SettingsManager::builder("secret-example", "1.0.0")
         .config_dir("./example_config")
         .with_credentials() // Enable credential management
-        .build();
-
-    let manager = SettingsManager::new(config)?;
+        .build()?;
 
     println!("🔐 rcman Secret Settings Example\n");
     println!("This example requires the 'keychain' feature.");
     println!("Secrets are stored in your OS keychain, not in the settings file.\n");
 
     // Load settings
-    manager.load_settings()?;
+    manager.metadata()?;
 
     // Save a secret (stored in keychain)
     println!("💾 Saving API key to keychain...");
@@ -68,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load settings again - secrets will be retrieved from keychain
     println!("📖 Loading settings (including secrets from keychain)...");
-    let settings = manager.load_settings()?;
+    let settings = manager.metadata()?;
 
     // Note: In the JSON output, secrets will show their values
     // But they are NOT stored in the settings.json file

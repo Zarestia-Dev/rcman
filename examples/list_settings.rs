@@ -68,11 +68,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize settings manager
     let manager = SettingsManager::builder("list-example", "1.0.0")
-        .config_dir("./example_config")
+        .with_schema::<AppSettings>()
+        .with_config_dir("./example_config")
         .build()?;
 
     // Load settings
-    let settings = manager.load_settings()?;
+    let settings = manager.metadata()?;
     println!("✅ Loaded {} settings\n", settings.len());
 
     // =========================================================================
@@ -168,7 +169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 7: View all list settings with metadata
     // =========================================================================
     println!("📊 Example 7: View all list settings");
-    let all_settings = manager.load_settings()?;
+    let all_settings = manager.metadata()?;
     for (key, meta) in all_settings {
         if meta.setting_type == SettingType::List {
             println!("  {} = {:?}", key, meta.value.unwrap_or(meta.default));

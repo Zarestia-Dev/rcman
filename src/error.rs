@@ -1,6 +1,8 @@
 //! Error types for rcman library
 
+use std::path::PathBuf;
 use thiserror::Error;
+
 
 /// Result type alias for rcman operations
 pub type Result<T> = std::result::Result<T, Error>;
@@ -13,38 +15,43 @@ pub enum Error {
     // -------------------------------------------------------------------------
     #[error("Failed to read file '{path}': {source}")]
     FileRead {
-        path: String,
+        path: PathBuf,
         #[source]
         source: std::io::Error,
     },
+
 
     #[error("Failed to write file '{path}': {source}")]
     FileWrite {
-        path: String,
+        path: PathBuf,
         #[source]
         source: std::io::Error,
     },
+
 
     #[error("Failed to create directory '{path}': {source}")]
     DirectoryCreate {
-        path: String,
+        path: PathBuf,
         #[source]
         source: std::io::Error,
     },
+
 
     #[error("Failed to read directory '{path}': {source}")]
     DirectoryRead {
-        path: String,
+        path: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
+
     #[error("Failed to delete file '{path}': {source}")]
     FileDelete {
-        path: String,
+        path: PathBuf,
         #[source]
         source: std::io::Error,
     },
+
 
     #[error("Path not found: {0}")]
     PathNotFound(String),
@@ -207,7 +214,7 @@ use std::path::Path;
 #[cfg(feature = "backup")]
 pub fn create_dir(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path).map_err(|e| Error::DirectoryCreate {
-        path: path.display().to_string(),
+        path: path.to_path_buf(),
         source: e,
     })
 }
@@ -216,7 +223,7 @@ pub fn create_dir(path: &Path) -> Result<()> {
 #[cfg(feature = "backup")]
 pub fn copy_file(src: &Path, dest: &Path) -> Result<u64> {
     std::fs::copy(src, dest).map_err(|e| Error::FileRead {
-        path: src.display().to_string(),
+        path: src.to_path_buf(),
         source: e,
     })
 }
@@ -225,7 +232,7 @@ pub fn copy_file(src: &Path, dest: &Path) -> Result<u64> {
 #[cfg(feature = "backup")]
 pub fn write_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     std::fs::write(path, contents).map_err(|e| Error::FileWrite {
-        path: path.display().to_string(),
+        path: path.to_path_buf(),
         source: e,
     })
 }
@@ -234,7 +241,7 @@ pub fn write_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
 #[cfg(all(feature = "backup", feature = "profiles"))]
 pub fn read_dir(path: &Path) -> Result<std::fs::ReadDir> {
     std::fs::read_dir(path).map_err(|e| Error::DirectoryRead {
-        path: path.display().to_string(),
+        path: path.to_path_buf(),
         source: e,
     })
 }

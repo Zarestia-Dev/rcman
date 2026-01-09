@@ -23,7 +23,7 @@ fn main() -> rcman::Result<()> {
 
     // Create a settings manager with profiled remotes
     let manager = SettingsManager::builder("my-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
         .build()?;
 

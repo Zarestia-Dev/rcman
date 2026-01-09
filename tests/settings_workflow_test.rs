@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{read_settings_file, TestFixture, TestSettings};
+use common::{read_settings_file, TestFixture};
 use serde_json::json;
 
 // =============================================================================
@@ -21,7 +21,7 @@ fn test_create_and_load_settings() {
     let fixture = TestFixture::new();
 
     // Load settings (should get defaults)
-    let settings = fixture.manager.settings().unwrap();
+    let settings = fixture.manager.get_all().unwrap();
 
     // Verify defaults match schema
     assert_eq!(settings.ui.theme, "dark");
@@ -35,7 +35,7 @@ fn test_save_setting_updates_cache() {
     let fixture = TestFixture::new();
 
     // Load initial settings
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Save a new value
     fixture
@@ -44,7 +44,7 @@ fn test_save_setting_updates_cache() {
         .unwrap();
 
     // Load again - should get the cached/saved value
-    let metadata = fixture.manager.load_settings().unwrap();
+    let metadata = fixture.manager.metadata().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
     assert_eq!(theme_meta.value, Some(json!("light")));
 }
@@ -57,12 +57,12 @@ fn test_save_and_reload_persists() {
     // First session: save a value
     {
         let config = rcman::SettingsConfig::builder("test-app", "1.0.0")
-            .config_dir(&config_path)
+            .with_config_dir(&config_path)
             .with_schema::<common::TestSettings>()
             .build();
         let manager = rcman::SettingsManager::new(config).unwrap();
 
-        let _ = manager.settings().unwrap();
+        let _ = manager.get_all().unwrap();
         manager
             .save_setting("ui", "font_size", json!(20.0))
             .unwrap();
@@ -71,12 +71,12 @@ fn test_save_and_reload_persists() {
     // Second session: reload and verify
     {
         let config = rcman::SettingsConfig::builder("test-app", "1.0.0")
-            .config_dir(&config_path)
+            .with_config_dir(&config_path)
             .with_schema::<common::TestSettings>()
             .build();
         let manager = rcman::SettingsManager::new(config).unwrap();
 
-        let settings = manager.settings().unwrap();
+        let settings = manager.get_all().unwrap();
         assert_eq!(settings.ui.font_size, 20.0);
     }
 }
@@ -90,7 +90,7 @@ fn test_reset_single_setting() {
     let fixture = TestFixture::new();
 
     // Load and modify
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
     fixture
         .manager
         .save_setting("ui", "theme", json!("light"))
@@ -105,7 +105,7 @@ fn test_reset_single_setting() {
     assert_eq!(default_value, json!("dark"));
 
     // Verify it's back to default
-    let metadata = fixture.manager.load_settings().unwrap();
+    let metadata = fixture.manager.metadata().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
     assert_eq!(theme_meta.value, Some(json!("dark")));
 }
@@ -115,7 +115,7 @@ fn test_reset_all_settings() {
     let fixture = TestFixture::new();
 
     // Load and modify multiple settings
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
     fixture
         .manager
         .save_setting("ui", "theme", json!("light"))
@@ -133,7 +133,7 @@ fn test_reset_all_settings() {
     fixture.manager.reset_all().unwrap();
 
     // Verify all are back to defaults
-    let settings = fixture.manager.settings().unwrap();
+    let settings = fixture.manager.get_all().unwrap();
     assert_eq!(settings.ui.theme, "dark");
     assert_eq!(settings.ui.font_size, 14.0);
     assert_eq!(settings.general.language, "en");
@@ -148,7 +148,7 @@ fn test_default_value_not_stored_in_file() {
     let fixture = TestFixture::new();
 
     // Initially load settings
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Save a non-default value first
     fixture
@@ -181,7 +181,7 @@ fn test_only_non_defaults_stored() {
     let fixture = TestFixture::new();
 
     // Load settings
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Save one default and one non-default
     fixture
@@ -209,7 +209,7 @@ fn test_only_non_defaults_stored() {
 #[test]
 fn test_invalid_number_rejected() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Try to save a value outside the valid range (min=8, max=32)
     let result = fixture
@@ -224,7 +224,7 @@ fn test_invalid_number_rejected() {
 #[test]
 fn test_invalid_select_option_rejected() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Try to save an invalid option
     let result =
@@ -240,7 +240,7 @@ fn test_invalid_select_option_rejected() {
 #[test]
 fn test_setting_not_found_error() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Try to save a non-existent setting
     let result =
@@ -263,7 +263,7 @@ fn test_env_var_override() {
     let fixture = TestFixture::with_env_prefix("TESTAPP");
 
     // Load settings
-    let metadata = fixture.manager.load_settings().unwrap();
+    let metadata = fixture.manager.metadata().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
 
     // Value should be overridden by env var
@@ -281,12 +281,12 @@ fn test_env_override_priority() {
     // First, save a value to file
     {
         let config = rcman::SettingsConfig::builder("test-app", "1.0.0")
-            .config_dir(temp_dir.path())
+            .with_config_dir(temp_dir.path())
             .with_schema::<common::TestSettings>()
             .build();
         let manager = rcman::SettingsManager::new(config).unwrap();
 
-        let _ = manager.settings().unwrap();
+        let _ = manager.get_all().unwrap();
         manager
             .save_setting("ui", "theme", json!("light"))
             .unwrap();
@@ -296,13 +296,13 @@ fn test_env_override_priority() {
     std::env::set_var("TEST2_UI_THEME", "system");
 
     let config = rcman::SettingsConfig::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_schema::<common::TestSettings>()
         .with_env_prefix("TEST2")
         .build();
     let manager = rcman::SettingsManager::new(config).unwrap();
 
-    let metadata = manager.load_settings().unwrap();
+    let metadata = manager.metadata().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
 
     // Env var should override stored value
@@ -321,7 +321,7 @@ fn test_invalidate_cache() {
     let fixture = TestFixture::new();
 
     // Load settings (populates cache)
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Modify file directly (simulating external change)
     let path = fixture.settings_path();
@@ -329,7 +329,7 @@ fn test_invalidate_cache() {
     std::fs::write(&path, r#"{"ui": {"theme": "light"}}"#).unwrap();
 
     // Cache still has old value
-    let metadata = fixture.manager.load_settings().unwrap();
+    let metadata = fixture.manager.metadata().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
     assert_eq!(theme_meta.value, Some(json!("dark"))); // cached default
 
@@ -337,7 +337,7 @@ fn test_invalidate_cache() {
     fixture.manager.invalidate_cache();
 
     // Now should pick up the file change
-    let metadata = fixture.manager.load_settings().unwrap();
+    let metadata = fixture.manager.metadata().unwrap();
     let theme_meta = metadata.get("ui.theme").unwrap();
     assert_eq!(theme_meta.value, Some(json!("light")));
 }
@@ -349,7 +349,7 @@ fn test_invalidate_cache() {
 #[test]
 fn test_path_and_file_settings() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Save directory path
     fixture
@@ -364,7 +364,7 @@ fn test_path_and_file_settings() {
         .unwrap();
 
     // Reload and verify
-    let metadata = fixture.manager.load_settings().unwrap();
+    let metadata = fixture.manager.metadata().unwrap();
 
     let config_dir_meta = metadata.get("paths.config_dir").unwrap();
     assert_eq!(
@@ -393,7 +393,7 @@ fn test_concurrent_access() {
         let fixture = Arc::clone(&fixture);
         handles.push(thread::spawn(move || {
             for _ in 0..50 {
-                let _ = fixture.manager.load_settings().unwrap();
+                let _ = fixture.manager.metadata().unwrap();
             }
         }));
     }
@@ -422,7 +422,7 @@ fn test_concurrent_access() {
     }
 
     // Verify consistency: data should be readable and valid JSON
-    let metadata = fixture.manager.load_settings().unwrap();
+    let metadata = fixture.manager.metadata().unwrap();
     let theme = metadata.get("ui.theme").unwrap();
     assert!(theme.value.is_some());
 }

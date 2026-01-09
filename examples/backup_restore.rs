@@ -4,7 +4,7 @@
 
 #[cfg(feature = "backup")]
 use rcman::{
-    settings, BackupOptions, RestoreOptions, SettingMetadata, SettingsConfig, SettingsManager,
+    settings, BackupOptions, RestoreOptions, SettingMetadata, SettingsManager,
     SettingsSchema,
 };
 #[cfg(feature = "backup")]
@@ -36,22 +36,21 @@ impl SettingsSchema for AppSettings {
 
 #[cfg(feature = "backup")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = SettingsConfig::builder("backup-example", "1.0.0")
-        .config_dir("./example_config")
-        .build();
-
-    let manager = SettingsManager::new(config)?;
+    let manager = SettingsManager::builder("backup-example", "1.0.0")
+        .with_schema::<AppSettings>()
+        .with_config_dir("./example_config")
+        .build()?;
 
     println!("💾 rcman Backup & Restore Example\n");
 
     // Create some settings
     println!("📝 Creating initial settings...");
-    manager.load_settings()?;
+    manager.metadata()?;
     manager.save_setting("app", "theme", json!("dark"))?;
     manager.save_setting("user", "name", json!("Alice"))?;
     manager.save_setting("user", "email", json!("alice@example.com"))?;
 
-    let settings = manager.load_settings()?;
+    let settings = manager.metadata()?;
     println!("✅ Initial settings:");
     println!("{}\n", serde_json::to_string_pretty(&settings)?);
 
@@ -69,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     manager.save_setting("app", "theme", json!("light"))?;
     manager.save_setting("user", "name", json!("Bob"))?;
 
-    let modified = manager.load_settings()?;
+    let modified = manager.metadata()?;
     println!("✅ Modified settings:");
     println!("{}\n", serde_json::to_string_pretty(&modified)?);
 
@@ -83,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✅ Restored from backup\n");
 
     // Verify restoration
-    let restored = manager.load_settings()?;
+    let restored = manager.metadata()?;
     println!("✅ Restored settings:");
     println!("{}\n", serde_json::to_string_pretty(&restored)?);
 

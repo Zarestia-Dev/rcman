@@ -49,13 +49,14 @@ impl SettingsSchema for AppSettings {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize settings manager with fluent builder API
     let manager = SettingsManager::builder("my-app", "1.0.0")
-        .config_dir("./example_config")
+        .with_schema::<AppSettings>()
+        .with_config_dir("./example_config")
         .build()?;
 
     println!("📦 rcman Basic Usage Example\n");
 
     // Load settings (creates file with defaults if it doesn't exist)
-    let settings = manager.load_settings()?;
+    let settings = manager.metadata()?;
     println!("✅ Loaded settings:");
     println!("{}\n", serde_json::to_string_pretty(&settings)?);
 
@@ -64,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     manager.save_setting("app", "theme", json!("dark"))?;
 
     // Load again to see the change
-    let updated = manager.load_settings()?;
+    let updated = manager.metadata()?;
     println!("✅ Updated settings:");
     println!("{}\n", serde_json::to_string_pretty(&updated)?);
 
@@ -77,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📋 Working with List Settings:");
 
     // Load settings with metadata to see current values
-    let settings_meta = manager.load_settings()?;
+    let settings_meta = manager.metadata()?;
     if let Some(meta) = settings_meta.get("network.allowed_origins") {
         if let Some(value) = &meta.value {
             println!("Current allowed origins: {}", value);
@@ -92,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Load settings with metadata to see the change
-    let updated = manager.load_settings()?;
+    let updated = manager.metadata()?;
     if let Some(meta) = updated.get("network.allowed_origins") {
         if let Some(value) = &meta.value {
             println!("✅ Updated allowed origins: {}\n", value);

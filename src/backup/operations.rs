@@ -17,8 +17,8 @@ use crate::profiles::{MANIFEST_FILE, PROFILES_DIR};
 
 /// Helper to collect settings files for backup (handles both profiled and flat)
 /// Returns (`source_path`, `relative_dest_path`) pairs
-fn collect_settings_files(
-    config: &crate::config::SettingsConfig<impl StorageBackend, impl SettingsSchema>,
+fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
+    config: &crate::config::SettingsConfig<S, Schema>,
     #[cfg_attr(not(feature = "profiles"), allow(unused_variables))] options: &BackupOptions,
 ) -> Vec<(PathBuf, PathBuf)> {
     let mut files = Vec::new();
@@ -116,7 +116,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         let temp_dir = tempfile::tempdir().map_err(|e| Error::BackupFailed(e.to_string()))?;
         let export_dir = temp_dir.path().join("export");
         fs::create_dir_all(&export_dir).map_err(|e| Error::DirectoryCreate {
-            path: export_dir.display().to_string(),
+            path: export_dir.clone(),
             source: e,
         })?;
 
@@ -209,7 +209,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
         // Ensure output directory exists
         fs::create_dir_all(&options.output_dir).map_err(|e| Error::DirectoryCreate {
-            path: options.output_dir.display().to_string(),
+            path: options.output_dir.clone(),
             source: e,
         })?;
 
@@ -419,7 +419,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
         for entry in crate::error::read_dir(&profiles_dir)? {
             let entry = entry.map_err(|e| Error::DirectoryRead {
-                path: profiles_dir.display().to_string(),
+                path: profiles_dir.clone(),
                 source: e,
             })?;
 
@@ -589,7 +589,7 @@ pub fn analyze(&self, path: &Path) -> Result<BackupAnalysis> {
         let temp_dir = tempfile::tempdir().map_err(|e| Error::BackupFailed(e.to_string()))?;
         let data_archive_path = temp_dir.path().join("data.zip");
         std::fs::write(&data_archive_path, data_bytes).map_err(|e| Error::FileWrite {
-            path: data_archive_path.display().to_string(),
+            path: data_archive_path.clone(),
             source: e,
         })?;
 

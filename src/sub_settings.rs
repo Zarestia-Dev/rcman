@@ -234,14 +234,26 @@ impl SubSettingsConfig {
 
 use std::collections::HashMap;
 
+/// Internal state protected by a single lock
+#[derive(Debug)]
+struct SubSettingsState {
+    /// Base directory for this sub-settings type
+    /// When profiles are enabled, this updates dynamically on profile switch
+    base_dir: PathBuf,
+
+    /// In-memory cache
+    /// - None: not loaded (lazy load)
+    /// - Some(map): loaded
+    cache: Option<HashMap<String, Value>>,
+}
+
 /// Handler for a single sub-settings type
-pub struct SubSettings<S: StorageBackend> {
+pub struct SubSettings<S: StorageBackend = crate::storage::JsonStorage> {
     /// Configuration
     config: SubSettingsConfig,
 
-    /// Base directory for this sub-settings type
-    /// When profiles are enabled, this updates dynamically on profile switch
-    base_dir: RwLock<PathBuf>,
+    /// Internal state (base_dir + cache)
+    state: RwLock<SubSettingsState>,
 
     /// Root directory (before profile path is applied)
     /// Reserved for future use (e.g., profile migration)
@@ -249,16 +261,11 @@ pub struct SubSettings<S: StorageBackend> {
     #[allow(dead_code)]
     root_dir: PathBuf,
 
-    /// Storage backend
+    /// Storage backend (defaults to JsonStorage)
     storage: S,
 
     /// Mutex to serialize save operations (prevents race conditions)
     save_mutex: parking_lot::Mutex<()>,
-
-    /// In-memory cache
-    /// - None: not loaded (lazy load)
-    /// - Some(map): loaded
-    cache: RwLock<Option<HashMap<String, Value>>>,
 
     /// Callback for change notifications
     #[allow(clippy::type_complexity)]
@@ -334,14 +341,18 @@ impl<S: StorageBackend> SubSettings<S> {
         #[cfg(not(feature = "profiles"))]
         let base_dir = root_dir.clone();
 
+        let state = SubSettingsState {
+            base_dir,
+            cache: None,
+        };
+
         Self {
             config,
-            base_dir: RwLock::new(base_dir),
+            state: RwLock::new(state),
             #[cfg(feature = "profiles")]
             root_dir,
             storage,
             save_mutex: parking_lot::Mutex::new(()),
-            cache: RwLock::new(None),
             on_change: RwLock::new(None),
             #[cfg(feature = "profiles")]
             profile_manager,
@@ -354,38 +365,11 @@ impl<S: StorageBackend> SubSettings<S> {
         self.root_dir.clone()
     }
 
-    /// Get the current base directory
-    fn get_base_dir(&self) -> PathBuf {
-        self.active_profile_dir()
-    }
 
-    /// Get the active profile's directory path, or `base_dir` if profiles disabled
-    fn active_profile_dir(&self) -> PathBuf {
-        #[cfg(feature = "profiles")]
-        if let Some(pm) = &self.profile_manager {
-            if let Ok(active) = pm.active() {
-                return pm.profile_path(&active);
-            }
-            // Fallback to default if active fetch fails (shouldn't happen)
-            return pm.profile_path(crate::profiles::DEFAULT_PROFILE);
-        }
-        self.base_dir.read().clone()
-    }
 
     /// Get the single-file path (for single-file mode)
-    fn single_file_path(&self) -> PathBuf {
-        self.active_profile_dir()
-            .join(format!("{}.{}", self.config.name, self.config.extension))
-    }
-
-    /// Get the file path for an entry (multi-file mode only)
-    fn entry_path(&self, name: &str) -> PathBuf {
-        if self.is_single_file() {
-            // In single-file mode, all entries are in the single file
-            return self.single_file_path();
-        }
-        self.active_profile_dir()
-            .join(format!("{}.{}", name, self.config.extension))
+    fn single_file_path(base_dir: &std::path::Path, name: &str, ext: &str) -> PathBuf {
+        base_dir.join(format!("{}.{}", name, ext))
     }
 
     /// Check if we're in single-file mode
@@ -404,8 +388,8 @@ impl<S: StorageBackend> SubSettings<S> {
     /// This forces the next read operation to reload from disk.
     /// Useful if external processes might modify the files.
     pub fn invalidate_cache(&self) {
-        let mut cache = self.cache.write();
-        *cache = None;
+        let mut state = self.state.write();
+        state.cache = None;
     }
 
     /// Check if profiles are enabled for this sub-settings type
@@ -415,20 +399,6 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Get the profile manager for this sub-settings type
-    ///
-    /// Returns an error if profiles are not enabled.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let remotes = manager.sub_settings("remotes")?;
-    /// remotes.profiles()?.create("work")?;
-    /// remotes.profiles()?.switch("work")?;
-    /// ```
-    /// 
-    /// # Errors
-    /// 
-    /// * `Error::ProfilesNotEnabled` - If profiles are not enabled
     #[cfg(feature = "profiles")]
     pub fn profiles(&self) -> Result<&crate::profiles::ProfileManager> {
         self.profile_manager
@@ -437,43 +407,17 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Switch to a different profile
-    ///
-    /// This switches the active profile and updates the internal paths
-    /// so subsequent operations use the new profile's directory.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let remotes = manager.sub_settings("remotes")?;
-    /// remotes.switch_profile("work")?;
-    /// // Now all operations use the "work" profile
-    /// remotes.set("company-drive", &json!({...}))?;
-    /// ```
-    /// 
-    /// # Arguments
-    /// 
-    /// * `name` - Name of the profile to switch to
-    /// 
-    /// # Returns
-    /// 
-    /// * `Result<()>` - Success or error
-    /// 
-    /// # Errors
-    /// 
-    /// * `Error::ProfilesNotEnabled` - If profiles are not enabled
-    /// * `Error::ProfileNotFound` - If the profile does not exist
     #[cfg(feature = "profiles")]
     pub fn switch_profile(&self, name: &str) -> Result<()> {
         let pm = self.profiles()?;
         pm.switch(name)?;
 
-        // Update base_dir to point to the new profile's directory
         let new_path = pm.profile_path(name);
-        let mut base_dir = self.base_dir.write();
-        *base_dir = new_path;
-
-        // Invalidate cache
-        self.invalidate_cache();
+        
+        // Critical: Update state atomically
+        let mut state = self.state.write();
+        state.base_dir = new_path;
+        state.cache = None;
 
         Ok(())
     }
@@ -483,46 +427,45 @@ impl<S: StorageBackend> SubSettings<S> {
     where
         F: Fn(&str, SubSettingsAction) + Send + Sync + 'static,
     {
-        {
-            let mut guard = self.on_change.write();
-            *guard = Some(Arc::new(callback));
-        }
+        let mut guard = self.on_change.write();
+        *guard = Some(Arc::new(callback));
     }
 
     /// Notify about a change
     fn notify_change(&self, name: &str, action: SubSettingsAction) {
-        {
-            let guard = self.on_change.read();
-            if let Some(callback) = guard.as_ref() {
-                callback(name, action);
-            }
+        let guard = self.on_change.read();
+        if let Some(callback) = guard.as_ref() {
+            callback(name, action);
         }
     }
 
     /// Ensure cache is populated (loads from disk if needed)
     fn ensure_cache_populated(&self) -> Result<()> {
-        // Fast path: check read lock
-        if self.cache.read().is_some() {
+        // Fast path: check if cache exists with read lock
+        if self.state.read().cache.is_some() {
             return Ok(());
         }
 
-        let mut cache_guard = self.cache.write();
-        if cache_guard.is_some() {
+        // Upgrade to write lock
+        let mut state = self.state.write();
+        if state.cache.is_some() {
             return Ok(());
         }
 
+        let base_dir = state.base_dir.clone();
+        
         if self.is_single_file() {
-            let path = self.single_file_path();
+            let path = Self::single_file_path(&base_dir, &self.config.name, &self.config.extension);
             let mut file_data = match std::fs::metadata(&path) {
                 Ok(_) => self.storage.read::<Value>(&path)?,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Start with empty cache
-                    *cache_guard = Some(HashMap::new());
+                    state.cache = Some(HashMap::new());
                     return Ok(());
                 }
                 Err(e) => {
                     return Err(Error::FileRead {
-                        path: path.display().to_string(),
+                        path: path.to_path_buf(),
                         source: e,
                     })
                 }
@@ -530,14 +473,14 @@ impl<S: StorageBackend> SubSettings<S> {
 
             // Apply migration and persist if changed
             if let Some(migrator) = &self.config.migrator {
-                // Optimization: Use hash or just clone if needed.
-                // Since we need to write back, we need to know if it changed.
-                // Cloning is safe here as it happens only once per load.
                 let original = file_data.clone();
                 file_data = migrator(file_data);
 
                 if file_data != original {
                     debug!("Migrated sub-settings file: {}", self.config.name);
+                    // We hold state write lock, but we also need save_mutex for file I/O safety?
+                    // Ideally yes, but here we are in a "load" phase. 
+                    // If we write back, we should lock save_mutex.
                     let _save_guard = self.save_mutex.lock();
                     self.storage.write(&path, &file_data)?;
                 }
@@ -550,209 +493,148 @@ impl<S: StorageBackend> SubSettings<S> {
                 ))
             })?;
 
-            // Populate cache - move ownership to avoid cloning the entire map
-            *cache_guard = Some(obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+            state.cache = Some(obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         } else {
             // MultiFile: just init empty map
-            *cache_guard = Some(HashMap::new());
+            state.cache = Some(HashMap::new());
         }
 
         Ok(())
     }
 
     /// Load an entry (returns raw JSON Value)
-    /// 
-    /// # Arguments
-    /// 
-    /// * `name` - The name of the entry to load
-    /// 
-    /// # Returns
-    /// 
-    /// * `Ok(Value)` - The loaded entry
-    /// 
-    /// # Errors
-    /// 
-    /// * `Error::SubSettingsEntryNotFound` - If the entry does not exist
-    /// * `Error::FileRead` - If the file cannot be read
-    /// * `Error::InvalidBackup` - If the file is not a valid JSON object
-    /// # Panics
-    ///
-    /// This function will not panic. The `.unwrap()` on line 612 is safe because the function
-    /// returns early with an error if the value is not found, ensuring `value` is always `Some(_)`
-    /// at that point.
     pub fn get_value(&self, name: &str) -> Result<Value> {
         self.ensure_cache_populated()?;
 
-        // Check cache first
-        let mut value = {
-            let cache = self.cache.read();
-            // Cache must be Some(_) because of ensure_cache_populated
-            cache.as_ref().and_then(|map| map.get(name).cloned())
-        };
+        // 1. Try to get from cache (Read Lock)
+        let state = self.state.read();
+        if let Some(map) = &state.cache {
+            if let Some(v) = map.get(name) {
+                return Ok(v.clone());
+            }
+        }
 
-        // If not in cache, read from file (for multi-file mode)
-        if value.is_none() {
-            if self.is_single_file() {
-                // In SingleFile mode, if not in cache (and cache is populated), it doesn't exist
+        // 2. Cache miss handling
+        if self.is_single_file() {
+            // In SingleFile mode, cache is authoritative if loaded
+            return Err(Error::SubSettingsEntryNotFound(format!(
+                "{}/{}",
+                self.config.name, name
+            )));
+        }
+
+        // 3. Multi-file mode: read from individual file
+        // We capture base_dir to read from the correct location
+        let base_dir = state.base_dir.clone();
+        drop(state); // DROP LOCK to allow other readers/writers/profile switches
+
+        let path = base_dir.join(format!("{}.{}", name, self.config.extension));
+
+        if let Err(e) = std::fs::metadata(&path) {
+            if e.kind() == std::io::ErrorKind::NotFound {
                 return Err(Error::SubSettingsEntryNotFound(format!(
                     "{}/{}",
                     self.config.name, name
                 )));
             }
-
-            // Multi-file mode: read from individual file
-            let path = self.entry_path(name);
-
-            if let Err(e) = std::fs::metadata(&path) {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    return Err(Error::SubSettingsEntryNotFound(format!(
-                        "{}/{}",
-                        self.config.name, name
-                    )));
-                }
-                return Err(Error::FileRead {
-                    path: path.display().to_string(),
-                    source: e,
-                });
-            }
-
-            value = Some(self.storage.read(&path)?);
+            return Err(Error::FileRead {
+                path: path.to_path_buf(),
+                source: e,
+            });
         }
 
-        // At this point, value should be Some(_)
-        let mut value = value.unwrap();
+        let mut value: Value = self.storage.read(&path)?;
 
-        // Apply migration if configured
+        // 4. Apply migration
         if let Some(migrator) = &self.config.migrator {
             let original = value.clone();
             value = migrator(value);
 
-            // If migration changed the value, persist it
             if value != original {
                 debug!("Migrated sub-settings entry: {name}");
-
-                // Persist the migrated value
-                if self.is_single_file() {
-                    // Update cache and persist the whole file
-                    {
-                        let mut cache = self.cache.write();
-                        if let Some(map) = cache.as_mut() {
-                            map.insert(name.to_string(), value.clone());
-                        }
-                    }
-
-                    let path = self.single_file_path();
-                    let full_obj = {
-                        let cache = self.cache.read();
-                        if let Some(map) = cache.as_ref() {
-                            Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                        } else {
-                            Value::Object(serde_json::Map::new())
-                        }
-                    };
-
-                    let _save_guard = self.save_mutex.lock();
-                    self.storage.write(&path, &full_obj)?;
-                } else {
-                    // Multi-file mode: write individual file
-                    let path = self.entry_path(name);
-                    let _save_guard = self.save_mutex.lock();
-                    self.storage.write(&path, &value)?;
-                }
+                
+                // We need to persist the migration.
+                // We lock save_mutex for I/O serialization.
+                let _save_guard = self.save_mutex.lock();
+                
+                // We write to the path we just read from.
+                // Note: we don't re-check base_dir here because we just want to update the file we read.
+                self.storage.write(&path, &value)?;
+                
+                // We will update cache below, but need to be careful about base_dir.
             }
         }
 
-        // Update cache (cache already has the value we just processed)
-        {
-            let mut cache = self.cache.write();
-            if let Some(map) = cache.as_mut() {
-                map.insert(name.to_string(), value.clone());
-            }
+        // 5. Update cache (Write Lock)
+        // We must verify that base_dir hasn't changed.
+        let mut state = self.state.write();
+        if state.base_dir != base_dir {
+            // Profile switched during our I/O!
+            // The value we read belongs to the OLD profile.
+            // We return it (it was valid when we started), but we DO NOT cache it in the NEW profile.
+            return Ok(value);
+        }
+
+        if let Some(map) = &mut state.cache {
+            map.insert(name.to_string(), value.clone());
         }
 
         Ok(value)
     }
 
     /// Load a typed entry
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - The name of the entry to load
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the entry cannot be loaded.
     pub fn get<T: DeserializeOwned>(&self, name: &str) -> Result<T> {
         let value = self.get_value(name)?;
         serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
     }
 
     /// Save an entry
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - The name of the entry to save
-    /// * `value` - The value to save
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the entry cannot be saved.
     pub fn set<T: Serialize + Sync>(&self, name: &str, value: &T) -> Result<()> {
-        // Ensure cache structure is initialized
         self.ensure_cache_populated()?;
-
         let json_value = serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
 
-        // Acquire save mutex to prevent race conditions
+        // Lock save_mutex to serialize I/O
         let _save_guard = self.save_mutex.lock();
+        
+        // Lock state (Write) for consistency
+        let mut state = self.state.write();
 
-        let exists = {
-            let mut cache = self.cache.write();
-            if let Some(map) = cache.as_mut() {
-                map.insert(name.to_string(), json_value.clone()).is_some()
-            } else {
-                false // Should not happen due to ensure_cache_populated
-            }
+        let exists = if let Some(map) = &mut state.cache {
+            map.insert(name.to_string(), json_value.clone()).is_some()
+        } else {
+            false
         };
 
         if self.is_single_file() {
-            // Single-file mode: Write the current cache state to disk
-            // We rely on the cache being the source of truth
-            let path = self.single_file_path();
-
-            // Reconstruct the full object from cache
-            let full_obj = {
-                let cache = self.cache.read();
-                if let Some(map) = cache.as_ref() {
-                    Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                } else {
-                    Value::Object(serde_json::Map::new())
-                }
+            // Write full object from cache
+            let full_obj = if let Some(map) = &state.cache {
+                Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            } else {
+                Value::Object(serde_json::Map::new())
             };
 
-            // Ensure base directory exists
-            let base_dir = self.get_base_dir();
+            let base_dir = &state.base_dir; // use current base dir
+            // Ensure dir exists
             if !base_dir.exists() {
-                std::fs::create_dir_all(&base_dir).map_err(|e| Error::DirectoryCreate {
-                    path: base_dir.display().to_string(),
+                std::fs::create_dir_all(base_dir).map_err(|e| Error::DirectoryCreate {
+                    path: base_dir.clone(),
                     source: e,
                 })?;
-                crate::security::set_secure_dir_permissions(&base_dir)?;
+                crate::security::set_secure_dir_permissions(base_dir)?;
             }
 
+            let path = Self::single_file_path(base_dir, &self.config.name, &self.config.extension);
             self.storage.write(&path, &full_obj)?;
         } else {
-            // Multi-file mode: write to individual file
-            let path = self.entry_path(name);
-
-            // Ensure directory exists
-            let base_dir = self.get_base_dir();
-            std::fs::create_dir_all(&base_dir).map_err(|e| Error::DirectoryCreate {
-                path: base_dir.display().to_string(),
+            // Multi-file: write individual file
+            let base_dir = &state.base_dir;
+            std::fs::create_dir_all(base_dir).map_err(|e| Error::DirectoryCreate {
+                path: base_dir.clone(),
                 source: e,
             })?;
-            crate::security::set_secure_dir_permissions(&base_dir)?;
+            crate::security::set_secure_dir_permissions(base_dir)?;
 
+            let path = base_dir.join(format!("{}.{}", name, self.config.extension));
             self.storage.write(&path, &json_value)?;
         }
 
@@ -772,111 +654,84 @@ impl<S: StorageBackend> SubSettings<S> {
             },
             self.config.name
         );
-
+        
+        // Notify handling requires dropping locks ideally, but `notify_change` uses its own ReadLock on `on_change`.
+        // We currently hold `state` write lock.
+        // `notify_change` locks `on_change`.
+        // If expectation is `on_change` callback might call back into `SubSettings`... deadlock risk?
+        // Callbacks should generally be async or not call back into same lock.
+        // But here we are safe from `state` deadlock if callback calls `get_value` (Read state), since RwLock allows recursion? 
+        // No, RwLock does NOT allow `read` if `write` is held by same thread (typically deadlocks).
+        // `parking_lot::RwLock` will DEADLOCK if we try to read while holding write.
+        
+        // FIX: Drop state lock before notifying.
+        drop(state); // Ensure state lock is dropped.
+        
         self.notify_change(name, action);
         Ok(())
     }
 
     /// Delete an entry
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - The name of the entry to delete
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the entry cannot be deleted.
     pub fn delete(&self, name: &str) -> Result<()> {
         self.ensure_cache_populated()?;
 
-        // Acquire save mutex to prevent race conditions
         let _save_guard = self.save_mutex.lock();
+        let mut state = self.state.write();
 
-        // Remove from cache
-        let existed = {
-            let mut cache = self.cache.write();
-            if let Some(map) = cache.as_mut() {
-                map.remove(name).is_some()
-            } else {
-                false
-            }
+        // Update cache
+        let existed = if let Some(map) = &mut state.cache {
+            map.remove(name).is_some()
+        } else {
+            false
         };
-
-        // Even if not in cache (MultiFile), verify file existence later
-        // But for SingleFile, cache is source of truth.
 
         if self.is_single_file() {
             if !existed {
-                warn!(
-                    "Sub-settings entry '{}' not found in {}, nothing to delete",
-                    name, self.config.name
-                );
+                warn!("Sub-settings entry '{}' not found, nothing to delete", name);
                 return Ok(());
             }
 
-            // Single-file mode: Write the current cache state to disk
-            let path = self.single_file_path();
-
-            // Reconstruct the full object from cache
-            let full_obj = {
-                let cache = self.cache.read();
-                if let Some(map) = cache.as_ref() {
-                    Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                } else {
-                    Value::Object(serde_json::Map::new())
-                }
+            let full_obj = if let Some(map) = &state.cache {
+                Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            } else {
+                Value::Object(serde_json::Map::new())
             };
-
+            
+            let base_dir = &state.base_dir;
+            let path = Self::single_file_path(base_dir, &self.config.name, &self.config.extension);
             self.storage.write(&path, &full_obj)?;
         } else {
-            // Multi-file mode: delete individual file
-            let path = self.entry_path(name);
-
-            if let Err(e) = std::fs::metadata(&path) {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    if !existed {
-                        warn!(
-                            "⚠️ Sub-settings entry '{}' not found in {}, nothing to delete",
-                            name, self.config.name
-                        );
-                        return Ok(());
-                    }
-                    // If existed in cache but not disk, it's weird but cache is cleared now.
-                } else {
-                    return Err(Error::FileRead {
-                        path: path.display().to_string(),
-                        source: e,
-                    });
-                }
-            } else {
-                std::fs::remove_file(&path).map_err(|e| Error::FileDelete {
-                    path: path.display().to_string(),
-                    source: e,
-                })?;
-            }
+             let base_dir = &state.base_dir;
+             let path = base_dir.join(format!("{}.{}", name, self.config.extension));
+             
+             if let Err(e) = std::fs::metadata(&path) {
+                 if e.kind() != std::io::ErrorKind::NotFound {
+                     return Err(Error::FileRead { path: path.to_path_buf(), source: e });
+                 }
+                 // If not found, that's fine from deletion perspective
+             } else {
+                 std::fs::remove_file(&path).map_err(|e| Error::FileDelete {
+                     path: path.to_path_buf(),
+                     source: e,
+                 })?;
+             }
         }
 
-        info!("Sub-settings '{}' deleted from {}", name, self.config.name);
+        info!("Sub-settings '{}' deleted", name);
+        drop(state); // Drop lock before notify
+        
         self.notify_change(name, SubSettingsAction::Deleted);
         Ok(())
     }
 
     /// List all entries
-    /// 
-    /// # Returns
-    /// 
-    /// A vector of entry names
-    /// 
-    /// # Errors
-    /// 
-    /// Returns an error if the cache cannot be populated.
     pub fn list(&self) -> Result<Vec<String>> {
         self.ensure_cache_populated()?;
 
+        let state = self.state.read();
+
         if self.is_single_file() {
-            // Single-file mode: return keys from cache
-            let cache = self.cache.read();
-            if let Some(map) = cache.as_ref() {
+            if let Some(map) = &state.cache {
                 let mut entries: Vec<String> = map.keys().cloned().collect();
                 entries.sort();
                 Ok(entries)
@@ -884,87 +739,65 @@ impl<S: StorageBackend> SubSettings<S> {
                 Ok(Vec::new())
             }
         } else {
-            // Multi-file mode: list files in directory
-            // We can't rely on cache as it might be partial
-            let base_dir = self.get_base_dir();
+            // Multi-file: list files in directory
+            // We use state.base_dir
+            let base_dir = state.base_dir.clone();
+            drop(state); // Drop lock for I/O
+
             if let Err(e) = std::fs::metadata(&base_dir) {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     return Ok(Vec::new());
                 }
                 return Err(Error::FileRead {
-                    path: base_dir.display().to_string(),
-                    source: e,
+                     path: base_dir,
+                     source: e,
                 });
             }
 
             let mut entries = Vec::new();
             let ext = format!(".{}", self.config.extension);
-
+            
             let read_dir = std::fs::read_dir(&base_dir).map_err(|e| Error::FileRead {
-                path: base_dir.display().to_string(),
+                path: base_dir.clone(),
                 source: e,
             })?;
 
             for entry in read_dir {
-                let entry = entry.map_err(|e| Error::FileRead {
-                    path: base_dir.display().to_string(),
-                    source: e,
-                })?;
-                let file_name = entry.file_name();
-                let name = file_name.to_string_lossy();
-
-                if name.ends_with(&ext) {
-                    let entry_name = name.trim_end_matches(&ext).to_string();
-                    entries.push(entry_name);
-                }
+                 let entry = entry.map_err(|e| Error::FileRead { path: base_dir.clone(), source: e })?;
+                 let name = entry.file_name().to_string_lossy().to_string();
+                 if name.ends_with(&ext) {
+                     entries.push(name.trim_end_matches(&ext).to_string());
+                 }
             }
-
             entries.sort();
             Ok(entries)
         }
     }
 
     /// Check if an entry exists
-    ///
-    /// Returns `Ok(true)` if exists, `Ok(false)` if not found.
-    /// Returns `Err` for I/O errors (e.g., permission denied).
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - Name of the entry
-    ///
-    /// # Returns
-    ///
-    /// * `Result<bool>` - Success or error
-    /// 
-    /// # Errors
-    /// 
-    /// * `Error::FileRead` - If the file cannot be read
     pub fn exists(&self, name: &str) -> Result<bool> {
         self.ensure_cache_populated()?;
 
-        // Check cache first
-        {
-            let cache = self.cache.read();
-            if let Some(map) = cache.as_ref() {
-                if map.contains_key(name) {
-                    return Ok(true);
-                }
+        let state = self.state.read();
+        
+        if let Some(map) = &state.cache {
+            if map.contains_key(name) {
+                return Ok(true);
             }
         }
 
         if self.is_single_file() {
-            // In SingleFile mode, cache is authoritative
             Ok(false)
         } else {
-            // Multi-file mode: check if file exists
-            // Since it wasn't in cache (or cache is partial), check disk
-            let path = self.entry_path(name);
+            let base_dir = state.base_dir.clone();
+            drop(state); // Drop lock for I/O
+
+            let path = base_dir.join(format!("{}.{}", name, self.config.extension));
             match std::fs::metadata(&path) {
                 Ok(_) => Ok(true),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
                 Err(e) => Err(Error::FileRead {
-                    path: path.display().to_string(),
+                    path: path.to_path_buf(),
                     source: e,
                 }),
             }
@@ -972,16 +805,15 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Get the directory path for this sub-settings type
-    /// In single-file mode, this is the directory containing the single file
     pub fn directory(&self) -> PathBuf {
-        self.get_base_dir()
+        self.state.read().base_dir.clone()
     }
 
     /// Get the single file path (only applicable in single-file mode)
-    /// Returns the path to the JSON file containing all entities
     pub fn file_path(&self) -> Option<PathBuf> {
         if self.is_single_file() {
-            Some(self.single_file_path())
+            let base_dir = self.state.read().base_dir.clone();
+            Some(Self::single_file_path(&base_dir, &self.config.name, &self.config.extension))
         } else {
             None
         }
@@ -1050,6 +882,9 @@ mod tests {
         // Save old format (without version)
         let old_data = json!({"name": "test"});
         sub.set("item1", &old_data).unwrap();
+
+        // Invalidate cache to force reload and migration
+        sub.invalidate_cache();
 
         // Load should apply migration
         let loaded = sub.get_value("item1").unwrap();

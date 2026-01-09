@@ -14,8 +14,7 @@
 
 use eframe::egui;
 use rcman::{
-    opt, settings, BackupOptions, RestoreOptions, SettingMetadata, SettingsConfig, SettingsManager,
-    SettingsSchema, SubSettingsConfig,
+    BackupOptions, RestoreOptions, SettingMetadata, SettingsConfig, SettingsManager, SettingsSchema, SubSettingsConfig, opt, settings
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -121,7 +120,7 @@ impl SettingsSchema for DemoSettings {
 // ============================================================================
 
 struct DemoApp {
-    manager: Arc<SettingsManager>,
+    manager: Arc<SettingsManager<rcman::storage::JsonStorage, DemoSettings>>,
 
     keychain_enabled: bool,
     encrypted_backend_status: String,
@@ -186,7 +185,9 @@ impl DemoApp {
 
         // Initialize settings manager
         let config_builder =
-            SettingsConfig::builder("rcman-gui-demo", "1.0.0").config_dir("./example_config");
+            SettingsConfig::builder("rcman-gui-demo", "1.0.0")
+            .with_schema::<DemoSettings>()
+            .with_config_dir("./example_config");
 
         // Enable credentials if keychain feature is available
         #[cfg(feature = "keychain")]
@@ -197,7 +198,7 @@ impl DemoApp {
         let manager = Arc::new(SettingsManager::new(config).expect("Failed to create manager"));
 
         // Load initial settings
-        let settings = { manager.load_settings().unwrap_or_default() };
+        let settings = { manager.metadata().unwrap_or_default() };
 
         // Extract values from loaded settings (SettingMetadata has a `value` field)
         let get_value = |key: &str| -> Value {
@@ -538,7 +539,7 @@ impl DemoApp {
 
     fn reload_settings(&mut self) {
         let manager = self.manager.clone();
-        let settings = { manager.load_settings().unwrap_or_default() };
+        let settings = { manager.metadata().unwrap_or_default() };
 
         let get_value = |key: &str| -> Value {
             settings

@@ -10,7 +10,7 @@
 
 mod common;
 
-use common::{TestFixture, TestSettings};
+use common::TestFixture;
 use rcman::{SettingsConfig, SettingsManager};
 use serde_json::json;
 use std::fs;
@@ -25,7 +25,7 @@ use tempfile::TempDir;
 #[test]
 fn test_save_invalid_top_level_key() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let result =
         fixture
@@ -41,7 +41,7 @@ fn test_save_invalid_top_level_key() {
 #[test]
 fn test_save_invalid_nested_key() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let result = fixture
         .manager
@@ -56,7 +56,7 @@ fn test_save_invalid_nested_key() {
 #[test]
 fn test_deeply_nested_invalid_path() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let result = fixture.manager.save_setting(
         "ui.nested.deeply.invalid",
@@ -74,7 +74,7 @@ fn test_deeply_nested_invalid_path() {
 #[test]
 fn test_save_wrong_type_for_number() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Try to save a string where a number is expected
     let result =
@@ -88,7 +88,7 @@ fn test_save_wrong_type_for_number() {
 #[test]
 fn test_save_wrong_type_for_boolean() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let result =
         fixture
@@ -103,7 +103,7 @@ fn test_save_wrong_type_for_boolean() {
 #[test]
 fn test_number_out_of_range() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // font_size has min=8, max=32
     let result = fixture
@@ -118,7 +118,7 @@ fn test_number_out_of_range() {
 #[test]
 fn test_select_invalid_option() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // theme has options ["dark", "light", "system"]
     let result =
@@ -137,7 +137,7 @@ fn test_select_invalid_option() {
 #[test]
 fn test_concurrent_reads() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Save initial value
     fixture
@@ -153,7 +153,7 @@ fn test_concurrent_reads() {
         let handle = thread::spawn(move || {
             let metadata = fixture_clone
                 .manager
-                .load_settings()
+                .metadata()
                 .unwrap();
             let theme = metadata.get("ui.theme").unwrap();
             assert_eq!(theme.value, Some(json!("light")));
@@ -169,7 +169,7 @@ fn test_concurrent_reads() {
 #[test]
 fn test_concurrent_writes_same_key() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let mut handles = vec![];
 
@@ -191,7 +191,7 @@ fn test_concurrent_writes_same_key() {
     }
 
     // Final value should be either "light" or "dark" (not corrupted)
-    let metadata = fixture.manager.load_settings().unwrap();
+    let metadata = fixture.manager.metadata().unwrap();
     let theme = metadata.get("ui.theme").unwrap();
     let value = theme.value.as_ref().unwrap().as_str().unwrap();
     assert!(value == "light" || value == "dark");
@@ -200,7 +200,7 @@ fn test_concurrent_writes_same_key() {
 #[test]
 fn test_concurrent_writes_different_keys() {
     let fixture = Arc::new(TestFixture::new());
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let mut handles = vec![];
 
@@ -242,7 +242,7 @@ fn test_concurrent_writes_different_keys() {
     }
 
     // All values should be present and correct
-    let metadata = fixture.manager.load_settings().unwrap();
+    let metadata = fixture.manager.metadata().unwrap();
     assert_eq!(
         metadata.get("ui.theme").unwrap().value,
         Some(json!("light"))
@@ -265,37 +265,37 @@ fn test_concurrent_writes_different_keys() {
 fn test_load_corrupted_json() {
     let temp_dir = TempDir::new().unwrap();
     let config = SettingsConfig::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .build();
     let manager = SettingsManager::new(config).unwrap();
 
     // Register schema
-    let _ = manager.settings().unwrap();
+    let _ = manager.get_all().unwrap();
 
     // Write corrupted JSON to the settings file
     let settings_file = temp_dir.path().join("settings.json");
     fs::write(&settings_file, b"{invalid json content").unwrap();
 
     // Loading should handle gracefully (may return defaults or error)
-    let _ = manager.load_settings();
+    let _ = manager.metadata();
 }
 
 #[test]
 fn test_load_truncated_json() {
     let temp_dir = TempDir::new().unwrap();
     let config = SettingsConfig::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .build();
     let manager = SettingsManager::new(config).unwrap();
 
-    let _ = manager.settings().unwrap();
+    let _ = manager.get_all().unwrap();
 
     // Write truncated JSON
     let settings_file = temp_dir.path().join("settings.json");
     fs::write(&settings_file, b"{\"ui\": {\"theme\":").unwrap();
 
     // Loading should handle gracefully
-    let _ = manager.load_settings();
+    let _ = manager.metadata();
 }
 
 #[test]
@@ -303,12 +303,12 @@ fn test_save_to_readonly_directory() {
     // Create a temp directory and make it readonly
     let temp_dir = TempDir::new().unwrap();
     let config = SettingsConfig::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_schema::<common::TestSettings>()
         .build();
     let manager = SettingsManager::new(config).unwrap();
 
-    let _ = manager.settings().unwrap();
+    let _ = manager.get_all().unwrap();
 
     // First save to create the file (use a non-default value so it actually writes)
     manager
@@ -365,7 +365,7 @@ fn test_env_override_basic() {
     // Set environment variable before loading
     std::env::set_var("RCMAN_TEST_UI__THEME", "light");
 
-    let settings = fixture.manager.settings().unwrap();
+    let settings = fixture.manager.get_all().unwrap();
 
     // Should get env value, not default
     // Note: env override behavior depends on implementation
@@ -378,7 +378,7 @@ fn test_env_override_basic() {
 #[ignore] // Env tests can interfere with each other
 fn test_env_override_precedence_over_saved() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Save a value
     fixture
@@ -390,7 +390,7 @@ fn test_env_override_precedence_over_saved() {
     std::env::set_var("RCMAN_TEST_UI__THEME", "light");
 
     // Load again - check actual behavior
-    let metadata = fixture.manager.load_settings().unwrap();
+    let metadata = fixture.manager.metadata().unwrap();
     let theme = metadata.get("ui.theme").unwrap();
 
     // Document: env override may or may not be implemented
@@ -407,7 +407,7 @@ fn test_env_override_invalid_value() {
     std::env::set_var("RCMAN_TEST_UI__THEME", "invalid_theme");
 
     // Should fail validation
-    let result = fixture.manager.settings();
+    let result = fixture.manager.get_all();
 
     // Depending on implementation, this might fail during load or use default
     // Either behavior is acceptable - document what happens
@@ -424,7 +424,7 @@ fn test_env_override_type_mismatch() {
     // Set string where number is expected
     std::env::set_var("RCMAN_TEST_UI__FONT_SIZE", "not_a_number");
 
-    let result = fixture.manager.settings();
+    let result = fixture.manager.get_all();
 
     // Should handle gracefully (either fail or ignore)
     let _ = result;
@@ -439,7 +439,7 @@ fn test_env_override_type_mismatch() {
 #[test]
 fn test_reset_nonexistent_key() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Reset a key that was never saved
     let result = fixture.manager.reset_setting("ui", "theme");
@@ -451,7 +451,7 @@ fn test_reset_nonexistent_key() {
 #[test]
 fn test_reset_all_empty_settings() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Reset without saving anything
     let result = fixture.manager.reset_all();
@@ -527,7 +527,7 @@ fn test_sub_settings_concurrent_access() {
 #[test]
 fn test_save_null_value() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Try to save null
     let result = fixture
@@ -541,7 +541,7 @@ fn test_save_null_value() {
 #[test]
 fn test_save_very_long_string() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     // Save a very long string
     let long_string = "a".repeat(10_000);
@@ -556,7 +556,7 @@ fn test_save_very_long_string() {
 #[test]
 fn test_save_very_large_number() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let result = fixture
         .manager
@@ -569,7 +569,7 @@ fn test_save_very_large_number() {
 #[test]
 fn test_save_negative_number() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let result = fixture
         .manager
@@ -582,7 +582,7 @@ fn test_save_negative_number() {
 #[test]
 fn test_save_infinity() {
     let fixture = TestFixture::new();
-    let _ = fixture.manager.settings().unwrap();
+    let _ = fixture.manager.get_all().unwrap();
 
     let result =
         fixture

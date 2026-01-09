@@ -64,7 +64,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
 
         let data_archive_path = temp_dir.path().join(data_filename);
         fs::write(&data_archive_path, &data_bytes).map_err(|e| Error::FileWrite {
-            path: data_archive_path.display().to_string(),
+            path: data_archive_path.clone(),
             source: e,
         })?;
 
@@ -127,7 +127,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                         } else {
                             fs::copy(&profiles_manifest, &target_manifest).map_err(|e| {
                                 Error::FileWrite {
-                                    path: target_manifest.display().to_string(),
+                                    path: target_manifest.clone(),
                                     source: e,
                                 }
                             })?;
@@ -179,7 +179,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                                 target_profiles_dir.join(&target_profile_name);
                             fs::create_dir_all(&target_profile_path).map_err(|e| {
                                 Error::DirectoryCreate {
-                                    path: target_profile_path.display().to_string(),
+                                    path: target_profile_path.clone(),
                                     source: e,
                                 }
                             })?;
@@ -201,7 +201,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                                 } else {
                                     fs::copy(&src_settings, &dest_settings).map_err(|e| {
                                         Error::FileWrite {
-                                            path: dest_settings.display().to_string(),
+                                            path: dest_settings.clone(),
                                             source: e,
                                         }
                                     })?;
@@ -234,7 +234,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                         } else {
                             fs::copy(&settings_src, &settings_dest).map_err(|e| {
                                 Error::FileWrite {
-                                    path: settings_dest.display().to_string(),
+                                    path: settings_dest.clone(),
                                     source: e,
                                 }
                             })?;
@@ -375,16 +375,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                                             } else {
                                                 fs::create_dir_all(&dest_profile_path).map_err(
                                                     |e| Error::DirectoryCreate {
-                                                        path: dest_profile_path
-                                                            .display()
-                                                            .to_string(),
+                                                        path: dest_profile_path.clone(),
                                                         source: e,
                                                     },
                                                 )?;
 
                                                 fs::copy(&path, &dest).map_err(|e| {
                                                     Error::FileWrite {
-                                                        path: dest.display().to_string(),
+                                                        path: dest.clone(),
                                                         source: e,
                                                     }
                                                 })?;
@@ -428,7 +426,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                                             let content =
                                                 fs::read_to_string(&path).map_err(|e| {
                                                     Error::FileRead {
-                                                        path: path.display().to_string(),
+                                                        path: path.to_path_buf(),
                                                         source: e,
                                                     }
                                                 })?;
@@ -467,7 +465,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                     // Restore from single file
                     let content =
                         fs::read_to_string(&sub_single_file_src).map_err(|e| Error::FileRead {
-                            path: sub_single_file_src.display().to_string(),
+                            path: sub_single_file_src.clone(),
                             source: e,
                         })?;
 
@@ -482,11 +480,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                 } else if sub_src_dir.exists() {
                     // Restore from directory
                     for entry in fs::read_dir(&sub_src_dir).map_err(|e| Error::FileRead {
-                        path: sub_src_dir.display().to_string(),
+                        path: sub_src_dir.clone(),
                         source: e,
                     })? {
                         let entry = entry.map_err(|e| Error::FileRead {
-                            path: sub_src_dir.display().to_string(),
+                            path: sub_src_dir.clone(),
                             source: e,
                         })?;
 
@@ -501,7 +499,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
 
                         let content =
                             fs::read_to_string(entry.path()).map_err(|e| Error::FileRead {
-                                path: entry.path().display().to_string(),
+                                path: entry.path(),
                                 source: e,
                             })?;
 
@@ -555,7 +553,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                         // Read data from backup
                         let src = external_dir.join(&external_config.archive_filename);
                         let data = fs::read(&src).map_err(|e| Error::FileRead {
-                            path: src.display().to_string(),
+                            path: src.clone(),
                             source: e,
                         })?;
 
@@ -576,14 +574,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                                     if let Some(parent) = dest_path.parent() {
                                         fs::create_dir_all(parent).map_err(|e| {
                                             Error::FileWrite {
-                                                path: parent.display().to_string(),
+                                                path: parent.to_path_buf(),
                                                 source: e,
                                             }
                                         })?;
                                     }
                                     fs::write(dest_path, &data).map_err(|e| {
                                         Error::FileWrite {
-                                            path: dest_path.display().to_string(),
+                                            path: dest_path.clone(),
                                             source: e,
                                         }
                                     })?;
@@ -693,7 +691,7 @@ pub fn get_external_config_from_backup(
         let data_bytes = read_file_from_zip(backup_path, data_filename)?;
         let data_archive_path = temp_dir.path().join(data_filename);
         fs::write(&data_archive_path, data_bytes).map_err(|e| Error::FileWrite {
-            path: data_archive_path.display().to_string(),
+            path: data_archive_path.clone(),
             source: e,
         })?;
 
@@ -704,7 +702,7 @@ pub fn get_external_config_from_backup(
 
         let config_path = extract_dir.join("external").join(config_name);
         fs::read(&config_path).map_err(|e| Error::FileRead {
-            path: config_path.display().to_string(),
+            path: config_path.clone(),
             source: e,
         })
     }

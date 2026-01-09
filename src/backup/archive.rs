@@ -68,7 +68,7 @@ pub fn create_zip_archive(
     password: Option<&str>,
 ) -> Result<()> {
     let file = File::create(output_path).map_err(|e| Error::FileWrite {
-        path: output_path.display().to_string(),
+        path: output_path.to_path_buf(),
         source: e,
     })?;
 
@@ -103,11 +103,11 @@ fn add_directory_to_zip<W: Write + std::io::Seek>(
     options: &FileOptions<()>,
 ) -> Result<()> {
     for entry in std::fs::read_dir(current_dir).map_err(|e| Error::FileRead {
-        path: current_dir.display().to_string(),
+        path: current_dir.to_path_buf(),
         source: e,
     })? {
         let entry = entry.map_err(|e| Error::FileRead {
-            path: current_dir.display().to_string(),
+            path: current_dir.to_path_buf(),
             source: e,
         })?;
 
@@ -131,12 +131,12 @@ fn add_directory_to_zip<W: Write + std::io::Seek>(
                 .map_err(|e| Error::Archive(e.to_string()))?;
 
             let mut file = File::open(&path).map_err(|e| Error::FileRead {
-                path: path.display().to_string(),
+                path: path.to_path_buf(),
                 source: e,
             })?;
 
             std::io::copy(&mut file, zip).map_err(|e| Error::FileRead {
-                path: path.display().to_string(),
+                path: path.to_path_buf(),
                 source: e,
             })?;
         }
@@ -152,7 +152,7 @@ pub fn extract_zip_archive(
     password: Option<&str>,
 ) -> Result<()> {
     let file = File::open(archive_path).map_err(|e| Error::FileRead {
-        path: archive_path.display().to_string(),
+        path: archive_path.to_path_buf(),
         source: e,
     })?;
 
@@ -174,26 +174,26 @@ pub fn extract_zip_archive(
 
         if file.name().ends_with('/') {
             std::fs::create_dir_all(&outpath).map_err(|e| Error::DirectoryCreate {
-                path: outpath.display().to_string(),
+                path: outpath.clone(),
                 source: e,
             })?;
         } else {
             if let Some(parent) = outpath.parent() {
                 if !parent.exists() {
                     std::fs::create_dir_all(parent).map_err(|e| Error::DirectoryCreate {
-                        path: parent.display().to_string(),
+                        path: parent.to_path_buf(),
                         source: e,
                     })?;
                 }
             }
 
             let mut outfile = File::create(&outpath).map_err(|e| Error::FileWrite {
-                path: outpath.display().to_string(),
+                path: outpath.clone(),
                 source: e,
             })?;
 
             std::io::copy(&mut file, &mut outfile).map_err(|e| Error::FileWrite {
-                path: outpath.display().to_string(),
+                path: outpath.clone(),
                 source: e,
             })?;
         }
@@ -208,7 +208,7 @@ pub fn extract_zip_archive(
 /// This is useful for validating backup encryption status.
 pub fn is_zip_encrypted(archive_path: &Path) -> Result<bool> {
     let file = File::open(archive_path).map_err(|e| Error::FileRead {
-        path: archive_path.display().to_string(),
+        path: archive_path.to_path_buf(),
         source: e,
     })?;
 
@@ -229,7 +229,7 @@ pub fn is_zip_encrypted(archive_path: &Path) -> Result<bool> {
 /// Read a file from a zip archive
 pub fn read_file_from_zip(archive_path: &Path, filename: &str) -> Result<Vec<u8>> {
     let file = File::open(archive_path).map_err(|e| Error::FileRead {
-        path: archive_path.display().to_string(),
+        path: archive_path.to_path_buf(),
         source: e,
     })?;
 
@@ -242,7 +242,7 @@ pub fn read_file_from_zip(archive_path: &Path, filename: &str) -> Result<Vec<u8>
     zip_file
         .read_to_end(&mut contents)
         .map_err(|e| Error::FileRead {
-            path: filename.to_string(),
+            path: std::path::PathBuf::from(filename),
             source: e,
         })?;
 
@@ -252,7 +252,7 @@ pub fn read_file_from_zip(archive_path: &Path, filename: &str) -> Result<Vec<u8>
 /// Calculate SHA-256 hash of a file
 pub fn calculate_file_hash(path: &Path) -> Result<(String, u64)> {
     let mut file = File::open(path).map_err(|e| Error::FileRead {
-        path: path.display().to_string(),
+        path: path.to_path_buf(),
         source: e,
     })?;
 
@@ -262,7 +262,7 @@ pub fn calculate_file_hash(path: &Path) -> Result<(String, u64)> {
 
     loop {
         let bytes_read = file.read(&mut buffer).map_err(|e| Error::FileRead {
-            path: path.display().to_string(),
+            path: path.to_path_buf(),
             source: e,
         })?;
 
@@ -286,7 +286,7 @@ pub fn create_rcman_container(
     inner_archive_filename: &str,
 ) -> Result<()> {
     let file = File::create(output_path).map_err(|e| Error::FileWrite {
-        path: output_path.display().to_string(),
+        path: output_path.to_path_buf(),
         source: e,
     })?;
 
@@ -304,12 +304,12 @@ pub fn create_rcman_container(
         .map_err(|e| Error::Archive(e.to_string()))?;
 
     let mut inner_file = File::open(inner_archive_path).map_err(|e| Error::FileRead {
-        path: inner_archive_path.display().to_string(),
+        path: inner_archive_path.to_path_buf(),
         source: e,
     })?;
 
     std::io::copy(&mut inner_file, &mut zip).map_err(|e| Error::FileRead {
-        path: inner_archive_path.display().to_string(),
+        path: inner_archive_path.to_path_buf(),
         source: e,
     })?;
 

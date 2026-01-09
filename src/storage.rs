@@ -61,7 +61,7 @@ pub trait StorageBackend: Clone + Send + Sync {
     /// * `Error::FileRead` - If the file cannot be read
     fn read<T: DeserializeOwned>(&self, path: &Path) -> Result<T> {
         let content = std::fs::read_to_string(path).map_err(|e| Error::FileRead {
-            path: path.display().to_string(),
+            path: path.to_path_buf(),
             source: e,
         })?;
         self.deserialize(&content)
@@ -90,7 +90,7 @@ pub trait StorageBackend: Clone + Send + Sync {
         if let Some(parent) = path.parent() {
             let dir_existed = parent.exists();
             std::fs::create_dir_all(parent).map_err(|e| Error::DirectoryCreate {
-                path: parent.display().to_string(),
+                path: parent.to_path_buf(),
                 source: e,
             })?;
             // Only secure the directory if we just created it
@@ -112,7 +112,7 @@ pub trait StorageBackend: Clone + Send + Sync {
         let temp_path = path.with_file_name(temp_filename);
 
         std::fs::write(&temp_path, &content).map_err(|e| Error::FileWrite {
-            path: temp_path.display().to_string(),
+            path: temp_path.to_path_buf(),
             source: e,
         })?;
 
@@ -120,7 +120,7 @@ pub trait StorageBackend: Clone + Send + Sync {
         set_secure_file_permissions(&temp_path)?;
 
         std::fs::rename(&temp_path, path).map_err(|e| Error::FileWrite {
-            path: path.display().to_string(),
+            path: path.to_path_buf(),
             source: e,
         })?;
 
@@ -186,6 +186,41 @@ impl StorageBackend for JsonStorage {
 
     fn deserialize<T: DeserializeOwned>(&self, content: &str) -> Result<T> {
         serde_json::from_str(content).map_err(Error::from)
+    }
+}
+
+// =============================================================================
+// TOML Storage Implementation
+// =============================================================================
+
+/// TOML storage backend
+///
+/// Requires the `toml` feature.
+#[cfg(feature = "toml")]
+#[derive(Clone, Default)]
+pub struct TomlStorage;
+
+#[cfg(feature = "toml")]
+impl TomlStorage {
+    /// Create a new TOML storage backend
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(feature = "toml")]
+impl StorageBackend for TomlStorage {
+    fn extension(&self) -> &'static str {
+        "toml"
+    }
+
+    fn serialize<T: Serialize>(&self, data: &T) -> Result<String> {
+        toml::to_string(data).map_err(|e| Error::Parse(e.to_string()))
+    }
+
+    fn deserialize<T: DeserializeOwned>(&self, content: &str) -> Result<T> {
+        toml::from_str(content).map_err(|e| Error::Parse(e.to_string()))
     }
 }
 
@@ -271,5 +306,28 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::FileRead { .. }));
+    }
+
+    #[test]
+    #[cfg(feature = "toml")]
+    fn test_toml_roundtrip() {
+        let storage = TomlStorage::new();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.toml");
+
+        let data = TestData {
+            name: "toml_test".into(),
+            value: 99,
+        };
+
+        storage.write(&path, &data).unwrap();
+        let loaded: TestData = storage.read(&path).unwrap();
+
+        assert_eq!(data, loaded);
+
+        // Verify content is actually TOML
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("name = \"toml_test\""));
+        assert!(content.contains("value = 99"));
     }
 }

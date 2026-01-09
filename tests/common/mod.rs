@@ -5,8 +5,7 @@
 #![allow(dead_code)]
 
 use rcman::{
-    opt, settings, SettingMetadata, SettingsConfig, SettingsManager, SettingsSchema,
-    SubSettingsConfig,
+    SettingMetadata, SettingsConfig, SettingsManager, SettingsSchema, SubSettingsConfig, opt, settings
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -151,7 +150,7 @@ impl TestFixture {
     pub fn new() -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let config = SettingsConfig::builder("test-app", "1.0.0")
-            .config_dir(temp_dir.path())
+            .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");
@@ -163,7 +162,7 @@ impl TestFixture {
     pub fn with_sub_settings() -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let config = SettingsConfig::builder("test-app", "1.0.0")
-            .config_dir(temp_dir.path())
+            .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");
@@ -179,7 +178,7 @@ impl TestFixture {
     pub fn with_env_prefix(prefix: &str) -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let config = SettingsConfig::builder("test-app", "1.0.0")
-            .config_dir(temp_dir.path())
+            .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
             .with_env_prefix(prefix)
             .build();

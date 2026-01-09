@@ -23,8 +23,8 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchem
     /// Application version (used for backup compatibility checks)
     pub app_version: String,
 
-    /// Storage backend implementation
-    pub storage: S,
+    /// Storage backend (defaults to JsonStorage)
+    pub(crate) storage: S,
 
     /// Enable credential management for secret settings
     pub enable_credentials: bool,
@@ -60,7 +60,7 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchem
     pub _schema: PhantomData<Schema>,
 }
 
-impl Default for SettingsConfig<JsonStorage, ()> {
+impl Default for SettingsConfig {
     fn default() -> Self {
         Self {
             config_dir: PathBuf::from("."),
@@ -90,7 +90,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfig<S, Schema> {
     }
 }
 
-impl SettingsConfig<JsonStorage, ()> {
+impl SettingsConfig {
     /// Create a new builder for `SettingsConfig`
     ///
     /// # Example
@@ -98,30 +98,28 @@ impl SettingsConfig<JsonStorage, ()> {
     /// use rcman::SettingsConfig;
     ///
     /// let config = SettingsConfig::builder("my-app", "1.0.0")
-    ///     .config_dir("~/.config/my-app")
+    ///     .with_config_dir("~/.config/my-app")
     ///     .build();
     /// ```
     pub fn builder(
         app_name: impl Into<String>,
         app_version: impl Into<String>,
-    ) -> SettingsConfigBuilder<JsonStorage, ()> {
+    ) -> SettingsConfigBuilder {
         SettingsConfigBuilder::new(app_name, app_version)
     }
 }
 
 /// Builder for creating `SettingsConfig` with a fluent API.
 ///
-/// This is the recommended way to create a settings manager. It provides a clean,
-/// chainable interface for configuring all aspects of your settings.
+/// This is the recommended way to create a settings manager.
 ///
 /// # Type Parameters
 ///
-/// - `S`: Storage backend (defaults to `JsonStorage`)
-/// - `Schema`: Settings schema type (defaults to `()` for dynamic/runtime validation)
+/// - `Schema`: Settings schema type (defaults to `()` for dynamic usage)
 ///
-/// # Two Usage Patterns
+/// # Examples
 ///
-/// ## Pattern 1: Type-Safe (With Schema)
+/// **Type-Safe (With Schema):**
 /// ```no_run
 /// use rcman::{SettingsConfig, SettingsSchema, SettingMetadata, settings};
 /// use serde::{Serialize, Deserialize};
@@ -137,18 +135,18 @@ impl SettingsConfig<JsonStorage, ()> {
 /// }
 ///
 /// let config = SettingsConfig::builder("my-app", "1.0.0")
-///     .with_schema::<MySettings>()  // Type-safe!
-///     .config_dir("~/.config/my-app")
+///     .with_schema::<MySettings>()
+///     .with_config_dir("~/.config/my-app")
 ///     .build();
 /// ```
 ///
-/// ## Pattern 2: Dynamic (Without Schema)
+/// **Dynamic (Without Schema):**
 /// ```no_run
 /// use rcman::SettingsConfig;
 ///
 /// let config = SettingsConfig::builder("my-app", "1.0.0")
-///     .config_dir("~/.config/my-app")
-///     .build();  // No schema - work with HashMap at runtime
+///     .with_config_dir("~/.config/my-app")
+///     .build();
 /// ```
 #[derive(Clone)]
 pub struct SettingsConfigBuilder<S: StorageBackend = JsonStorage, Schema: SettingsSchema = ()> {
@@ -168,8 +166,8 @@ pub struct SettingsConfigBuilder<S: StorageBackend = JsonStorage, Schema: Settin
     #[cfg(feature = "profiles")]
     profile_migrator: Option<crate::profiles::ProfileMigrator>,
 
-    storage: S,
     _schema: PhantomData<Schema>,
+    _storage: PhantomData<S>,
 }
 
 impl<S: StorageBackend, Schema: SettingsSchema> std::fmt::Debug
@@ -196,12 +194,11 @@ impl<S: StorageBackend, Schema: SettingsSchema> std::fmt::Debug
         debug.field("profile_migrator", &self.profile_migrator);
 
         debug.field("migrator", &self.migrator.as_ref().map(|_| "Some(Fn)"));
-        // storage field excluded as S may not implement Debug
         debug.finish_non_exhaustive()
     }
 }
 
-impl SettingsConfigBuilder<JsonStorage, ()> {
+impl SettingsConfigBuilder {
     /// Create a new builder with required app name and version
     pub fn new(app_name: impl Into<String>, app_version: impl Into<String>) -> Self {
         Self {
@@ -220,13 +217,13 @@ impl SettingsConfigBuilder<JsonStorage, ()> {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: None,
-            storage: JsonStorage::new(), // Start with pretty printing
             _schema: PhantomData,
+            _storage: PhantomData,
         }
     }
 }
 
-impl<Schema: SettingsSchema> SettingsConfigBuilder<JsonStorage, Schema> {
+impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema> {
     /// Use compact JSON (no pretty printing)
     ///
     /// Note: This method is only available when using `JsonStorage`.
@@ -236,23 +233,18 @@ impl<Schema: SettingsSchema> SettingsConfigBuilder<JsonStorage, Schema> {
     /// use rcman::SettingsConfig;
     ///
     /// let config = SettingsConfig::builder("my-app", "1.0.0")
-    ///     .compact_json()  // Use compact JSON format
     ///     .build();
     /// ```
     #[must_use]
     pub fn compact_json(mut self) -> Self {
         self.pretty_json = false;
-        self.storage = JsonStorage::compact();
         self
     }
-}
-
-impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema> {
     /// Set the configuration directory
     ///
     /// Supports `~` expansion for home directory.
     #[must_use]
-    pub fn config_dir(mut self, path: impl Into<PathBuf>) -> Self {
+    pub fn with_config_dir(mut self, path: impl Into<PathBuf>) -> Self {
         let path: PathBuf = path.into();
         // Expand ~ to home directory
         let expanded = if path.starts_with("~") {
@@ -456,21 +448,24 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsConfigBuilder<
             profiles_enabled: self.profiles_enabled,
             #[cfg(feature = "profiles")]
             profile_migrator: self.profile_migrator,
-            storage: self.storage,
             _schema: PhantomData,
+            _storage: PhantomData,
         }
     }
 
     /// Build the `SettingsConfig`
     ///
     /// If `config_dir` is not set, uses the system config directory for the app.
-    pub fn build(self) -> SettingsConfig<S, Schema> {
+    pub fn build(self) -> SettingsConfig<S, Schema>
+    where
+        S: Default,
+    {
         let config_dir = self.config_dir.unwrap_or_else(|| {
             // Use system config dir if available, otherwise current dir
             dirs::config_dir().map_or_else(|| PathBuf::from("."), |d| d.join(&self.app_name))
         });
 
-        let storage = self.storage;
+        let storage = S::default();
 
         SettingsConfig {
             config_dir,
@@ -511,9 +506,8 @@ mod tests {
     #[test]
     fn test_builder_with_options() {
         let config = SettingsConfig::builder("my-app", "2.0.0")
-            .config_dir("/tmp/my-app")
+            .with_config_dir("/tmp/my-app")
             .settings_file("config.json")
-            .compact_json()
             .build();
 
         assert_eq!(config.config_dir, PathBuf::from("/tmp/my-app"));
