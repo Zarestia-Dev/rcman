@@ -39,7 +39,8 @@ impl SettingsSchema for AppSettings {
 #[cfg(feature = "keychain")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manager = SettingsManager::builder("secret-example", "1.0.0")
-        .config_dir("./example_config")
+        .with_config_dir("./example_config")
+        .with_schema::<AppSettings>()
         .with_credentials() // Enable credential management
         .build()?;
 
@@ -57,11 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Save another secret
     println!("💾 Saving database password to keychain...");
-    manager.save_setting(
-        "secrets",
-        "db_password",
-        json!("super_secret_password"),
-    )?;
+    manager.save_setting("secrets", "db_password", json!("super_secret_password"))?;
     println!("✅ Database password saved securely\n");
 
     // Load settings again - secrets will be retrieved from keychain

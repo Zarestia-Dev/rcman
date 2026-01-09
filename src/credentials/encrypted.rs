@@ -5,17 +5,18 @@
 
 use super::CredentialBackend;
 use crate::error::{Error, Result};
+use crate::sync::RwLockExt;
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
 use log::debug;
-use parking_lot::RwLock;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::RwLock;
 
 /// Encrypted credential entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,12 +109,14 @@ impl EncryptedFileBackend {
         }
 
         let content = fs::read_to_string(path).map_err(|e| Error::FileRead {
-            path: path.display().to_string(),
+            path: path.to_path_buf(),
             source: e,
         })?;
 
         let store: EncryptedStore = serde_json::from_str(&content).map_err(|e| {
-            Error::Credential(format!("encrypted_store: Failed to parse encrypted store: {e}"))
+            Error::Credential(format!(
+                "encrypted_store: Failed to parse encrypted store: {e}"
+            ))
         })?;
 
         if let Some(salt_b64) = store.salt {
@@ -197,7 +200,7 @@ impl EncryptedFileBackend {
         }
 
         let content = fs::read_to_string(&self.path).map_err(|e| Error::FileRead {
-            path: self.path.display().to_string(),
+            path: self.path.clone(),
             source: e,
         })?;
 
@@ -224,13 +227,13 @@ impl EncryptedFileBackend {
         // Ensure parent directory exists
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::DirectoryCreate {
-                path: parent.display().to_string(),
+                path: parent.to_path_buf(),
                 source: e,
             })?;
         }
 
         fs::write(&self.path, content).map_err(|e| Error::FileWrite {
-            path: self.path.display().to_string(),
+            path: self.path.clone(),
             source: e,
         })?;
 
@@ -289,7 +292,7 @@ impl CredentialBackend for EncryptedFileBackend {
 
         // Update cache
         {
-            let mut cache = self.cache.write();
+            let mut cache = self.cache.write_recovered()?;
             cache.insert(key.to_string(), value.to_string());
         }
 
@@ -300,7 +303,7 @@ impl CredentialBackend for EncryptedFileBackend {
     fn get(&self, key: &str) -> Result<Option<String>> {
         // Check cache first
         {
-            let cache = self.cache.read();
+            let cache = self.cache.read_recovered()?;
             if let Some(value) = cache.get(key) {
                 return Ok(Some(value.clone()));
             }
@@ -313,7 +316,7 @@ impl CredentialBackend for EncryptedFileBackend {
 
             // Update cache
             {
-                let mut cache = self.cache.write();
+                let mut cache = self.cache.write_recovered()?;
                 cache.insert(key.to_string(), value.clone());
             }
 
@@ -331,7 +334,7 @@ impl CredentialBackend for EncryptedFileBackend {
 
         // Update cache
         {
-            let mut cache = self.cache.write();
+            let mut cache = self.cache.write_recovered()?;
             cache.remove(key);
         }
 

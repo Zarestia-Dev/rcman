@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
-
 /// Result type alias for rcman operations
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -20,14 +19,12 @@ pub enum Error {
         source: std::io::Error,
     },
 
-
     #[error("Failed to write file '{path}': {source}")]
     FileWrite {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
-
 
     #[error("Failed to create directory '{path}': {source}")]
     DirectoryCreate {
@@ -36,7 +33,6 @@ pub enum Error {
         source: std::io::Error,
     },
 
-
     #[error("Failed to read directory '{path}': {source}")]
     DirectoryRead {
         path: PathBuf,
@@ -44,14 +40,12 @@ pub enum Error {
         source: std::io::Error,
     },
 
-
     #[error("Failed to delete file '{path}': {source}")]
     FileDelete {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
-
 
     #[error("Path not found: {0}")]
     PathNotFound(String),
@@ -170,16 +164,29 @@ pub enum Error {
     #[error("Profiles not enabled")]
     ProfilesNotEnabled,
 
+    #[cfg(feature = "profiles")]
+    #[error("Profile migration failed: {0}")]
+    ProfileMigrationFailed(String),
+
+    // -------------------------------------------------------------------------
+    // Cache Errors
+    // -------------------------------------------------------------------------
+    #[error("Invalid cache strategy: {0}")]
+    InvalidCacheStrategy(String),
+
     // -------------------------------------------------------------------------
     // Concurrency Errors
     // -------------------------------------------------------------------------
     #[error("Internal lock was poisoned - possible thread panic. The operation may have left data in an inconsistent state.")]
     LockPoisoned,
+
+    #[error("Lock error: {0}")]
+    LockError(String),
 }
 
 impl Error {
     /// Check if this is a "not found" type error
-    #[must_use] 
+    #[must_use]
     pub fn is_not_found(&self) -> bool {
         matches!(
             self,
@@ -188,7 +195,7 @@ impl Error {
     }
 
     /// Check if this is a backup-related error
-    #[must_use] 
+    #[must_use]
     pub fn is_backup_error(&self) -> bool {
         matches!(
             self,

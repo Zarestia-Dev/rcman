@@ -2,11 +2,15 @@
 
 use super::archive::{calculate_file_hash, create_rcman_container, create_zip_archive};
 use crate::backup::{BackupInfo, BackupIntegrity};
-use crate::{BackupAnalysis, BackupContents, BackupManifest, BackupOptions, ExportType, ExternalConfigProvider, SubSettingsManifestEntry};
 use crate::config::SettingsSchema;
 use crate::error::{Error, Result};
 use crate::manager::SettingsManager;
 use crate::storage::StorageBackend;
+use crate::sync::RwLockExt;
+use crate::{
+    BackupAnalysis, BackupContents, BackupManifest, BackupOptions, ExportType,
+    ExternalConfigProvider, SubSettingsManifestEntry,
+};
 use chrono::Utc;
 use log::{debug, info};
 use std::fs;
@@ -87,17 +91,17 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
     }
 
     /// Create a backup
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `options` - Backup options
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// * `Result<PathBuf>` - Path to the created backup file
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// * `Error::BackupFailed` - Backup failed
     /// * `Error::DirectoryCreate` - Failed to create directory
     /// * `Error::FileCreate` - Failed to create file
@@ -249,7 +253,10 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         // 2. Sub-settings
         let sub_settings_to_backup = match &options.export_type {
             ExportType::Full | ExportType::SettingsOnly => options.include_sub_settings.clone(),
-            ExportType::Single { settings_type, name } => {
+            ExportType::Single {
+                settings_type,
+                name,
+            } => {
                 // Handle single entry export inline (simple case)
                 if let Ok(sub) = self.manager.sub_settings(settings_type) {
                     let sub_export_dir = export_dir.join(settings_type);
@@ -323,8 +330,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         export_dir: &Path,
         sub_type: &str,
         sub: &crate::sub_settings::SubSettings<S>,
-        #[cfg_attr(not(feature = "profiles"), allow(unused_variables))]
-        options: &BackupOptions,
+        #[cfg_attr(not(feature = "profiles"), allow(unused_variables))] options: &BackupOptions,
     ) -> Result<(u64, u32, Option<SubSettingsManifestEntry>)> {
         // Check if profiles are enabled
         #[cfg(feature = "profiles")]
@@ -379,7 +385,11 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
             let count = u32::try_from(items.len()).unwrap_or(u32::MAX);
             debug!("Added sub-settings directory: {sub_type}");
-            Ok((total_size, count, Some(SubSettingsManifestEntry::MultiFile(items))))
+            Ok((
+                total_size,
+                count,
+                Some(SubSettingsManifestEntry::MultiFile(items)),
+            ))
         }
     }
 
@@ -469,7 +479,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         export_dir: &Path,
         options: &BackupOptions,
     ) -> Result<(u64, u32, Vec<String>)> {
-        let providers = self.manager.external_providers.read();
+        let providers = self.manager.external_providers.read_recovered()?;
         let mut all_configs = Vec::new();
         all_configs.extend(self.manager.config().external_configs.clone());
         for provider in providers.iter() {
@@ -527,19 +537,19 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
     }
 
     /// Analyze a backup file
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `path` - The path to the backup file
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns a `BackupAnalysis` containing the result of the analysis operation.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the backup cannot be read or the analysis operation fails.
-pub fn analyze(&self, path: &Path) -> Result<BackupAnalysis> {
+    pub fn analyze(&self, path: &Path) -> Result<BackupAnalysis> {
         if !path.exists() {
             return Err(Error::PathNotFound(path.display().to_string()));
         }
@@ -683,7 +693,7 @@ mod tests {
         .unwrap();
 
         // Register and populate sub-settings
-        manager.register_sub_settings(SubSettingsConfig::new("profiles"));
+        manager.register_sub_settings(SubSettingsConfig::new("profiles")).unwrap();
         let profiles = manager.sub_settings("profiles").unwrap();
         profiles
             .set("default", &json!({"name": "Default"}))
@@ -785,7 +795,7 @@ mod tests {
         .unwrap();
 
         // Register and populate sub-settings
-        manager.register_sub_settings(SubSettingsConfig::new("profiles"));
+        manager.register_sub_settings(SubSettingsConfig::new("profiles")).unwrap();
         let profiles = manager.sub_settings("profiles").unwrap();
         profiles
             .set("default", &json!({"name": "Default"}))

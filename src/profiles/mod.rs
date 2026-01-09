@@ -8,10 +8,36 @@
 //! Profiles allow users to maintain multiple configurations (e.g., "work", "personal", "testing")
 //! and switch between them dynamically. Profiles can be scoped to:
 //!
-//! - **Main settings** - Different `settings.json` per profile
-//! - **Sub-settings** - Different entity sets per profile (e.g., different remotes)
-//! - **Full app** - Everything profiled together
 //!
+//! # When to Use Profiles
+//!
+//! Profiles add complexity to the storage structure and API interaction. They should be chosen deliberately.
+//!
+//! ## ✅ Good Use Cases
+//!
+//! - **Multi-tenant Applications**: Where different users/tenants need completely isolated configurations.
+//! - **Environment Switching**: Dev/Staging/Prod environments that need to swap entirely different sets of remotes or settings.
+//! - **Workspace Management**: Applications that support distinct workspaces (like VS Code profiles).
+//!
+//! ## ❌ Avoid If
+//!
+//! - **Simple Presets**: If you just want to save a few combinations of settings, use a "presets" list in your main settings instead.
+//! - **Single User Apps**: If the app is for a single user, profiles often add confusion.
+//! - **Small Configs**: If your total config is < 10 items, profiling is likely over-engineering.
+//!
+//! # Performance & Complexity Impact
+//!
+//! Enabling profiles changes the on-disk structure:
+//!
+//! - **Standard:** `config_dir/remotes.json` (simple, fast)
+//! - **Profiled:** `config_dir/remotes/profiles/{profile_name}/...` + `.profiles.json` manifest
+//!
+//! This introduces:
+//! - **Initialization Cost:** Migration logic must run on startup to move flat files into the default profile.
+//! - **I/O Overhead:** Switching profiles invalidates in-memory caches and requires re-reading from disk.
+//! - **API Complexity:** You must manage profile lifecycle (create/switch/delete).
+//!
+//! # Implementation Details
 //! # Example
 //!
 //! ```rust,ignore
@@ -50,9 +76,9 @@ pub const PROFILES_DIR: &str = "profiles";
 ///
 /// Valid names contain only alphanumeric characters, underscores, and hyphens.
 /// Names cannot be empty, start with a dot, or contain path separators.
-/// 
+///
 /// # Errors
-/// 
+///
 /// Returns an error if the name is invalid.
 pub fn validate_profile_name(name: &str) -> crate::Result<()> {
     use crate::Error;

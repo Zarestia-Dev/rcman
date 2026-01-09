@@ -4,8 +4,7 @@
 
 #[cfg(feature = "backup")]
 use rcman::{
-    settings, BackupOptions, RestoreOptions, SettingMetadata, SettingsManager,
-    SettingsSchema,
+    settings, BackupOptions, RestoreOptions, SettingMetadata, SettingsManager, SettingsSchema,
 };
 #[cfg(feature = "backup")]
 use serde::{Deserialize, Serialize};

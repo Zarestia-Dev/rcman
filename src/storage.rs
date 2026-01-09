@@ -10,54 +10,54 @@ use std::path::Path;
 /// This allows swapping JSON for TOML, YAML, or other formats in the future.
 pub trait StorageBackend: Clone + Send + Sync {
     /// File extension for this storage format (e.g., "json", "toml")
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// * `&str` - File extension for this storage format
     fn extension(&self) -> &str;
 
     /// Serialize data to string
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `data` - Data to serialize
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// * `Result<String>` - Serialized data
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// * `Error::Io` - If the data cannot be serialized
     fn serialize<T: Serialize>(&self, data: &T) -> Result<String>;
 
     /// Deserialize data from string
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `content` - Data to deserialize
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// * `Result<T>` - Deserialized data
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// * `Error::Io` - If the data cannot be deserialized
     fn deserialize<T: DeserializeOwned>(&self, content: &str) -> Result<T>;
 
     /// Read and deserialize from file
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `path` - Path to file to read
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// * `Result<T>` - Deserialized data
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// * `Error::FileRead` - If the file cannot be read
     fn read<T: DeserializeOwned>(&self, path: &Path) -> Result<T> {
         let content = std::fs::read_to_string(path).map_err(|e| Error::FileRead {

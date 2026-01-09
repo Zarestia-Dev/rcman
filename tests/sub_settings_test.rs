@@ -352,7 +352,7 @@ fn test_on_change_callback() {
     let changes = Arc::new(Mutex::new(Vec::new()));
     let changes_clone = changes.clone();
 
-    remotes.set_on_change(move |name, action| {
+    let _ = remotes.set_on_change(move |name, action| {
         changes_clone
             .lock()
             .unwrap()

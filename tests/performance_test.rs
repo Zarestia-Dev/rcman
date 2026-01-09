@@ -203,10 +203,7 @@ fn test_high_concurrency_reads() {
         let fixture_clone = Arc::clone(&fixture);
         let handle = thread::spawn(move || {
             for _ in 0..100 {
-                let _ = fixture_clone
-                    .manager
-                    .metadata()
-                    .unwrap();
+                let _ = fixture_clone.manager.metadata().unwrap();
             }
         });
         handles.push(handle);
@@ -257,7 +254,7 @@ fn test_high_concurrency_writes() {
     }
 
     let duration = start.elapsed();
-    println!("1000 concurrent writes (20 threads) took: {:?}", duration);
+    println!("1000 concurrent writes (20 threads) took: {duration:?}");
 
     // Verify data integrity
     let metadata = fixture.manager.metadata().unwrap();
@@ -283,10 +280,7 @@ fn test_mixed_concurrent_operations() {
         let fixture_clone = Arc::clone(&fixture);
         let handle = thread::spawn(move || {
             for _ in 0..100 {
-                let _ = fixture_clone
-                    .manager
-                    .metadata()
-                    .unwrap();
+                let _ = fixture_clone.manager.metadata().unwrap();
             }
         });
         handles.push(handle);
@@ -316,10 +310,7 @@ fn test_mixed_concurrent_operations() {
     }
 
     let duration = start.elapsed();
-    println!(
-        "Mixed workload (1000 reads + 250 writes) took: {:?}",
-        duration
-    );
+    println!("Mixed workload (1000 reads + 250 writes) took: {duration:?}",);
 
     assert!(duration.as_secs() < 15);
 }
@@ -341,11 +332,11 @@ fn test_memory_efficient_large_settings() {
             "id": i,
             "metadata": {
                 "description": "x".repeat(1000), // 1KB of text
-                "tags": (0..100).map(|j| format!("tag-{}", j)).collect::<Vec<_>>(),
+                "tags": (0..100).map(|j| format!("tag-{j}")).collect::<Vec<_>>(),
                 "data": (0..50).map(|_| json!({"nested": "value"})).collect::<Vec<_>>(),
             }
         });
-        remotes.set(&format!("remote{}", i), &large_config).unwrap();
+        remotes.set(&format!("remote{i}"), &large_config).unwrap();
     }
 
     // Operations should complete without excessive memory usage
@@ -356,7 +347,7 @@ fn test_memory_efficient_large_settings() {
 
     // Cleanup should work
     for i in 0..100 {
-        remotes.delete(&format!("remote{}", i)).unwrap();
+        remotes.delete(&format!("remote{i}")).unwrap();
     }
 
     println!("Successfully cleaned up all entities");
@@ -381,7 +372,7 @@ fn test_backup_large_settings() {
     for i in 0..500 {
         remotes
             .set(
-                &format!("remote{}", i),
+                &format!("remote{i}"),
                 &json!({"id": i, "data": "x".repeat(100)}),
             )
             .unwrap();
@@ -398,10 +389,10 @@ fn test_backup_large_settings() {
         .unwrap();
 
     let duration = start.elapsed();
-    println!("Backing up 500 entities took: {:?}", duration);
+    println!("Backing up 500 entities took: {duration:?}");
 
     let file_size = std::fs::metadata(&backup_path).unwrap().len();
-    println!("Backup file size: {} bytes", file_size);
+    println!("Backup file size: {file_size} bytes");
 
     assert!(duration.as_secs() < 10);
 }
@@ -420,7 +411,7 @@ fn test_restore_large_backup() {
     let remotes = fixture.manager.sub_settings("remotes").unwrap();
     for i in 0..500 {
         remotes
-            .set(&format!("remote{}", i), &json!({"id": i}))
+            .set(&format!("remote{i}"), &json!({"id": i}))
             .unwrap();
     }
 
@@ -437,7 +428,7 @@ fn test_restore_large_backup() {
 
     // Clear data
     for i in 0..500 {
-        remotes.delete(&format!("remote{}", i)).unwrap();
+        remotes.delete(&format!("remote{i}")).unwrap();
     }
 
     let start = Instant::now();
@@ -450,7 +441,7 @@ fn test_restore_large_backup() {
         .unwrap();
 
     let duration = start.elapsed();
-    println!("Restoring 500 entities took: {:?}", duration);
+    println!("Restoring 500 entities took: {duration:?}");
 
     // Verify data restored
     let keys = remotes.list().unwrap();

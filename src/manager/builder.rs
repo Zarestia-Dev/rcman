@@ -26,18 +26,24 @@ use super::SettingsManager;
 ///     .with_config_dir("~/.config/my-app")
 ///     .with_credentials()
 ///     .with_sub_settings(SubSettingsConfig::new("remotes"))
-///     .with_sub_settings(SubSettingsConfig::new("backends").single_file())
+///     .with_sub_settings(SubSettingsConfig::singlefile("backends"))
 ///     .build()
 ///     .unwrap();
 /// ```
-pub struct SettingsManagerBuilder<S: StorageBackend = crate::storage::JsonStorage, Schema: SettingsSchema = ()> {
+pub struct SettingsManagerBuilder<
+    S: StorageBackend = crate::storage::JsonStorage,
+    Schema: SettingsSchema = (),
+> {
     config_builder: SettingsConfigBuilder<S, Schema>,
     sub_settings: Vec<SubSettingsConfig>,
 }
 
 impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema> {
     /// Create a new builder with required app name and version.
-    pub fn new(app_name: impl Into<String>, app_version: impl Into<String>) -> SettingsManagerBuilder {
+    pub fn new(
+        app_name: impl Into<String>,
+        app_version: impl Into<String>,
+    ) -> SettingsManagerBuilder {
         SettingsManagerBuilder {
             config_builder: SettingsConfigBuilder::new(app_name, app_version),
             sub_settings: Vec::new(),
@@ -50,13 +56,13 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     ///
     /// If not set, uses the system config directory.
     pub fn with_config_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.config_builder = self.config_builder.with_config_dir(path);  // Still delegates to old name
+        self.config_builder = self.config_builder.with_config_dir(path); // Still delegates to old name
         self
     }
 
     /// Set the settings filename (default: "settings.json").
     pub fn with_settings_file(mut self, filename: impl Into<String>) -> Self {
-        self.config_builder = self.config_builder.settings_file(filename);  // Still delegates to old name
+        self.config_builder = self.config_builder.settings_file(filename); // Still delegates to old name
         self
     }
 
@@ -64,7 +70,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     ///
     /// When enabled, settings marked as `secret: true` in metadata
     /// will be stored in the OS keychain instead of the settings file.
-    #[must_use] 
+    #[must_use]
     pub fn with_credentials(mut self) -> Self {
         self.config_builder = self.config_builder.with_credentials();
         self
@@ -97,7 +103,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     ///
     /// By default, secrets stored in the OS keychain are NOT affected by env vars.
     /// Enable this for Docker/CI environments where secrets are passed via env.
-    #[must_use] 
+    #[must_use]
     pub fn env_overrides_secrets(mut self, allow: bool) -> Self {
         self.config_builder = self.config_builder.env_overrides_secrets(allow);
         self
@@ -123,7 +129,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     /// External configs are files managed outside of rcman (like rclone.conf)
     /// that can be included in backups.
     #[cfg(feature = "backup")]
-    #[must_use] 
+    #[must_use]
     pub fn with_external_config(mut self, config: crate::backup::ExternalConfig) -> Self {
         self.config_builder = self.config_builder.with_external_config(config);
         self
@@ -158,7 +164,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     ///     .build()
     ///     .unwrap();
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn with_schema<NewSchema: SettingsSchema>(self) -> SettingsManagerBuilder<S, NewSchema> {
         SettingsManagerBuilder {
             config_builder: self.config_builder.with_schema::<NewSchema>(),
@@ -185,7 +191,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     /// # Ok::<(), rcman::Error>(())
     /// ```
     #[cfg(feature = "profiles")]
-    #[must_use] 
+    #[must_use]
     pub fn with_profiles(mut self) -> Self {
         self.config_builder = self.config_builder.with_profiles();
         self
@@ -203,11 +209,11 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     ///
     /// let manager = SettingsManager::builder("my-app", "1.0.0")
     ///     .with_sub_settings(SubSettingsConfig::new("remotes"))
-    ///     .with_sub_settings(SubSettingsConfig::new("backends").single_file())
+    ///     .with_sub_settings(SubSettingsConfig::singlefile("backends"))
     ///     .build()
     ///     .unwrap();
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn with_sub_settings(mut self, config: SubSettingsConfig) -> Self {
         self.sub_settings.push(config);
         self
@@ -230,7 +236,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
 
         // Register all sub-settings
         for sub_config in self.sub_settings {
-            manager.register_sub_settings(sub_config);
+            manager.register_sub_settings(sub_config)?;
         }
 
         Ok(manager)

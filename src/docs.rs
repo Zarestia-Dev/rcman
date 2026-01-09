@@ -19,7 +19,7 @@ pub struct DocsConfig {
 }
 
 impl DocsConfig {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             show_advanced: true,
@@ -40,7 +40,7 @@ impl DocsConfig {
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn hide_advanced(mut self) -> Self {
         self.show_advanced = false;
         self
@@ -48,20 +48,20 @@ impl DocsConfig {
 }
 
 /// Generate markdown documentation from a settings schema
-#[must_use] 
+#[must_use]
 pub fn generate_docs<T: SettingsSchema>(config: DocsConfig) -> String {
     let metadata = T::get_metadata();
     generate_docs_from_metadata(&metadata, config)
 }
 
 /// Generate docs from raw metadata (useful when schema isn't available)
-#[must_use] 
+#[must_use]
 pub fn generate_docs_from_metadata<S: std::hash::BuildHasher>(
     metadata: &HashMap<String, SettingMetadata, S>,
     config: DocsConfig,
 ) -> String {
     use std::fmt::Write;
-    
+
     let mut output = String::new();
 
     // Title
@@ -179,14 +179,10 @@ fn format_setting(out: &mut String, key: &str, meta: &SettingMetadata) {
                     format_value(&opt.value),
                     opt.label,
                     desc
-                ).unwrap();
+                )
+                .unwrap();
             } else {
-                writeln!(
-                    out,
-                    "- `{}` - {}",
-                    format_value(&opt.value),
-                    opt.label
-                ).unwrap();
+                writeln!(out, "- `{}` - {}", format_value(&opt.value), opt.label).unwrap();
             }
         }
         out.push('\n');

@@ -14,12 +14,12 @@ fn test_profile_backup_restore_full() {
 
     // 1. Setup Manager with Profiles Enabled
     let config = SettingsConfigBuilder::new("test-app", "1.0.0")
-        .config_dir(&config_dir)
+        .with_config_dir(&config_dir)
         .with_profiles()
         .build();
 
     let manager = SettingsManager::new(config).unwrap();
-    manager.register_sub_settings(SubSettingsConfig::new("items").with_profiles());
+    manager.register_sub_settings(SubSettingsConfig::new("items").with_profiles()).unwrap();
 
     // 2. Create profiles
     if !manager.profiles().unwrap().exists("default").unwrap() {
@@ -60,12 +60,12 @@ fn test_profile_backup_restore_full() {
     fs::create_dir_all(&config2_dir).unwrap();
 
     let config2 = SettingsConfigBuilder::new("test-app", "1.0.0")
-        .config_dir(&config2_dir)
+        .with_config_dir(&config2_dir)
         .with_profiles()
         .build();
 
     let manager2 = SettingsManager::new(config2).unwrap();
-    manager2.register_sub_settings(SubSettingsConfig::new("items").with_profiles());
+    manager2.register_sub_settings(SubSettingsConfig::new("items").with_profiles()).unwrap();
 
     // Restore ALL
     let result = manager2

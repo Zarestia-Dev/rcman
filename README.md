@@ -576,7 +576,7 @@ let config = SettingsConfig::builder("my-app", "2.0.0")
                     ui.insert("theme".to_string(), old_field);
                 }
             }
-            
+
             // Example: Add new field with default
             if !obj.contains_key("features") {
                 obj.insert("features".to_string(), serde_json::json!({
@@ -654,7 +654,7 @@ let config = SettingsConfig::builder("my-app", "2.0.0")
     let version = value.get("_schema_version")
         .and_then(|v| v.as_u64())
         .unwrap_or(1);
-    
+
     if version < 2 {
         // Migrate v1 → v2
         if let Some(obj) = value.as_object_mut() {
@@ -662,7 +662,7 @@ let config = SettingsConfig::builder("my-app", "2.0.0")
             obj.insert("_schema_version".to_string(), serde_json::json!(2));
         }
     }
-    
+
     if version < 3 {
         // Migrate v2 → v3
         if let Some(obj) = value.as_object_mut() {
@@ -670,7 +670,7 @@ let config = SettingsConfig::builder("my-app", "2.0.0")
             obj.insert("_schema_version".to_string(), serde_json::json!(3));
         }
     }
-    
+
     value
 })
 ```
@@ -701,12 +701,12 @@ Always test your migrations with real user data:
 #[test]
 fn test_migration_v1_to_v2() {
     use serde_json::json;
-    
+
     // Old format
     let old_config = json!({
         "ui": { "color": "dark" }
     });
-    
+
     // Apply migration
     let migrator = |mut value: Value| {
         if let Some(obj) = value.as_object_mut() {
@@ -718,9 +718,9 @@ fn test_migration_v1_to_v2() {
         }
         value
     };
-    
+
     let new_config = migrator(old_config);
-    
+
     // Verify
     assert_eq!(new_config["ui"]["theme"], "dark");
     assert!(new_config["ui"].get("color").is_none());
@@ -742,9 +742,9 @@ fn test_migration_v1_to_v2() {
 ```rust
 .with_migrator(|mut value| {
     log::info!("Running schema migration to v2.0.0");
-    
+
     // ... migration logic ...
-    
+
     log::info!("Migration completed successfully");
     value
 })
@@ -754,19 +754,10 @@ fn test_migration_v1_to_v2() {
 
 ## Performance
 
-`rcman` is designed for efficiency:
-
-- **In-Memory Caching**: Settings are cached after first load, eliminating redundant disk I/O
-- **Defaults Cache**: Default values are cached to avoid repeated schema lookups
-- **Sync I/O**: Simple, blocking file operations using `std::fs` (no runtime overhead)
-- **Smart Writes**: Only writes to disk when values actually change
-- **Zero-Copy Reads**: Uses `RwLock` for concurrent read access without cloning
-
-**Benchmarks** (typical desktop app with 50 settings):
-
-- First load: ~2ms (disk read + parse)
-- Cached load: ~50μs (memory access)
-- Save setting: ~1-3ms (validation + disk write)
+- **In-Memory Caching**: Reads are O(1) after first load.
+- **Lazy Computation**: Merged views are computed only when needed.
+- **Smart Writes**: Disk I/O only occurs when values actually change.
+- **Configurable Caching**: Choose between `Full`, `LRU`, or `None` strategies for sub-settings.
 
 ---
 

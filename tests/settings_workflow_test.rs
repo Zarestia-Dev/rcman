@@ -97,10 +97,7 @@ fn test_reset_single_setting() {
         .unwrap();
 
     // Reset to default
-    let default_value = fixture
-        .manager
-        .reset_setting("ui", "theme")
-        .unwrap();
+    let default_value = fixture.manager.reset_setting("ui", "theme").unwrap();
 
     assert_eq!(default_value, json!("dark"));
 
@@ -227,10 +224,9 @@ fn test_invalid_select_option_rejected() {
     let _ = fixture.manager.get_all().unwrap();
 
     // Try to save an invalid option
-    let result =
-        fixture
-            .manager
-            .save_setting("ui", "theme", json!("invalid_theme"));
+    let result = fixture
+        .manager
+        .save_setting("ui", "theme", json!("invalid_theme"));
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -243,10 +239,9 @@ fn test_setting_not_found_error() {
     let _ = fixture.manager.get_all().unwrap();
 
     // Try to save a non-existent setting
-    let result =
-        fixture
-            .manager
-            .save_setting("nonexistent", "setting", json!("value"));
+    let result = fixture
+        .manager
+        .save_setting("nonexistent", "setting", json!("value"));
 
     assert!(result.is_err());
 }
@@ -287,9 +282,7 @@ fn test_env_override_priority() {
         let manager = rcman::SettingsManager::new(config).unwrap();
 
         let _ = manager.get_all().unwrap();
-        manager
-            .save_setting("ui", "theme", json!("light"))
-            .unwrap();
+        manager.save_setting("ui", "theme", json!("light")).unwrap();
     }
 
     // Now load with env var override
@@ -408,10 +401,7 @@ fn test_concurrent_access() {
                 } else {
                     json!("dark")
                 };
-                fixture
-                    .manager
-                    .save_setting("ui", "theme", val)
-                    .unwrap();
+                fixture.manager.save_setting("ui", "theme", val).unwrap();
             }
         }));
     }

@@ -25,39 +25,39 @@ use std::sync::Arc;
 /// Trait for credential storage backends
 pub trait CredentialBackend: Send + Sync {
     /// Store a credential
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the backend fails to store the key.
     fn store(&self, key: &str, value: &str) -> Result<()>;
 
     /// Retrieve a credential
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the backend fails to retrieve the key.
     fn get(&self, key: &str) -> Result<Option<String>>;
 
     /// Remove a credential
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the backend fails to remove the key.
     fn remove(&self, key: &str) -> Result<()>;
 
     /// Check if a credential exists
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the backend fails to check if the key exists.
     fn exists(&self, key: &str) -> Result<bool> {
         Ok(self.get(key)?.is_some())
     }
 
     /// List all stored credential keys
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the backend fails to list keys.
     fn list_keys(&self) -> Result<Vec<String>>;
 
@@ -169,9 +169,9 @@ impl CredentialManager {
     }
 
     /// Store a credential
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the primary backend fails to store the key or if the fallback backend fails to store the key.
     pub fn store(&self, key: &str, value: &str) -> Result<()> {
         self.store_with_profile(key, value, None)
@@ -281,7 +281,7 @@ impl CredentialManager {
     }
 
     /// Clear all credentials for this service
-    /// 
+    ///
     /// # Errors
     /// Returns an error if the primary backend fails to list keys or if the fallback backend fails to remove keys.
     pub fn clear(&self) -> Result<()> {

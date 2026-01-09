@@ -1,32 +1,33 @@
 //! Restore functionality
 
 use super::archive::{extract_zip_archive, read_file_from_zip};
-use crate::RestoreOptions;
 use crate::config::SettingsSchema;
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
+use crate::sync::RwLockExt;
+use crate::RestoreOptions;
 use log::{debug, info, warn};
 use std::fs;
 use std::path::Path;
 
 #[cfg(feature = "profiles")]
-use crate::SubSettingsManifestEntry;
-#[cfg(feature = "profiles")]
 use crate::profiles::{MANIFEST_FILE, PROFILES_DIR};
+#[cfg(feature = "profiles")]
+use crate::SubSettingsManifestEntry;
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'_, S, Schema> {
     /// Restore from a backup
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `options` - The restore options
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns a `RestoreResult` containing the result of the restore operation.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the backup cannot be read or the restore operation fails.
     pub fn restore(&self, options: &RestoreOptions) -> Result<RestoreResult> {
         let mode_str = if options.dry_run { "[DRY RUN] " } else { "" };
@@ -81,7 +82,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                 result.checksum_valid = Some(is_valid);
 
                 if !is_valid {
-                    warn!("Checksum mismatch! Expected: {expected_checksum}, Got: {actual_checksum}");
+                    warn!(
+                        "Checksum mismatch! Expected: {expected_checksum}, Got: {actual_checksum}"
+                    );
                     return Err(Error::InvalidBackup(format!(
                         "{}: Data archive checksum verification failed - backup may be corrupted",
                         options.backup_path.display()
@@ -208,9 +211,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                                     result.restored.push(format!(
                                         "profiles/{target_profile_name}/settings.json"
                                     ));
-                                    debug!(
-                                        "Restored settings for profile {target_profile_name}"
-                                    );
+                                    debug!("Restored settings for profile {target_profile_name}");
                                 }
                             }
                         }
@@ -225,9 +226,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
 
                         if settings_dest.exists() && !options.overwrite_existing {
                             result.skipped.push("settings.json".into());
-                            warn!(
-                                "{mode_str} Skipping settings.json (exists, overwrite disabled)"
-                            );
+                            warn!("{mode_str} Skipping settings.json (exists, overwrite disabled)");
                         } else if options.dry_run {
                             result.restored.push("settings.json".into());
                             debug!("{mode_str} Would restore settings.json");
@@ -579,11 +578,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                                             }
                                         })?;
                                     }
-                                    fs::write(dest_path, &data).map_err(|e| {
-                                        Error::FileWrite {
-                                            path: dest_path.clone(),
-                                            source: e,
-                                        }
+                                    fs::write(dest_path, &data).map_err(|e| Error::FileWrite {
+                                        path: dest_path.clone(),
+                                        source: e,
                                     })?;
                                     result.restored.push(config_name.clone());
                                     debug!("Restored external {config_name}");
@@ -635,7 +632,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                             super::types::ImportTarget::Handler(handler) => {
                                 if options.dry_run {
                                     result.restored.push(config_name.clone());
-                                    debug!("{mode_str} Would call custom handler for {config_name}");
+                                    debug!(
+                                        "{mode_str} Would call custom handler for {config_name}"
+                                    );
                                 } else {
                                     handler(&data)?;
                                     result.restored.push(config_name.clone());
@@ -645,9 +644,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
                         }
                     } else {
                         result.external_pending.push(config_name.clone());
-                        warn!(
-                            "Unknown external config ID: {config_name}, requires manual restore"
-                        );
+                        warn!("Unknown external config ID: {config_name}, requires manual restore");
                     }
                 }
             }
@@ -663,21 +660,21 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
     }
 
     /// Get the path to an external config from a backup (for manual restoration)
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `backup_path` - The path to the backup file
     /// * `config_name` - The name of the external config to restore
     /// * `password` - The password for the backup file (if encrypted)
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Returns a vector of bytes containing the external config data.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the backup cannot be read or the external config cannot be restored.
-pub fn get_external_config_from_backup(
+    pub fn get_external_config_from_backup(
         &self,
         backup_path: &Path,
         config_name: &str,
@@ -722,7 +719,7 @@ pub fn get_external_config_from_backup(
 
         // Check dynamic providers
         {
-            let providers = self.manager.external_providers.read();
+            let providers = self.manager.external_providers.read_recovered().ok()?;
             for provider in providers.iter() {
                 for cfg in provider.get_configs() {
                     if cfg.id == id {
@@ -782,11 +779,11 @@ impl RestoreResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BackupOptions;
     use crate::config::SettingsConfig;
     use crate::manager::SettingsManager;
     use crate::storage::JsonStorage;
     use crate::sub_settings::SubSettingsConfig;
+    use crate::BackupOptions;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -821,7 +818,7 @@ mod tests {
         .unwrap();
 
         let manager = SettingsManager::new(config).unwrap();
-        manager.register_sub_settings(SubSettingsConfig::new("items"));
+        manager.register_sub_settings(SubSettingsConfig::new("items")).unwrap();
 
         let items = manager.sub_settings("items").unwrap();
         items.set("item1", &json!({"name": "First"})).unwrap();
@@ -857,7 +854,7 @@ mod tests {
         };
 
         let manager2 = SettingsManager::new(config2).unwrap();
-        manager2.register_sub_settings(SubSettingsConfig::new("items"));
+        manager2.register_sub_settings(SubSettingsConfig::new("items")).unwrap();
 
         // Restore
         let result = manager2

@@ -8,7 +8,7 @@
 
 mod common;
 
-use rcman::{SettingsManager, SubSettingsConfig};
+use rcman::{SettingsConfig, SettingsManager, SubSettingsConfig};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
@@ -285,11 +285,7 @@ fn test_single_file_mode_with_profiles() {
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_sub_settings(
-            SubSettingsConfig::new("backends")
-                .single_file()
-                .with_profiles(),
-        )
+        .with_sub_settings(SubSettingsConfig::singlefile("backends").with_profiles())
         .build()
         .unwrap();
 
@@ -323,18 +319,10 @@ fn test_main_settings_profiles() {
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Serialize, Deserialize, Default)]
     struct TestSettings {
         #[serde(default)]
         general: GeneralSettings,
-    }
-
-    impl Default for TestSettings {
-        fn default() -> Self {
-            Self {
-                general: GeneralSettings::default(),
-            }
-        }
     }
 
     #[derive(Serialize, Deserialize)]
@@ -369,7 +357,7 @@ fn test_main_settings_profiles() {
     let temp_dir = TempDir::new().unwrap();
 
     let config = SettingsConfig::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_schema::<TestSettings>()
         .with_profiles() // Enable profiles for main settings
         .build();
@@ -442,16 +430,14 @@ fn test_main_settings_profiles_directory_structure() {
     let temp_dir = TempDir::new().unwrap();
 
     let config = SettingsConfig::builder("test-app", "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         .with_schema::<TestSettings>()
         .with_profiles()
         .build();
     let manager = SettingsManager::new(config).unwrap();
 
     // Save something to create the default profile directory
-    manager
-        .save_setting("ui", "theme", json!("dark"))
-        .unwrap();
+    manager.save_setting("ui", "theme", json!("dark")).unwrap();
 
     manager.create_profile("work").unwrap();
 

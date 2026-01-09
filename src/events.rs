@@ -2,8 +2,9 @@
 //!
 //! Provides reactive callbacks for settings modifications.
 
-use parking_lot::RwLock;
+use crate::sync::RwLockExt;
 use serde_json::Value;
+use std::sync::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -27,7 +28,7 @@ pub struct EventManager {
 
 impl EventManager {
     /// Create a new event manager
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             global_listeners: RwLock::new(Vec::new()),
@@ -44,7 +45,7 @@ impl EventManager {
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
     {
-        let mut guard = self.global_listeners.write();
+        let mut guard = self.global_listeners.write_recovered().expect("Lock poisoned");
         guard.push(Arc::new(callback));
     }
 
@@ -57,7 +58,7 @@ impl EventManager {
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
     {
-        let mut listeners = self.key_listeners.write();
+        let mut listeners = self.key_listeners.write_recovered().expect("Lock poisoned");
         listeners
             .entry(key.to_string())
             .or_default()
@@ -72,7 +73,7 @@ impl EventManager {
     where
         F: Fn(&Value) -> Result<(), String> + Send + Sync + 'static,
     {
-        let mut validators = self.validators.write();
+        let mut validators = self.validators.write_recovered().expect("Lock poisoned");
         validators
             .entry(key.to_string())
             .or_default()
@@ -87,7 +88,7 @@ impl EventManager {
     ///
     /// Returns the first validation error message if any validator fails.
     pub fn validate(&self, key: &str, value: &Value) -> Result<(), String> {
-        let guard = self.validators.read();
+        let guard = self.validators.read_recovered().expect("Lock poisoned");
         if let Some(validators) = guard.get(key) {
             for validator in validators {
                 validator(value)?;
@@ -100,7 +101,7 @@ impl EventManager {
     pub fn notify(&self, key: &str, old_value: &Value, new_value: &Value) {
         // Call global listeners
         {
-            let guard = self.global_listeners.read();
+            let guard = self.global_listeners.read_recovered().expect("Lock poisoned");
             for callback in guard.iter() {
                 callback(key, old_value, new_value);
             }
@@ -108,7 +109,7 @@ impl EventManager {
 
         // Call key-specific listeners
         {
-            let guard = self.key_listeners.read();
+            let guard = self.key_listeners.read_recovered().expect("Lock poisoned");
             if let Some(listeners) = guard.get(key) {
                 for callback in listeners {
                     callback(key, old_value, new_value);
@@ -119,14 +120,14 @@ impl EventManager {
 
     /// Remove all listeners for a specific key
     pub fn unwatch(&self, key: &str) {
-        let mut guard = self.key_listeners.write();
+        let mut guard = self.key_listeners.write_recovered().expect("Lock poisoned");
         guard.remove(key);
     }
 
     /// Clear all listeners
     pub fn clear(&self) {
-        self.global_listeners.write().clear();
-        self.key_listeners.write().clear();
+        self.global_listeners.write_recovered().expect("Lock poisoned").clear();
+        self.key_listeners.write_recovered().expect("Lock poisoned").clear();
     }
 }
 

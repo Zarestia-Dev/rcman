@@ -94,7 +94,7 @@
 //! // Register sub-settings via builder
 //! let manager = SettingsManager::builder("my-app", "1.0.0")
 //!     .with_sub_settings(SubSettingsConfig::new("remotes"))  // Multi-file mode
-//!     .with_sub_settings(SubSettingsConfig::new("backends").single_file())  // Single-file mode
+//!     .with_sub_settings(SubSettingsConfig::singlefile("backends"))  // Single-file mode
 //!     .with_schema::<MySettings>()
 //!     .build()?;
 //!
@@ -201,13 +201,15 @@ mod manager;
 pub mod security;
 pub mod storage;
 mod sub_settings;
+mod sync;
 
 // Grouped modules
 pub mod config;
 
 // Feature-gated modules
-#[cfg(feature = "backup")]
 pub mod backup;
+#[cfg(feature = "backup")]
+pub mod cache;
 
 #[cfg(feature = "profiles")]
 pub mod profiles;
@@ -219,17 +221,18 @@ pub use docs::{generate_docs, generate_docs_from_metadata, DocsConfig};
 pub use error::{Error, Result};
 pub use events::EventManager;
 pub use manager::{SettingsManager, SettingsManagerBuilder};
-pub use sub_settings::{SubSettings, SubSettingsConfig};
+pub use sub_settings::{SubSettings, SubSettingsConfig, SubSettingsMode};
 
-pub use storage::{JsonStorage, StorageBackend};
 #[cfg(feature = "toml")]
 pub use storage::TomlStorage;
+pub use storage::{JsonStorage, StorageBackend};
 
 // =============================================================================
 // Convenient Type Aliases
 // =============================================================================
 
 // Re-exports from config
+pub use cache::CacheStrategy;
 pub use config::{
     opt, SettingMetadata, SettingOption, SettingType, SettingsConfig, SettingsConfigBuilder,
     SettingsSchema,

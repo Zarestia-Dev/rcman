@@ -4,12 +4,12 @@
 
 use crate::error::{Error, Result};
 use crate::profiles::{validate_profile_name, DEFAULT_PROFILE, MANIFEST_FILE, PROFILES_DIR};
+use crate::sync::RwLockExt;
 
 use log::{debug, info};
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Type alias for cache invalidation callback
 pub type InvalidateCallback = Arc<dyn Fn() + Send + Sync>;
@@ -190,7 +190,7 @@ impl ProfileManager {
     where
         F: Fn(ProfileEvent) + Send + Sync + 'static,
     {
-        let mut guard = self.on_event.write();
+        let mut guard = self.on_event.write().expect("Lock poisoned");
         *guard = Some(Arc::new(callback));
     }
 
@@ -199,13 +199,13 @@ impl ProfileManager {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        let mut guard = self.on_invalidate.write();
+        let mut guard = self.on_invalidate.write().expect("Lock poisoned");
         *guard = Some(Arc::new(callback));
     }
 
     /// Emit a profile event
     fn emit_event(&self, event: ProfileEvent) {
-        let guard = self.on_event.read();
+        let guard = self.on_event.read().expect("Lock poisoned");
         if let Some(callback) = guard.as_ref() {
             callback(event);
         }
@@ -213,7 +213,7 @@ impl ProfileManager {
 
     /// Invalidate caches
     fn invalidate_caches(&self) {
-        let guard = self.on_invalidate.read();
+        let guard = self.on_invalidate.read().expect("Lock poisoned");
         if let Some(callback) = guard.as_ref() {
             callback();
         }
@@ -233,7 +233,7 @@ impl ProfileManager {
     /// # Errors
     ///
     /// Returns an error if the manifest cannot be read.
-pub fn active_path(&self) -> Result<PathBuf> {
+    pub fn active_path(&self) -> Result<PathBuf> {
         let active = self.active()?;
         Ok(self.profile_path(&active))
     }
@@ -241,13 +241,13 @@ pub fn active_path(&self) -> Result<PathBuf> {
     /// Ensure the manifest is loaded
     fn ensure_manifest(&self) -> Result<()> {
         {
-            let guard = self.manifest.read();
+            let guard = self.manifest.read_recovered()?;
             if guard.is_some() {
                 return Ok(());
             }
         }
 
-        let mut guard = self.manifest.write();
+        let mut guard = self.manifest.write_recovered()?;
         if guard.is_some() {
             return Ok(());
         }
@@ -272,7 +272,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
 
     /// Save the manifest to disk
     fn save_manifest(&self) -> Result<()> {
-        let guard = self.manifest.read();
+        let guard = self.manifest.read_recovered()?;
         let manifest = guard.as_ref().ok_or(Error::NotInitialized)?;
 
         // Ensure parent directory exists
@@ -320,7 +320,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
     /// is populated.
     pub fn active(&self) -> Result<String> {
         self.ensure_manifest()?;
-        let guard = self.manifest.read();
+        let guard = self.manifest.read_recovered()?;
         Ok(guard.as_ref().unwrap().active.clone())
     }
 
@@ -340,7 +340,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
     /// is populated.
     pub fn list(&self) -> Result<Vec<String>> {
         self.ensure_manifest()?;
-        let guard = self.manifest.read();
+        let guard = self.manifest.read_recovered()?;
         Ok(guard.as_ref().unwrap().profiles.clone())
     }
 
@@ -364,20 +364,20 @@ pub fn active_path(&self) -> Result<PathBuf> {
     /// is populated.
     pub fn exists(&self, name: &str) -> Result<bool> {
         self.ensure_manifest()?;
-        let guard = self.manifest.read();
+        let guard = self.manifest.read_recovered()?;
         Ok(guard.as_ref().unwrap().has_profile(name))
     }
 
     /// Create a new profile
     ///
     /// Creates an empty profile directory and updates the manifest.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `name` - The name of the profile to create
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the profile cannot be created.
     /// # Panics
     ///
@@ -390,7 +390,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
 
         // Check if already exists
         {
-            let guard = self.manifest.read();
+            let guard = self.manifest.read_recovered()?;
             if guard.as_ref().unwrap().has_profile(name) {
                 return Err(Error::ProfileAlreadyExists(name.to_string()));
             }
@@ -406,7 +406,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
 
         // Update manifest
         {
-            let mut guard = self.manifest.write();
+            let mut guard = self.manifest.write_recovered()?;
             guard.as_mut().unwrap().add_profile(name.to_string());
         }
         self.save_manifest()?;
@@ -422,13 +422,13 @@ pub fn active_path(&self) -> Result<PathBuf> {
     /// Switch to a different profile
     ///
     /// Updates the active profile in the manifest and invalidates caches.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `name` - The name of the profile to switch to
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the profile cannot be switched.
     /// # Panics
     ///
@@ -439,7 +439,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
         self.ensure_manifest()?;
 
         let from = {
-            let guard = self.manifest.read();
+            let guard = self.manifest.read_recovered()?;
             let manifest = guard.as_ref().unwrap();
             if !manifest.has_profile(name) {
                 return Err(Error::ProfileNotFound(name.to_string()));
@@ -454,7 +454,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
 
         // Update manifest
         {
-            let mut guard = self.manifest.write();
+            let mut guard = self.manifest.write_recovered()?;
             guard.as_mut().unwrap().set_active(name);
         }
         self.save_manifest()?;
@@ -479,13 +479,13 @@ pub fn active_path(&self) -> Result<PathBuf> {
     ///
     /// Removes the profile directory and updates the manifest.
     /// Cannot delete the active profile or the last remaining profile.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `name` - The name of the profile to delete
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the profile cannot be deleted.
     /// # Panics
     ///
@@ -496,7 +496,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
         self.ensure_manifest()?;
 
         {
-            let guard = self.manifest.read();
+            let guard = self.manifest.read_recovered()?;
             let manifest = guard.as_ref().unwrap();
 
             if !manifest.has_profile(name) {
@@ -523,7 +523,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
 
         // Update manifest
         {
-            let mut guard = self.manifest.write();
+            let mut guard = self.manifest.write_recovered()?;
             guard.as_mut().unwrap().remove_profile(name);
         }
         self.save_manifest()?;
@@ -537,14 +537,14 @@ pub fn active_path(&self) -> Result<PathBuf> {
     }
 
     /// Rename a profile
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `from` - The name of the profile to rename
     /// * `to` - The new name for the profile
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the profile cannot be renamed.
     /// # Panics
     ///
@@ -556,7 +556,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
         self.ensure_manifest()?;
 
         {
-            let guard = self.manifest.read();
+            let guard = self.manifest.read_recovered()?;
             let manifest = guard.as_ref().unwrap();
 
             if !manifest.has_profile(from) {
@@ -574,7 +574,11 @@ pub fn active_path(&self) -> Result<PathBuf> {
 
         if from_dir.exists() {
             std::fs::rename(&from_dir, &to_dir).map_err(|e| Error::FileWrite {
-                path: std::path::PathBuf::from(format!("{} -> {}", from_dir.display(), to_dir.display())),
+                path: std::path::PathBuf::from(format!(
+                    "{} -> {}",
+                    from_dir.display(),
+                    to_dir.display()
+                )),
                 source: e,
             })?;
         } else {
@@ -587,7 +591,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
 
         // Update manifest
         {
-            let mut guard = self.manifest.write();
+            let mut guard = self.manifest.write_recovered()?;
             guard.as_mut().unwrap().rename_profile(from, to.to_string());
         }
         self.save_manifest()?;
@@ -608,14 +612,14 @@ pub fn active_path(&self) -> Result<PathBuf> {
     /// Duplicate a profile
     ///
     /// Copies all contents from the source profile to a new profile.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `source` - The name of the source profile
     /// * `target` - The name of the target profile
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the profile cannot be duplicated.
     /// # Panics
     ///
@@ -627,7 +631,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
         self.ensure_manifest()?;
 
         {
-            let guard = self.manifest.read();
+            let guard = self.manifest.read_recovered()?;
             let manifest = guard.as_ref().unwrap();
 
             if !manifest.has_profile(source) {
@@ -654,7 +658,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
 
         // Update manifest
         {
-            let mut guard = self.manifest.write();
+            let mut guard = self.manifest.write_recovered()?;
             guard.as_mut().unwrap().add_profile(target.to_string());
         }
         self.save_manifest()?;
@@ -688,7 +692,7 @@ pub fn active_path(&self) -> Result<PathBuf> {
     /// # Errors
     ///
     /// Returns an error if the manifest cannot be read or saved.
-pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
+    pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
     where
         F: FnOnce() -> bool,
     {
@@ -718,7 +722,7 @@ pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
 
         // Migration will be handled by the caller
         // Just initialize the manifest
-        let mut guard = self.manifest.write();
+        let mut guard = self.manifest.write().expect("Lock poisoned");
         *guard = Some(ProfileManifest::default());
         drop(guard);
 
@@ -739,9 +743,9 @@ pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
     }
 
     /// Mark migration as complete and save manifest
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if the manifest cannot be saved.
     pub fn complete_migration(&self) -> Result<()> {
         self.save_manifest()?;
@@ -761,7 +765,7 @@ pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
     /// is populated.
     pub fn manifest(&self) -> Result<ProfileManifest> {
         self.ensure_manifest()?;
-        let guard = self.manifest.read();
+        let guard = self.manifest.read_recovered()?;
         Ok(guard.as_ref().unwrap().clone())
     }
 

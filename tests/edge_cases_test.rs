@@ -27,10 +27,9 @@ fn test_save_invalid_top_level_key() {
     let fixture = TestFixture::new();
     let _ = fixture.manager.get_all().unwrap();
 
-    let result =
-        fixture
-            .manager
-            .save_setting("invalid_section", "key", json!("value"));
+    let result = fixture
+        .manager
+        .save_setting("invalid_section", "key", json!("value"));
 
     assert!(result.is_err());
     // Error should indicate setting not found
@@ -58,11 +57,9 @@ fn test_deeply_nested_invalid_path() {
     let fixture = TestFixture::new();
     let _ = fixture.manager.get_all().unwrap();
 
-    let result = fixture.manager.save_setting(
-        "ui.nested.deeply.invalid",
-        "key",
-        json!("value"),
-    );
+    let result = fixture
+        .manager
+        .save_setting("ui.nested.deeply.invalid", "key", json!("value"));
 
     assert!(result.is_err());
 }
@@ -77,10 +74,9 @@ fn test_save_wrong_type_for_number() {
     let _ = fixture.manager.get_all().unwrap();
 
     // Try to save a string where a number is expected
-    let result =
-        fixture
-            .manager
-            .save_setting("ui", "font_size", json!("not_a_number"));
+    let result = fixture
+        .manager
+        .save_setting("ui", "font_size", json!("not_a_number"));
 
     assert!(result.is_err());
 }
@@ -90,10 +86,9 @@ fn test_save_wrong_type_for_boolean() {
     let fixture = TestFixture::new();
     let _ = fixture.manager.get_all().unwrap();
 
-    let result =
-        fixture
-            .manager
-            .save_setting("general", "tray_enabled", json!(123));
+    let result = fixture
+        .manager
+        .save_setting("general", "tray_enabled", json!(123));
 
     // Library may accept numeric values and coerce them
     // Document actual behavior rather than assert failure
@@ -121,10 +116,9 @@ fn test_select_invalid_option() {
     let _ = fixture.manager.get_all().unwrap();
 
     // theme has options ["dark", "light", "system"]
-    let result =
-        fixture
-            .manager
-            .save_setting("ui", "theme", json!("invalid_theme"));
+    let result = fixture
+        .manager
+        .save_setting("ui", "theme", json!("invalid_theme"));
 
     // Document: library may not enforce select options automatically
     let _ = result;
@@ -151,10 +145,7 @@ fn test_concurrent_reads() {
     for _ in 0..10 {
         let fixture_clone = Arc::clone(&fixture);
         let handle = thread::spawn(move || {
-            let metadata = fixture_clone
-                .manager
-                .metadata()
-                .unwrap();
+            let metadata = fixture_clone.manager.metadata().unwrap();
             let theme = metadata.get("ui.theme").unwrap();
             assert_eq!(theme.value, Some(json!("light")));
         });
@@ -270,7 +261,7 @@ fn test_load_corrupted_json() {
     let manager = SettingsManager::new(config).unwrap();
 
     // Register schema
-    let _ = manager.get_all().unwrap();
+    manager.get_all().unwrap();
 
     // Write corrupted JSON to the settings file
     let settings_file = temp_dir.path().join("settings.json");
@@ -288,7 +279,7 @@ fn test_load_truncated_json() {
         .build();
     let manager = SettingsManager::new(config).unwrap();
 
-    let _ = manager.get_all().unwrap();
+    manager.get_all().unwrap();
 
     // Write truncated JSON
     let settings_file = temp_dir.path().join("settings.json");
@@ -311,9 +302,7 @@ fn test_save_to_readonly_directory() {
     let _ = manager.get_all().unwrap();
 
     // First save to create the file (use a non-default value so it actually writes)
-    manager
-        .save_setting("ui", "theme", json!("light"))
-        .unwrap();
+    manager.save_setting("ui", "theme", json!("light")).unwrap();
 
     // Test that write fails when directory is readonly (Unix only)
     // Note: Making the file readonly doesn't prevent updates due to atomic write
@@ -530,9 +519,7 @@ fn test_save_null_value() {
     let _ = fixture.manager.get_all().unwrap();
 
     // Try to save null
-    let result = fixture
-        .manager
-        .save_setting("ui", "theme", json!(null));
+    let result = fixture.manager.save_setting("ui", "theme", json!(null));
 
     // Should probably fail validation
     assert!(result.is_err());
@@ -584,10 +571,9 @@ fn test_save_infinity() {
     let fixture = TestFixture::new();
     let _ = fixture.manager.get_all().unwrap();
 
-    let result =
-        fixture
-            .manager
-            .save_setting("ui", "font_size", json!(f64::INFINITY));
+    let result = fixture
+        .manager
+        .save_setting("ui", "font_size", json!(f64::INFINITY));
 
     // Should fail (JSON doesn't support infinity anyway)
     assert!(result.is_err());

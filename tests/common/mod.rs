@@ -5,7 +5,8 @@
 #![allow(dead_code)]
 
 use rcman::{
-    SettingMetadata, SettingsConfig, SettingsManager, SettingsSchema, SubSettingsConfig, opt, settings
+    opt, settings, SettingMetadata, SettingsConfig, SettingsManager, SettingsSchema,
+    SubSettingsConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -166,10 +167,10 @@ impl TestFixture {
             .with_schema::<TestSettings>()
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");
-        
+
         // Register sub-settings manually
-        manager.register_sub_settings(SubSettingsConfig::new("remotes"));
-        manager.register_sub_settings(SubSettingsConfig::new("backends").single_file());
+        manager.register_sub_settings(SubSettingsConfig::new("remotes")).unwrap();
+        manager.register_sub_settings(SubSettingsConfig::singlefile("backends")).unwrap();
 
         Self { temp_dir, manager }
     }

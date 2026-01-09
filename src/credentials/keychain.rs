@@ -4,7 +4,7 @@ use super::CredentialBackend;
 use crate::error::{Error, Result};
 use keyring::Entry;
 use log::{debug, warn};
-use parking_lot::RwLock;
+use std::sync::RwLock;
 
 /// OS Keychain backend for secure credential storage
 pub struct KeychainBackend {
@@ -23,20 +23,19 @@ impl KeychainBackend {
     }
 
     fn get_entry(&self, key: &str) -> Result<Entry> {
-        Entry::new(&self.service_name, key).map_err(|e| {
-            Error::Credential(format!("{key}: Failed to create keychain entry: {e}"))
-        })
+        Entry::new(&self.service_name, key)
+            .map_err(|e| Error::Credential(format!("{key}: Failed to create keychain entry: {e}")))
     }
 
     fn track_key(&self, key: &str) {
-        let mut keys = self.known_keys.write();
+        let mut keys = self.known_keys.write().expect("Lock poisoned");
         if !keys.contains(&key.to_string()) {
             keys.push(key.to_string());
         }
     }
 
     fn untrack_key(&self, key: &str) {
-        let mut keys = self.known_keys.write();
+        let mut keys = self.known_keys.write().expect("Lock poisoned");
         keys.retain(|k| k != key);
     }
 }
@@ -95,7 +94,7 @@ impl CredentialBackend for KeychainBackend {
 
     fn list_keys(&self) -> Result<Vec<String>> {
         // Keychain doesn't support listing, return tracked keys
-        Ok(self.known_keys.read().clone())
+        Ok(self.known_keys.read().expect("Lock poisoned").clone())
     }
 
     fn backend_name(&self) -> &'static str {

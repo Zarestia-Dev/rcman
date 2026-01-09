@@ -29,7 +29,10 @@ fn unique_app_name() -> String {
 // Helper to create manager with credentials enabled
 // =============================================================================
 
-fn create_manager_with_credentials() -> (TempDir, SettingsManager<rcman::storage::JsonStorage, TestSettings>) {
+fn create_manager_with_credentials() -> (
+    TempDir,
+    SettingsManager<rcman::storage::JsonStorage, TestSettings>,
+) {
     let temp_dir = TempDir::new().unwrap();
     let app_name = unique_app_name();
     let config = SettingsConfig::builder(&app_name, "1.0.0")
@@ -162,9 +165,7 @@ fn test_secret_default_not_stored() {
         .unwrap();
 
     // Now set back to default (empty string)
-    manager
-        .save_setting("api", "key", json!(""))
-        .unwrap();
+    manager.save_setting("api", "key", json!("")).unwrap();
 
     // Load again - should get default
     let metadata = manager.metadata().unwrap();
@@ -189,9 +190,7 @@ fn test_multiple_secrets() {
         .unwrap();
 
     // Also save a non-secret
-    manager
-        .save_setting("ui", "theme", json!("light"))
-        .unwrap();
+    manager.save_setting("ui", "theme", json!("light")).unwrap();
 
     // Verify both are retrievable
     let metadata = manager.metadata().unwrap();
@@ -225,7 +224,7 @@ fn test_credentials_not_available_when_disabled() {
     let temp_dir = TempDir::new().unwrap();
     let app_name = unique_app_name();
     let config = SettingsConfig::builder(&app_name, "1.0.0")
-        .config_dir(temp_dir.path())
+        .with_config_dir(temp_dir.path())
         // Note: NOT calling .with_credentials()
         .build();
     let manager = SettingsManager::new(config).unwrap();
@@ -253,7 +252,7 @@ fn test_secret_persists_across_sessions() {
             .build();
         let manager = SettingsManager::new(config).unwrap();
 
-        let _ = manager.get_all().unwrap();
+        manager.get_all().unwrap();
         manager
             .save_setting("api", "key", json!("persistent_secret"))
             .unwrap();

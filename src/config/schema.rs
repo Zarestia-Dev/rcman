@@ -286,28 +286,28 @@ impl SettingMetadata {
     }
 
     /// Set options for Select type
-    #[must_use] 
+    #[must_use]
     pub fn options(mut self, opts: Vec<SettingOption>) -> Self {
         self.options = Some(opts);
         self
     }
 
     /// Set minimum value for Number type
-    #[must_use] 
+    #[must_use]
     pub fn min(mut self, val: f64) -> Self {
         self.min = Some(val);
         self
     }
 
     /// Set maximum value for Number type
-    #[must_use] 
+    #[must_use]
     pub fn max(mut self, val: f64) -> Self {
         self.max = Some(val);
         self
     }
 
     /// Set step for Number type
-    #[must_use] 
+    #[must_use]
     pub fn step(mut self, val: f64) -> Self {
         self.step = Some(val);
         self
@@ -320,7 +320,7 @@ impl SettingMetadata {
     }
 
     /// Mark as requiring restart
-    #[must_use] 
+    #[must_use]
     pub fn requires_restart(mut self) -> Self {
         self.requires_restart = true;
         self
@@ -333,30 +333,132 @@ impl SettingMetadata {
     }
 
     /// Set display order
-    #[must_use] 
+    #[must_use]
     pub fn order(mut self, ord: i32) -> Self {
         self.order = Some(ord);
         self
     }
 
     /// Mark as advanced setting
-    #[must_use] 
+    #[must_use]
     pub fn advanced(mut self) -> Self {
         self.advanced = true;
         self
     }
 
     /// Mark as disabled
-    #[must_use] 
+    #[must_use]
     pub fn disabled(mut self) -> Self {
         self.disabled = true;
         self
     }
 
-    /// Mark as secret (stored in keychain when credentials enabled)
-    #[must_use] 
+    /// Mark this setting as a secret (requires `keychain` or `encrypted-file` feature).
+    ///
+    /// **⚠️ IMPORTANT:** This method requires enabling one of the following features:
+    /// - `keychain` - Store secrets in OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+    /// - `encrypted-file` - Store secrets in an encrypted file using Argon2id
+    ///
+    /// Without these features, secrets will be stored in **plaintext JSON**, which is a security risk!
+    ///
+    /// # Feature Setup
+    ///
+    /// Add to your `Cargo.toml`:
+    /// ```toml
+    /// [dependencies]
+    /// rcman = { version = "0.2", features = ["keychain"] }
+    /// # Or for encrypted file storage:
+    /// rcman = { version = "0.2", features = ["encrypted-file"] }
+    /// ```
+    ///
+    /// # Compile-Time Safety
+    ///
+    /// If you call `.secret()` without enabling the required features, you'll get a
+    /// **compile error** with instructions on how to fix it. This prevents accidentally
+    /// storing secrets in plaintext.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use rcman::{settings, SettingMetadata};
+    /// use std::collections::HashMap;
+    ///
+    /// settings! {
+    ///     "api.key" => SettingMetadata::password("API Key", "")
+    ///         .secret(),  // ✅ Safe: stored in keychain or encrypted file
+    /// }
+    /// ```
+    #[must_use]
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub fn secret(mut self) -> Self {
         self.secret = true;
+        self
+    }
+
+    /// Mark this setting as a secret - **REQUIRES FEATURE!**
+    ///
+    /// # ⚠️ Compile Error: Missing Required Feature
+    ///
+    /// You called `.secret()` but haven't enabled the `keychain` or `encrypted-file` feature.
+    /// Without these features, secrets would be stored in **plaintext JSON** files, which
+    /// is a serious security vulnerability!
+    ///
+    /// ## How to Fix
+    ///
+    /// Add one of these features to your `Cargo.toml`:
+    ///
+    /// ```toml
+    /// [dependencies]
+    /// # Option 1: Use OS keychain (recommended)
+    /// rcman = { version = "0.2", features = ["keychain"] }
+    ///
+    /// # Option 2: Use encrypted file storage
+    /// rcman = { version = "0.2", features = ["encrypted-file"] }
+    /// ```
+    ///
+    /// ## Why This Matters
+    ///
+    /// - **keychain**: Stores secrets in OS-provided secure storage (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+    /// - **encrypted-file**: Stores secrets in an encrypted JSON file using Argon2id
+    /// - **Without features**: Secrets stored in plaintext `settings.json` ❌
+    ///
+    /// ## Alternative
+    ///
+    /// If you don't need secret storage, simply **remove** the `.secret()` call:
+    ///
+    /// ```rust
+    /// // Before (causes compile error):
+    /// SettingMetadata::password("API Key", "").secret()
+    ///
+    /// // After (compiles, but stored in plaintext):
+    /// SettingMetadata::password("API Key", "")
+    /// ```
+    #[must_use]
+    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+    pub fn secret(self) -> Self {
+        compile_error!(
+            "\n\n\
+            ╔══════════════════════════════════════════════════════════════════════╗\n\
+            ║  ERROR: .secret() requires 'keychain' or 'encrypted-file' feature    ║\n\
+            ╠══════════════════════════════════════════════════════════════════════╣\n\
+            ║                                                                      ║\n\
+            ║  You called .secret() but haven't enabled secret storage!            ║\n\
+            ║  Without the required feature, secrets would be stored in            ║\n\
+            ║  PLAINTEXT JSON files - a serious security vulnerability!            ║\n\
+            ║                                                                      ║\n\
+            ║  FIX: Add to your Cargo.toml:                                        ║\n\
+            ║                                                                      ║\n\
+            ║    [dependencies]                                                    ║\n\
+            ║    rcman = { version = \"0.2\", features = [\"keychain\"] }              ║\n\
+            ║                                                                      ║\n\
+            ║  Or for encrypted file storage:                                      ║\n\
+            ║    rcman = { version = \"0.2\", features = [\"encrypted-file\"] }        ║\n\
+            ║                                                                      ║\n\
+            ║  Learn more: https://docs.rs/rcman/latest/rcman/#secret-settings     ║\n\
+            ║                                                                      ║\n\
+            ╚══════════════════════════════════════════════════════════════════════╝\n\
+            "
+        );
         self
     }
 
@@ -476,7 +578,7 @@ pub trait SettingsSchema: Default + Serialize + for<'de> Deserialize<'de> {
     fn get_metadata() -> HashMap<String, SettingMetadata>;
 
     /// Get list of categories in display order
-    #[must_use] 
+    #[must_use]
     fn get_categories() -> Vec<String> {
         let metadata = Self::get_metadata();
         let mut categories: Vec<String> = metadata

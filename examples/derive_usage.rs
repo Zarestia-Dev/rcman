@@ -111,7 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize settings manager with schema
     let manager = SettingsManager::builder("derive-example", "1.0.0")
-        .config_dir("./example_config")
+        .with_config_dir("./example_config")
         .with_schema::<AppSettings>()
         .build()?;
 

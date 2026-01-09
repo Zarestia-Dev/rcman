@@ -14,7 +14,8 @@
 
 use eframe::egui;
 use rcman::{
-    BackupOptions, RestoreOptions, SettingMetadata, SettingsConfig, SettingsManager, SettingsSchema, SubSettingsConfig, opt, settings
+    opt, settings, BackupOptions, RestoreOptions, SettingMetadata, SettingsConfig, SettingsManager,
+    SettingsSchema, SubSettingsConfig,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -184,8 +185,7 @@ impl DemoApp {
         };
 
         // Initialize settings manager
-        let config_builder =
-            SettingsConfig::builder("rcman-gui-demo", "1.0.0")
+        let config_builder = SettingsConfig::builder("rcman-gui-demo", "1.0.0")
             .with_schema::<DemoSettings>()
             .with_config_dir("./example_config");
 
@@ -214,7 +214,7 @@ impl DemoApp {
         // Register sub-settings for remotes and load list
         let manager_clone = manager.clone();
         let remotes_list = {
-            manager_clone.register_sub_settings(SubSettingsConfig::new("remotes"));
+            manager_clone.register_sub_settings(SubSettingsConfig::new("remotes")).unwrap();
 
             // Load remotes list
             match manager_clone.sub_settings("remotes") {
@@ -690,7 +690,7 @@ impl eframe::App for DemoApp {
                         let old_size = self.font_size;
                         ui.add(egui::Slider::new(&mut self.font_size, 8.0..=32.0).suffix("px"));
                         if (self.font_size - old_size).abs() > 0.1 {
-                            self.save_setting("app", "font_size", json!(self.font_size as f64));
+                            self.save_setting("app", "font_size", json!(f64::from(self.font_size)));
                         }
                         if ui.small_button("↩").clicked() {
                             self.reset_setting("app", "font_size");
@@ -721,7 +721,7 @@ impl eframe::App for DemoApp {
                         let old_timeout = self.timeout;
                         ui.add(egui::Slider::new(&mut self.timeout, 5.0..=300.0).suffix(" sec"));
                         if (self.timeout - old_timeout).abs() > 0.1 {
-                            self.save_setting("network", "timeout", json!(self.timeout as f64));
+                            self.save_setting("network", "timeout", json!(f64::from(self.timeout)));
                         }
                         if ui.small_button("↩").clicked() {
                             self.reset_setting("network", "timeout");
@@ -734,7 +734,7 @@ impl eframe::App for DemoApp {
                         let old_retries = self.retries;
                         ui.add(egui::Slider::new(&mut self.retries, 0.0..=10.0).step_by(1.0));
                         if (self.retries - old_retries).abs() > 0.1 {
-                            self.save_setting("network", "retries", json!(self.retries as f64));
+                            self.save_setting("network", "retries", json!(f64::from(self.retries)));
                         }
                         if ui.small_button("↩").clicked() {
                             self.reset_setting("network", "retries");
@@ -989,7 +989,7 @@ impl eframe::App for DemoApp {
                     if let Some(ref selected) = self.selected_remote.clone() {
                         ui.add_space(8.0);
                         ui.group(|ui| {
-                            ui.label(egui::RichText::new(format!("📄 {}", selected)).strong());
+                            ui.label(egui::RichText::new(format!("📄 {selected}")).strong());
                             ui.add_space(4.0);
                             ui.add(
                                 egui::TextEdit::multiline(&mut self.selected_remote_data.clone())
