@@ -446,7 +446,7 @@ fn generate_setting_type(
                 // We could inspect generic args here to ensure it's String,
                 // but for now we'll assume Vec<String> maps to list.
                 return (
-                    quote! { rcman::SettingMetadata::list(#label, &defaults.#field_name) },
+                    quote! { rcman::SettingMetadata::list(#label, &defaults.#field_name[..]) },
                     quote! { defaults.#field_name.clone() },
                 );
             }
