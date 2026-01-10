@@ -7,8 +7,8 @@ use super::CredentialBackend;
 use crate::error::{Error, Result};
 use crate::sync::RwLockExt;
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
 use log::debug;
 use rand::Rng;
@@ -109,7 +109,7 @@ impl EncryptedFileBackend {
         }
 
         let content = fs::read_to_string(path).map_err(|e| Error::FileRead {
-            path: path.to_path_buf(),
+            path: path.clone(),
             source: e,
         })?;
 
@@ -163,8 +163,8 @@ impl EncryptedFileBackend {
     /// Returns an error if salt encoding or hashing fails.
     pub fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
         use argon2::{
-            password_hash::{PasswordHasher, SaltString},
             Argon2,
+            password_hash::{PasswordHasher, SaltString},
         };
 
         // Convert salt to B64 for Argon2

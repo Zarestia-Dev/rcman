@@ -78,7 +78,7 @@ pub fn generate_docs_from_metadata<S: std::hash::BuildHasher>(
     // Filter and sort settings
     let mut settings: Vec<_> = metadata
         .iter()
-        .filter(|(_, m)| config.show_advanced || !m.advanced)
+        .filter(|(_, m)| config.show_advanced || !m.flags.ui.advanced)
         .collect();
 
     settings.sort_by(|(k1, m1), (k2, m2)| {
@@ -124,16 +124,16 @@ fn format_setting(out: &mut String, key: &str, meta: &SettingMetadata) {
 
     // Badges
     let mut badges = Vec::new();
-    if meta.advanced {
+    if meta.flags.ui.advanced {
         badges.push("Advanced");
     }
-    if meta.requires_restart {
+    if meta.flags.system.requires_restart {
         badges.push("Requires Restart");
     }
-    if meta.secret {
+    if meta.flags.system.secret {
         badges.push("Secret");
     }
-    if meta.disabled {
+    if meta.flags.ui.disabled {
         badges.push("Disabled");
     }
     if !badges.is_empty() {

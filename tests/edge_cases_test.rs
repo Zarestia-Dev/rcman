@@ -29,7 +29,7 @@ fn test_save_invalid_top_level_key() {
 
     let result = fixture
         .manager
-        .save_setting("invalid_section", "key", json!("value"));
+        .save_setting("invalid_section", "key", &json!("value"));
 
     assert!(result.is_err());
     // Error should indicate setting not found
@@ -44,7 +44,7 @@ fn test_save_invalid_nested_key() {
 
     let result = fixture
         .manager
-        .save_setting("ui", "invalid_key", json!("value"));
+        .save_setting("ui", "invalid_key", &json!("value"));
 
     assert!(result.is_err());
     // Error should indicate setting not found
@@ -59,7 +59,7 @@ fn test_deeply_nested_invalid_path() {
 
     let result = fixture
         .manager
-        .save_setting("ui.nested.deeply.invalid", "key", json!("value"));
+        .save_setting("ui.nested.deeply.invalid", "key", &json!("value"));
 
     assert!(result.is_err());
 }
@@ -76,7 +76,7 @@ fn test_save_wrong_type_for_number() {
     // Try to save a string where a number is expected
     let result = fixture
         .manager
-        .save_setting("ui", "font_size", json!("not_a_number"));
+        .save_setting("ui", "font_size", &json!("not_a_number"));
 
     assert!(result.is_err());
 }
@@ -88,7 +88,7 @@ fn test_save_wrong_type_for_boolean() {
 
     let result = fixture
         .manager
-        .save_setting("general", "tray_enabled", json!(123));
+        .save_setting("general", "tray_enabled", &json!(123));
 
     // Library may accept numeric values and coerce them
     // Document actual behavior rather than assert failure
@@ -103,7 +103,7 @@ fn test_number_out_of_range() {
     // font_size has min=8, max=32
     let result = fixture
         .manager
-        .save_setting("ui", "font_size", json!(100.0));
+        .save_setting("ui", "font_size", &json!(100.0));
 
     // Document: library may not enforce range validation automatically
     // This test demonstrates what actually happens
@@ -118,7 +118,7 @@ fn test_select_invalid_option() {
     // theme has options ["dark", "light", "system"]
     let result = fixture
         .manager
-        .save_setting("ui", "theme", json!("invalid_theme"));
+        .save_setting("ui", "theme", &json!("invalid_theme"));
 
     // Document: library may not enforce select options automatically
     let _ = result;
@@ -136,7 +136,7 @@ fn test_concurrent_reads() {
     // Save initial value
     fixture
         .manager
-        .save_setting("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", &json!("light"))
         .unwrap();
 
     let mut handles = vec![];
@@ -171,7 +171,7 @@ fn test_concurrent_writes_same_key() {
         let handle = thread::spawn(move || {
             fixture_clone
                 .manager
-                .save_setting("ui", "theme", json!(value))
+                .save_setting("ui", "theme", &json!(value))
                 .unwrap();
         });
         handles.push(handle);
@@ -201,7 +201,7 @@ fn test_concurrent_writes_different_keys() {
         for _ in 0..10 {
             fixture_clone
                 .manager
-                .save_setting("ui", "theme", json!("light"))
+                .save_setting("ui", "theme", &json!("light"))
                 .unwrap();
         }
     }));
@@ -212,7 +212,7 @@ fn test_concurrent_writes_different_keys() {
         for _ in 0..10 {
             fixture_clone
                 .manager
-                .save_setting("ui", "font_size", json!(16.0))
+                .save_setting("ui", "font_size", &json!(16.0))
                 .unwrap();
         }
     }));
@@ -223,7 +223,7 @@ fn test_concurrent_writes_different_keys() {
         for _ in 0..10 {
             fixture_clone
                 .manager
-                .save_setting("general", "language", json!("en"))
+                .save_setting("general", "language", &json!("en"))
                 .unwrap();
         }
     }));
@@ -302,7 +302,9 @@ fn test_save_to_readonly_directory() {
     let _ = manager.get_all().unwrap();
 
     // First save to create the file (use a non-default value so it actually writes)
-    manager.save_setting("ui", "theme", json!("light")).unwrap();
+    manager
+        .save_setting("ui", "theme", &json!("light"))
+        .unwrap();
 
     // Test that write fails when directory is readonly (Unix only)
     // Note: Making the file readonly doesn't prevent updates due to atomic write
@@ -329,7 +331,7 @@ fn test_save_to_readonly_directory() {
         dir_perms.set_mode(0o555); // Read + execute only
         fs::set_permissions(temp_dir.path(), dir_perms).unwrap();
 
-        let result = manager.save_setting("ui", "theme", json!("dark"));
+        let result = manager.save_setting("ui", "theme", &json!("dark"));
         assert!(
             result.is_err(),
             "Save should fail when directory is readonly"
@@ -347,36 +349,38 @@ fn test_save_to_readonly_directory() {
 // =============================================================================
 
 #[test]
-#[ignore] // Env tests can interfere with each other
 fn test_env_override_basic() {
-    let fixture = TestFixture::new();
+    let fixture = TestFixture::with_env_prefix("RCMAN_TEST_BASIC");
 
     // Set environment variable before loading
-    std::env::set_var("RCMAN_TEST_UI__THEME", "light");
+    fixture
+        .env_source
+        .set("RCMAN_TEST_BASIC_UI__THEME", "light");
 
     let settings = fixture.manager.get_all().unwrap();
 
     // Should get env value, not default
     // Note: env override behavior depends on implementation
     let _ = settings.ui.theme;
-
-    std::env::remove_var("RCMAN_TEST_UI__THEME");
 }
 
 #[test]
-#[ignore] // Env tests can interfere with each other
+// No ignore needed - using unique env prefix
 fn test_env_override_precedence_over_saved() {
-    let fixture = TestFixture::new();
+    let fixture = TestFixture::with_env_prefix("RCMAN_TEST_PRECEDENCE");
     let _ = fixture.manager.get_all().unwrap();
 
     // Save a value
     fixture
         .manager
-        .save_setting("ui", "theme", json!("dark"))
+        .save_setting("ui", "theme", &json!("dark"))
         .unwrap();
 
     // Set env override
-    std::env::set_var("RCMAN_TEST_UI__THEME", "light");
+    // Set env override
+    fixture
+        .env_source
+        .set("RCMAN_TEST_PRECEDENCE_UI__THEME", "light");
 
     // Load again - check actual behavior
     let metadata = fixture.manager.metadata().unwrap();
@@ -384,8 +388,6 @@ fn test_env_override_precedence_over_saved() {
 
     // Document: env override may or may not be implemented
     let _ = theme.value;
-
-    std::env::remove_var("RCMAN_TEST_UI__THEME");
 }
 
 #[test]
@@ -393,7 +395,9 @@ fn test_env_override_invalid_value() {
     let fixture = TestFixture::new();
 
     // Set invalid value in env
-    std::env::set_var("RCMAN_TEST_UI__THEME", "invalid_theme");
+    fixture
+        .env_source
+        .set("RCMAN_TEST_UI__THEME", "invalid_theme");
 
     // Should fail validation
     let result = fixture.manager.get_all();
@@ -402,8 +406,6 @@ fn test_env_override_invalid_value() {
     // Either behavior is acceptable - document what happens
     // For now, we just verify it doesn't panic
     let _ = result;
-
-    std::env::remove_var("RCMAN_TEST_UI__THEME");
 }
 
 #[test]
@@ -411,14 +413,15 @@ fn test_env_override_type_mismatch() {
     let fixture = TestFixture::new();
 
     // Set string where number is expected
-    std::env::set_var("RCMAN_TEST_UI__FONT_SIZE", "not_a_number");
+    // Set string where number is expected
+    fixture
+        .env_source
+        .set("RCMAN_TEST_UI__FONT_SIZE", "not_a_number");
 
     let result = fixture.manager.get_all();
 
     // Should handle gracefully (either fail or ignore)
     let _ = result;
-
-    std::env::remove_var("RCMAN_TEST_UI__FONT_SIZE");
 }
 
 // =============================================================================
@@ -491,7 +494,7 @@ fn test_sub_settings_concurrent_access() {
         let handle = thread::spawn(move || {
             let remotes = fixture_clone.manager.sub_settings("remotes").unwrap();
             remotes
-                .set(&format!("remote{}", i), &json!({"id": i}))
+                .set(&format!("remote{i}"), &json!({"id": i}))
                 .unwrap();
         });
         handles.push(handle);
@@ -504,7 +507,7 @@ fn test_sub_settings_concurrent_access() {
     // All 5 remotes should be present
     let remotes = fixture.manager.sub_settings("remotes").unwrap();
     for i in 0..5 {
-        let remote: serde_json::Value = remotes.get(&format!("remote{}", i)).unwrap();
+        let remote: serde_json::Value = remotes.get(&format!("remote{i}")).unwrap();
         assert_eq!(remote["id"], i);
     }
 }
@@ -519,7 +522,7 @@ fn test_save_null_value() {
     let _ = fixture.manager.get_all().unwrap();
 
     // Try to save null
-    let result = fixture.manager.save_setting("ui", "theme", json!(null));
+    let result = fixture.manager.save_setting("ui", "theme", &json!(null));
 
     // Should probably fail validation
     assert!(result.is_err());
@@ -534,7 +537,7 @@ fn test_save_very_long_string() {
     let long_string = "a".repeat(10_000);
     let result = fixture
         .manager
-        .save_setting("ui", "theme", json!(long_string));
+        .save_setting("ui", "theme", &json!(long_string));
 
     // Should fail validation (theme has specific allowed values)
     assert!(result.is_err());
@@ -547,7 +550,7 @@ fn test_save_very_large_number() {
 
     let result = fixture
         .manager
-        .save_setting("ui", "font_size", json!(f64::MAX));
+        .save_setting("ui", "font_size", &json!(f64::MAX));
 
     // Should fail range validation
     assert!(result.is_err());
@@ -560,7 +563,7 @@ fn test_save_negative_number() {
 
     let result = fixture
         .manager
-        .save_setting("ui", "font_size", json!(-10.0));
+        .save_setting("ui", "font_size", &json!(-10.0));
 
     // Should fail range validation (min is 8)
     assert!(result.is_err());
@@ -573,7 +576,7 @@ fn test_save_infinity() {
 
     let result = fixture
         .manager
-        .save_setting("ui", "font_size", json!(f64::INFINITY));
+        .save_setting("ui", "font_size", &json!(f64::INFINITY));
 
     // Should fail (JSON doesn't support infinity anyway)
     assert!(result.is_err());

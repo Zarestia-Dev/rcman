@@ -4,9 +4,9 @@
 
 use crate::sync::RwLockExt;
 use serde_json::Value;
-use std::sync::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 /// Type alias for a change callback
 pub type ChangeCallback = Arc<dyn Fn(&str, &Value, &Value) + Send + Sync>;
@@ -41,11 +41,18 @@ impl EventManager {
     ///
     /// # Arguments
     /// * `callback` - Function receiving (`full_key`, `old_value`, `new_value`)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn on_change<F>(&self, callback: F)
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
     {
-        let mut guard = self.global_listeners.write_recovered().expect("Lock poisoned");
+        let mut guard = self
+            .global_listeners
+            .write_recovered()
+            .expect("Lock poisoned");
         guard.push(Arc::new(callback));
     }
 
@@ -54,6 +61,10 @@ impl EventManager {
     /// # Arguments
     /// * `key` - The setting key (e.g., "`general.dark_mode`")
     /// * `callback` - Function receiving (`full_key`, `old_value`, `new_value`)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn watch<F>(&self, key: &str, callback: F)
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
@@ -69,6 +80,14 @@ impl EventManager {
     ///
     /// Validators are called before saving. If any validator returns an error,
     /// the save is rejected.
+    ///
+    /// # Arguments
+    /// * `key` - The setting key (e.g., "`general.dark_mode`")
+    /// * `validator` - Function receiving (`full_key`, `old_value`, `new_value`)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn add_validator<F>(&self, key: &str, validator: F)
     where
         F: Fn(&Value) -> Result<(), String> + Send + Sync + 'static,
@@ -87,6 +106,10 @@ impl EventManager {
     /// # Errors
     ///
     /// Returns the first validation error message if any validator fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn validate(&self, key: &str, value: &Value) -> Result<(), String> {
         let guard = self.validators.read_recovered().expect("Lock poisoned");
         if let Some(validators) = guard.get(key) {
@@ -98,10 +121,22 @@ impl EventManager {
     }
 
     /// Notify all listeners about a change
+    ///
+    /// # Arguments
+    /// * `key` - The setting key (e.g., "`general.dark_mode`")
+    /// * `old_value` - The old value
+    /// * `new_value` - The new value
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn notify(&self, key: &str, old_value: &Value, new_value: &Value) {
         // Call global listeners
         {
-            let guard = self.global_listeners.read_recovered().expect("Lock poisoned");
+            let guard = self
+                .global_listeners
+                .read_recovered()
+                .expect("Lock poisoned");
             for callback in guard.iter() {
                 callback(key, old_value, new_value);
             }
@@ -119,15 +154,29 @@ impl EventManager {
     }
 
     /// Remove all listeners for a specific key
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn unwatch(&self, key: &str) {
         let mut guard = self.key_listeners.write_recovered().expect("Lock poisoned");
         guard.remove(key);
     }
 
     /// Clear all listeners
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn clear(&self) {
-        self.global_listeners.write_recovered().expect("Lock poisoned").clear();
-        self.key_listeners.write_recovered().expect("Lock poisoned").clear();
+        self.global_listeners
+            .write_recovered()
+            .expect("Lock poisoned")
+            .clear();
+        self.key_listeners
+            .write_recovered()
+            .expect("Lock poisoned")
+            .clear();
     }
 }
 

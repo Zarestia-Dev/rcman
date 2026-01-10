@@ -125,7 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Save a setting
     println!("\n🔧 Changing theme to 'dark'...");
-    manager.save_setting("ui", "theme", json!("dark"))?;
+    manager.save_setting("ui", "theme", &json!("dark"))?;
 
     // Load startup settings as struct
     let app: AppSettings = manager.get_all()?;
@@ -145,14 +145,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🔧 Adding new IP to allowed list...");
     let mut new_ips = app.network.allowed_ips.clone();
     new_ips.push("192.168.1.1".to_string());
-    manager.save_setting("network", "allowed_ips", json!(new_ips))?;
+    manager.save_setting("network", "allowed_ips", &json!(new_ips))?;
 
     let app: AppSettings = manager.get_all()?;
     println!("✅ Updated allowed IPs: {:?}", app.network.allowed_ips);
 
     println!(
         "\n💾 Config location: {:?}",
-        manager.config().settings_path()
+        manager.config().settings_path().display()
     );
 
     Ok(())

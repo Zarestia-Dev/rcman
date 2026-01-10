@@ -217,7 +217,7 @@ pub mod profiles;
 pub mod credentials;
 
 // Re-exports
-pub use docs::{generate_docs, generate_docs_from_metadata, DocsConfig};
+pub use docs::{DocsConfig, generate_docs, generate_docs_from_metadata};
 pub use error::{Error, Result};
 pub use events::EventManager;
 pub use manager::{SettingsManager, SettingsManagerBuilder};
@@ -234,8 +234,8 @@ pub use storage::{JsonStorage, StorageBackend};
 // Re-exports from config
 pub use cache::CacheStrategy;
 pub use config::{
-    opt, SettingMetadata, SettingOption, SettingType, SettingsConfig, SettingsConfigBuilder,
-    SettingsSchema,
+    DefaultEnvSource, EnvSource, SettingMetadata, SettingOption, SettingType, SettingsConfig,
+    SettingsConfigBuilder, SettingsSchema, opt,
 };
 
 // Backup re-exports (feature-gated)

@@ -17,7 +17,7 @@ impl CacheStrategy {
     ///
     /// # Errors
     ///
-    /// Returns error if LRU size is 0 (would panic on NonZeroUsize)
+    /// Returns error if LRU size is 0 (would panic on `NonZeroUsize`)
     pub fn validate(&self) -> crate::Result<()> {
         match self {
             CacheStrategy::Lru(size) if *size == 0 => Err(crate::Error::Config(

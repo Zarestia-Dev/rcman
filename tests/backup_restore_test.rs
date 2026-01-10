@@ -24,11 +24,11 @@ fn create_fixture_with_data() -> TestFixture {
     let _ = fixture.manager.get_all().unwrap();
     fixture
         .manager
-        .save_setting("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", &json!("light"))
         .unwrap();
     fixture
         .manager
-        .save_setting("ui", "font_size", json!(18.0))
+        .save_setting("ui", "font_size", &json!(18.0))
         .unwrap();
 
     // Add some sub-settings data
@@ -365,7 +365,7 @@ fn test_restore_skip_existing() {
     let _ = new_fixture.manager.get_all().unwrap();
     new_fixture
         .manager
-        .save_setting("ui", "theme", json!("system"))
+        .save_setting("ui", "theme", &json!("system"))
         .unwrap();
 
     // Restore WITHOUT overwrite (should skip existing)
@@ -396,7 +396,7 @@ fn test_restore_overwrite_existing() {
     let _ = new_fixture.manager.get_all().unwrap();
     new_fixture
         .manager
-        .save_setting("ui", "theme", json!("system"))
+        .save_setting("ui", "theme", &json!("system"))
         .unwrap();
 
     // Restore WITH overwrite

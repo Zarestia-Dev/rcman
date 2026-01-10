@@ -4,7 +4,7 @@
 
 #[cfg(feature = "backup")]
 use rcman::{
-    settings, BackupOptions, RestoreOptions, SettingMetadata, SettingsManager, SettingsSchema,
+    BackupOptions, RestoreOptions, SettingMetadata, SettingsManager, SettingsSchema, settings,
 };
 #[cfg(feature = "backup")]
 use serde::{Deserialize, Serialize};
@@ -45,9 +45,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create some settings
     println!("📝 Creating initial settings...");
     manager.metadata()?;
-    manager.save_setting("app", "theme", json!("dark"))?;
-    manager.save_setting("user", "name", json!("Alice"))?;
-    manager.save_setting("user", "email", json!("alice@example.com"))?;
+    manager.save_setting("app", "theme", &json!("dark"))?;
+    manager.save_setting("user", "name", &json!("Alice"))?;
+    manager.save_setting("user", "email", &json!("alice@example.com"))?;
 
     let settings = manager.metadata()?;
     println!("✅ Initial settings:");
@@ -60,12 +60,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .output_dir("./example_config/backups")
             .note("Example backup"),
     )?;
-    println!("✅ Backup created: {:?}\n", backup_path);
+    println!("✅ Backup created: {}", backup_path.display());
 
     // Modify settings
     println!("🔧 Modifying settings...");
-    manager.save_setting("app", "theme", json!("light"))?;
-    manager.save_setting("user", "name", json!("Bob"))?;
+    manager.save_setting("app", "theme", &json!("light"))?;
+    manager.save_setting("user", "name", &json!("Bob"))?;
 
     let modified = manager.metadata()?;
     println!("✅ Modified settings:");
@@ -86,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}\n", serde_json::to_string_pretty(&restored)?);
 
     println!("✨ Backup/restore example complete!");
-    println!("📁 Backup saved to: {:?}", backup_path);
+    println!("📁 Backup saved to: {}", backup_path.display());
 
     Ok(())
 }

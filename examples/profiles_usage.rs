@@ -3,7 +3,7 @@
 //! Demonstrates how to use profiles with sub-settings to maintain
 //! multiple named configurations.
 //!
-//! Run with: cargo run --example profiles_usage --features profiles
+//! Run with: cargo run --example `profiles_usage` --features profiles
 
 use rcman::{SettingsManager, SubSettingsConfig};
 use serde::{Deserialize, Serialize};
@@ -113,7 +113,7 @@ fn main() -> rcman::Result<()> {
 
     println!("\n📢 Setting up event listener...");
     profiles.set_on_event(|event| {
-        println!("  🔔 Profile event: {:?}", event);
+        println!("  🔔 Profile event: {event:?}");
     });
 
     profiles.create("demo")?;
@@ -136,10 +136,10 @@ fn print_tree(path: &std::path::Path, depth: usize) {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             if entry.path().is_dir() {
-                println!("{}{}/", indent, name_str);
+                println!("{indent}{name_str}/");
                 print_tree(&entry.path(), depth + 1);
             } else {
-                println!("{}{}", indent, name_str);
+                println!("{indent}{name_str}");
             }
         }
     }

@@ -242,8 +242,40 @@ impl BackupOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RestoreControl {
+    /// Whether to overwrite existing entries
+    pub overwrite_existing: bool,
+    /// Dry run mode - preview what would be restored without making changes
+    pub dry_run: bool,
+    /// Whether to verify the data archive checksum
+    pub verify_checksum: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RestoreScope {
+    /// Whether to restore main settings
+    pub restore_settings: bool,
+}
+
+impl Default for RestoreScope {
+    fn default() -> Self {
+        Self {
+            restore_settings: true,
+        }
+    }
+}
+
 /// Options for restoring a backup
-#[derive(Debug, Clone)]
+/// Flags for restore options
+#[derive(Debug, Clone, Default, Copy)]
+pub struct RestoreFlags {
+    pub control: RestoreControl,
+    pub scope: RestoreScope,
+}
+
+/// Options for restoring a backup
+#[derive(Debug, Clone, Default)]
 pub struct RestoreOptions {
     /// Path to the backup file
     pub backup_path: PathBuf,
@@ -251,8 +283,8 @@ pub struct RestoreOptions {
     /// Password for decryption (if backup is encrypted)
     pub password: Option<String>,
 
-    /// Whether to restore main settings
-    pub restore_settings: bool,
+    /// flags
+    pub flags: RestoreFlags,
 
     /// Sub-settings to restore (category -> items, empty vec = all items in category)
     /// If empty `HashMap`, restores all sub-settings from backup
@@ -261,15 +293,6 @@ pub struct RestoreOptions {
     /// External config IDs to restore (empty = all from backup)
     pub restore_external_configs: Vec<String>,
 
-    /// Whether to overwrite existing entries
-    pub overwrite_existing: bool,
-
-    /// Dry run mode - preview what would be restored without making changes
-    pub dry_run: bool,
-
-    /// Whether to verify the data archive checksum
-    pub verify_checksum: bool,
-
     /// Restore specific profile from backup (if profiles enabled)
     #[cfg(feature = "profiles")]
     pub restore_profile: Option<String>,
@@ -277,25 +300,6 @@ pub struct RestoreOptions {
     /// Rename restored profile to this name (requires `restore_profile`)
     #[cfg(feature = "profiles")]
     pub restore_profile_as: Option<String>,
-}
-
-impl Default for RestoreOptions {
-    fn default() -> Self {
-        Self {
-            backup_path: PathBuf::new(),
-            password: None,
-            restore_settings: true,
-            restore_sub_settings: std::collections::HashMap::new(),
-            restore_external_configs: Vec::new(),
-            overwrite_existing: false,
-            dry_run: false,
-            verify_checksum: true,
-            #[cfg(feature = "profiles")]
-            restore_profile: None,
-            #[cfg(feature = "profiles")]
-            restore_profile_as: None,
-        }
-    }
 }
 
 impl RestoreOptions {
@@ -327,28 +331,28 @@ impl RestoreOptions {
     /// Enable dry run mode (preview without making changes)
     #[must_use]
     pub fn dry_run(mut self, dry_run: bool) -> Self {
-        self.dry_run = dry_run;
+        self.flags.control.dry_run = dry_run;
         self
     }
 
     /// Set whether to overwrite existing entries
     #[must_use]
     pub fn overwrite(mut self, overwrite: bool) -> Self {
-        self.overwrite_existing = overwrite;
+        self.flags.control.overwrite_existing = overwrite;
         self
     }
 
     /// Set whether to verify the backup checksum
     #[must_use]
     pub fn verify_checksum(mut self, verify: bool) -> Self {
-        self.verify_checksum = verify;
+        self.flags.control.verify_checksum = verify;
         self
     }
 
     /// Set whether to restore main settings
     #[must_use]
     pub fn restore_settings(mut self, restore: bool) -> Self {
-        self.restore_settings = restore;
+        self.flags.scope.restore_settings = restore;
         self
     }
 

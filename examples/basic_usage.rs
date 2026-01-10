@@ -2,7 +2,7 @@
 //
 // Run with: cargo run --example basic_usage
 
-use rcman::{opt, settings, SettingMetadata, SettingsManager, SettingsSchema};
+use rcman::{SettingMetadata, SettingsManager, SettingsSchema, opt, settings};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -32,7 +32,7 @@ impl SettingsSchema for AppSettings {
                 .max(65535.0)
                 .category("Network"),
 
-            "network.allowed_origins" => SettingMetadata::list("Allowed Origins", vec![
+            "network.allowed_origins" => SettingMetadata::list("Allowed Origins", &[
                 "http://localhost:3000".to_string(),
             ])
                 .description("CORS allowed origins")
@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Update a setting
     println!("🔧 Changing theme to 'dark'...");
-    manager.save_setting("app", "theme", json!("dark"))?;
+    manager.save_setting("app", "theme", &json!("dark"))?;
 
     // Load again to see the change
     let updated = manager.metadata()?;
@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Reset a setting to default
     println!("🔄 Resetting theme to default...");
     let default_theme = manager.reset_setting("app", "theme")?;
-    println!("✅ Theme reset to: {}\n", default_theme);
+    println!("✅ Theme reset to: {default_theme}\n");
 
     // Working with list settings
     println!("📋 Working with List Settings:");
@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings_meta = manager.metadata()?;
     if let Some(meta) = settings_meta.get("network.allowed_origins") {
         if let Some(value) = &meta.value {
-            println!("Current allowed origins: {}", value);
+            println!("Current allowed origins: {value}");
         }
     }
 
@@ -89,20 +89,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     manager.save_setting(
         "network",
         "allowed_origins",
-        json!(["http://localhost:3000", "https://example.com"]),
+        &json!(["http://localhost:3000", "https://example.com"]),
     )?;
 
     // Load settings with metadata to see the change
     let updated = manager.metadata()?;
     if let Some(meta) = updated.get("network.allowed_origins") {
         if let Some(value) = &meta.value {
-            println!("✅ Updated allowed origins: {}\n", value);
+            println!("✅ Updated allowed origins: {value}\n");
         }
     }
 
     println!(
         "💾 Settings file location: {:?}",
-        manager.config().settings_path()
+        manager.config().settings_path().display()
     );
 
     Ok(())

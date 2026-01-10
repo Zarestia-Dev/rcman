@@ -750,6 +750,21 @@ fn test_migration_v1_to_v2() {
 })
 ```
 
+### Testing With Environment Variables
+
+rcman uses dependency injection for env vars, making tests clean:
+
+```rust
+use rcman::{EnvSource, MockEnvSource};
+
+let mock_env = Arc::new(MockEnvSource::new());
+mock_env.set("MYAPP_THEME", "dark");
+
+let config = SettingsConfig::builder("my-app", "1.0")
+    .with_env_source(mock_env)
+    .build();
+```
+
 ---
 
 ## Performance

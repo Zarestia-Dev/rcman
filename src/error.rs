@@ -177,7 +177,9 @@ pub enum Error {
     // -------------------------------------------------------------------------
     // Concurrency Errors
     // -------------------------------------------------------------------------
-    #[error("Internal lock was poisoned - possible thread panic. The operation may have left data in an inconsistent state.")]
+    #[error(
+        "Internal lock was poisoned - possible thread panic. The operation may have left data in an inconsistent state."
+    )]
     LockPoisoned,
 
     #[error("Lock error: {0}")]
@@ -245,7 +247,7 @@ pub fn write_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
 }
 
 /// Read directory entries with proper error handling
-#[cfg(all(feature = "backup", feature = "profiles"))]
+#[cfg(feature = "backup")]
 pub fn read_dir(path: &Path) -> Result<std::fs::ReadDir> {
     std::fs::read_dir(path).map_err(|e| Error::DirectoryRead {
         path: path.to_path_buf(),

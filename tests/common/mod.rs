@@ -5,13 +5,52 @@
 #![allow(dead_code)]
 
 use rcman::{
-    opt, settings, SettingMetadata, SettingsConfig, SettingsManager, SettingsSchema,
-    SubSettingsConfig,
+    EnvSource, SettingMetadata, SettingsConfig, SettingsManager, SettingsSchema, SubSettingsConfig,
+    opt, settings,
 };
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
+
+// =============================================================================
+// Mock Environment Source
+// =============================================================================
+
+#[derive(Clone, Default)]
+pub struct MockEnvSource {
+    vars: Arc<Mutex<HashMap<String, String>>>,
+}
+
+impl MockEnvSource {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set(&self, key: &str, value: &str) {
+        self.vars
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), value.to_string());
+    }
+
+    pub fn remove(&self, key: &str) {
+        self.vars.lock().unwrap().remove(key);
+    }
+}
+
+impl EnvSource for MockEnvSource {
+    fn var(&self, key: &str) -> Result<String, std::env::VarError> {
+        self.vars
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+            .ok_or(std::env::VarError::NotPresent)
+    }
+}
 
 // =============================================================================
 // Test Settings Schema
@@ -57,34 +96,17 @@ impl Default for GeneralSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ApiSettings {
     pub key: String,
 }
 
-impl Default for ApiSettings {
-    fn default() -> Self {
-        Self {
-            key: "".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct PathsSettings {
     #[serde(rename = "config_dir")]
     pub config_dir: String,
     #[serde(rename = "log_file")]
     pub log_file: String,
-}
-
-impl Default for PathsSettings {
-    fn default() -> Self {
-        Self {
-            config_dir: "".to_string(),
-            log_file: "".to_string(),
-        }
-    }
 }
 
 impl SettingsSchema for TestSettings {
@@ -140,52 +162,75 @@ impl SettingsSchema for TestSettings {
 // Test Fixtures
 // =============================================================================
 
-/// Test fixture that provides a temporary directory and configured SettingsManager
+/// Test fixture that provides a temporary directory and configured `SettingsManager`
 pub struct TestFixture {
     pub temp_dir: TempDir,
     pub manager: SettingsManager<rcman::storage::JsonStorage, TestSettings>,
+    pub env_source: Arc<MockEnvSource>,
 }
 
 impl TestFixture {
     /// Create a new test fixture with default configuration
     pub fn new() -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let env_source = Arc::new(MockEnvSource::new());
         let config = SettingsConfig::builder("test-app", "1.0.0")
             .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
+            .with_env_source(env_source.clone() as Arc<dyn EnvSource>)
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");
 
-        Self { temp_dir, manager }
+        Self {
+            temp_dir,
+            manager,
+            env_source,
+        }
     }
 
     /// Create a fixture with sub-settings configured
     pub fn with_sub_settings() -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let env_source = Arc::new(MockEnvSource::new());
         let config = SettingsConfig::builder("test-app", "1.0.0")
             .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
+            .with_env_source(env_source.clone() as Arc<dyn EnvSource>)
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");
 
         // Register sub-settings manually
-        manager.register_sub_settings(SubSettingsConfig::new("remotes")).unwrap();
-        manager.register_sub_settings(SubSettingsConfig::singlefile("backends")).unwrap();
+        manager
+            .register_sub_settings(SubSettingsConfig::new("remotes"))
+            .unwrap();
+        manager
+            .register_sub_settings(SubSettingsConfig::singlefile("backends"))
+            .unwrap();
 
-        Self { temp_dir, manager }
+        Self {
+            temp_dir,
+            manager,
+            env_source,
+        }
     }
 
     /// Create a fixture with environment variable prefix
     pub fn with_env_prefix(prefix: &str) -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let env_source = Arc::new(MockEnvSource::new());
         let config = SettingsConfig::builder("test-app", "1.0.0")
             .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
             .with_env_prefix(prefix)
+            .with_env_source(env_source.clone() as Arc<dyn EnvSource>)
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");
 
-        Self { temp_dir, manager }
+        Self {
+            temp_dir,
+            manager,
+            env_source,
+        }
     }
 
     /// Get the config directory path
@@ -222,7 +267,5 @@ pub fn read_settings_file(fixture: &TestFixture) -> Option<serde_json::Value> {
 
 /// Check if a key exists in the settings JSON file
 pub fn key_exists_in_file(fixture: &TestFixture, key: &str) -> bool {
-    read_settings_file(fixture)
-        .map(|json| json.get(key).is_some())
-        .unwrap_or(false)
+    read_settings_file(fixture).is_some_and(|json| json.get(key).is_some())
 }

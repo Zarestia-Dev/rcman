@@ -5,7 +5,7 @@
 //
 // Run with: cargo run --example list_settings
 
-use rcman::{settings, SettingMetadata, SettingType, SettingsManager, SettingsSchema};
+use rcman::{SettingMetadata, SettingType, SettingsManager, SettingsSchema, settings};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ impl SettingsSchema for AppSettings {
             // List of allowed email domains
             "security.allowed_domains" => SettingMetadata::list(
                 "Allowed Domains",
-                vec!["example.com".to_string(), "mycompany.com".to_string()]
+                &["example.com".to_string(), "mycompany.com".to_string()]
             )
                 .description("Email domains allowed to register")
                 .category("Security"),
@@ -27,7 +27,7 @@ impl SettingsSchema for AppSettings {
             // List of blocked IPs
             "security.blocked_ips" => SettingMetadata::list(
                 "Blocked IPs",
-                vec![]
+                &[]
             )
                 .description("IP addresses that are blocked from accessing the service")
                 .category("Security"),
@@ -35,7 +35,7 @@ impl SettingsSchema for AppSettings {
             // List of enabled features (feature flags)
             "features.enabled" => SettingMetadata::list(
                 "Enabled Features",
-                vec!["notifications".to_string(), "analytics".to_string()]
+                &["notifications".to_string(), "analytics".to_string()]
             )
                 .description("List of enabled feature flags")
                 .category("Features")
@@ -44,7 +44,7 @@ impl SettingsSchema for AppSettings {
             // List of API endpoints
             "network.endpoints" => SettingMetadata::list(
                 "API Endpoints",
-                vec![
+                &[
                     "https://api.example.com/v1".to_string(),
                     "https://api.example.com/v2".to_string(),
                 ]
@@ -55,7 +55,7 @@ impl SettingsSchema for AppSettings {
             // List of tags or labels
             "app.tags" => SettingMetadata::list(
                 "Application Tags",
-                vec!["production".to_string()]
+                &["production".to_string()]
             )
                 .description("Tags for categorizing this application instance")
                 .category("General"),
@@ -87,37 +87,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "newcorp.com".to_string(),
     ];
 
-    manager.save_setting("security", "allowed_domains", json!(allowed_domains))?;
-    println!("Saved allowed domains: {:?}\n", allowed_domains);
+    manager.save_setting("security", "allowed_domains", &json!(allowed_domains))?;
+    println!("Saved allowed domains: {allowed_domains:?}\n");
 
     // =========================================================================
     // Example 2: Working with empty lists
     // =========================================================================
     println!("🗑️  Example 2: Working with empty lists");
     let blocked_ips: Vec<String> = vec![];
-    println!("Blocked IPs (initially empty): {:?}", blocked_ips);
+    println!("Blocked IPs (initially empty): {blocked_ips:?}");
 
     // Add some blocked IPs
     let new_blocked = vec!["192.168.1.100".to_string(), "10.0.0.50".to_string()];
-    manager.save_setting("security", "blocked_ips", json!(new_blocked))?;
-    println!("After adding blocked IPs: {:?}\n", new_blocked);
+    manager.save_setting("security", "blocked_ips", &json!(new_blocked))?;
+    println!("After adding blocked IPs: {new_blocked:?}\n");
 
     // =========================================================================
     // Example 3: Managing feature flags (list of strings)
     // =========================================================================
     println!("🚩 Example 3: Feature flags");
     let mut features = vec!["notifications".to_string(), "analytics".to_string()];
-    println!("Current features: {:?}", features);
+    println!("Current features: {features:?}");
 
     // Toggle a feature (add it)
     let feature_to_add = "dark_mode";
     if !features.contains(&feature_to_add.to_string()) {
         features.push(feature_to_add.to_string());
-        println!("Enabled feature: {}", feature_to_add);
+        println!("Enabled feature: {feature_to_add}");
     }
 
-    manager.save_setting("features", "enabled", json!(features))?;
-    println!("Updated features: {:?}\n", features);
+    manager.save_setting("features", "enabled", &json!(features))?;
+    println!("Updated features: {features:?}\n");
 
     // =========================================================================
     // Example 4: Checking if list contains an item
@@ -130,12 +130,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let check_endpoint = "https://api.example.com/v1";
     if endpoints.contains(&check_endpoint.to_string()) {
-        println!("✅ Endpoint '{}' is configured", check_endpoint);
+        println!("✅ Endpoint '{check_endpoint}' is configured");
     } else {
-        println!("❌ Endpoint '{}' is NOT configured", check_endpoint);
+        println!("❌ Endpoint '{check_endpoint}' is NOT configured");
     }
 
-    manager.save_setting("network", "endpoints", json!(endpoints))?;
+    manager.save_setting("network", "endpoints", &json!(endpoints))?;
 
     // =========================================================================
     // Example 5: Sorting and deduplicating lists
@@ -148,14 +148,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "test".to_string(),
         "staging".to_string(), // duplicate
     ];
-    println!("Tags before: {:?}", tags);
+    println!("Tags before: {tags:?}");
 
     // Sort and deduplicate
     tags.sort();
     tags.dedup();
 
-    manager.save_setting("app", "tags", json!(tags))?;
-    println!("After sort + dedup: {:?}\n", tags);
+    manager.save_setting("app", "tags", &json!(tags))?;
+    println!("After sort + dedup: {tags:?}\n");
 
     // =========================================================================
     // Example 6: Resetting list to default
@@ -163,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔄 Example 6: Resetting to default");
     println!("Resetting allowed_domains to default...");
     let default_value = manager.reset_setting("security", "allowed_domains")?;
-    println!("Default value: {:?}\n", default_value);
+    println!("Default value: {default_value:?}\n");
 
     // =========================================================================
     // Example 7: View all list settings with metadata
@@ -177,8 +177,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "\n💾 Config location: {:?}",
-        manager.config().settings_path()
+        "💾 Config location: {}",
+        manager.config().settings_path().display()
     );
 
     Ok(())

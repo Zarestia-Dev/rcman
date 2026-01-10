@@ -4,7 +4,7 @@ use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
 use crate::sync::{MutexExt, RwLockExt};
 use log::{debug, info, warn};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -306,7 +306,7 @@ use std::collections::HashMap;
 #[derive(Debug)]
 /// Cache storage for sub-settings
 enum SubSettingsCache {
-    /// Full cache - all entities in HashMap
+    /// Full cache - all entities in `HashMap`
     Full(HashMap<String, Value>),
     /// LRU cache - bounded size
     Lru(lru::LruCache<String, Value>),
@@ -360,7 +360,7 @@ impl SubSettingsCache {
         }
     }
 
-    /// Convert cache to HashMap (for single-file writes)
+    /// Convert cache to `HashMap` (for single-file writes)
     fn to_hashmap(&self) -> HashMap<String, Value> {
         match self {
             SubSettingsCache::Full(map) => map.clone(),
@@ -376,9 +376,9 @@ struct SubSettingsState {
 
     /// Cache storage based on strategy
     /// - None: not initialized yet (lazy load)
-    /// - Some(SubSettingsCache::Full): full cache populated
-    /// - Some(SubSettingsCache::Lru): LRU cache populated  
-    /// - Some(SubSettingsCache::None): no-cache strategy (always reads from disk)
+    /// - `Some(SubSettingsCache::Full)`: full cache populated
+    /// - `Some(SubSettingsCache::Lru)`: LRU cache populated  
+    /// - `Some(SubSettingsCache::None)`: no-cache strategy (always reads from disk)
     cache: Option<SubSettingsCache>,
 }
 
@@ -387,7 +387,7 @@ pub struct SubSettings<S: StorageBackend = crate::storage::JsonStorage> {
     /// Configuration
     config: SubSettingsConfig,
 
-    /// Internal state (base_dir + cache)
+    /// Internal state (`base_dir` + cache)
     state: RwLock<SubSettingsState>,
 
     /// Root directory (before profile path is applied)
@@ -396,7 +396,7 @@ pub struct SubSettings<S: StorageBackend = crate::storage::JsonStorage> {
     #[allow(dead_code)]
     root_dir: PathBuf,
 
-    /// Storage backend (defaults to JsonStorage)
+    /// Storage backend (defaults to `JsonStorage`)
     storage: S,
 
     /// Mutex to serialize save operations (prevents race conditions)
@@ -420,8 +420,16 @@ pub enum SubSettingsAction {
 }
 
 impl<S: StorageBackend> SubSettings<S> {
-    /// Create a new sub-settings handler
-    pub fn new(config_dir: &std::path::Path, config: SubSettingsConfig, storage: S) -> Result<Self> {
+    /// Create a new sub-settings manager
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory path is invalid or if the storage backend cannot be initialized.
+    pub fn new(
+        config_dir: &std::path::Path,
+        config: SubSettingsConfig,
+        storage: S,
+    ) -> Result<Self> {
         // Validate cache strategy configuration (prevents LRU(0) panic)
         if let Err(e) = config.cache_strategy.validate() {
             return Err(Error::InvalidCacheStrategy(e.to_string()));
@@ -499,7 +507,7 @@ impl<S: StorageBackend> SubSettings<S> {
 
     /// Get the single-file path (for single-file mode)
     fn single_file_path(base_dir: &std::path::Path, name: &str, ext: &str) -> PathBuf {
-        base_dir.join(format!("{}.{}", name, ext))
+        base_dir.join(format!("{name}.{ext}"))
     }
 
     /// Check if we're in single-file mode
@@ -530,6 +538,10 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Get the profile manager for this sub-settings type
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ProfilesNotEnabled` if profiles are not enabled for this sub-settings type.
     #[cfg(feature = "profiles")]
     pub fn profiles(&self) -> Result<&crate::profiles::ProfileManager> {
         self.profile_manager
@@ -538,6 +550,14 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Switch to a different profile
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the profile to switch to
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the profile does not exist or if context switching fails.
     #[cfg(feature = "profiles")]
     pub fn switch_profile(&self, name: &str) -> Result<()> {
         let pm = self.profiles()?;
@@ -554,6 +574,14 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Set a callback for change notifications
+    ///
+    /// # Arguments
+    ///
+    /// * `callback` - The callback function to be called when a change occurs
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the internal lock is poisoned.
     pub fn set_on_change<F>(&self, callback: F) -> Result<()>
     where
         F: Fn(&str, SubSettingsAction) + Send + Sync + 'static,
@@ -606,9 +634,9 @@ impl<S: StorageBackend> SubSettings<S> {
                 }
                 Err(e) => {
                     return Err(Error::FileRead {
-                        path: path.to_path_buf(),
+                        path: path.clone(),
                         source: e,
-                    })
+                    });
                 }
             };
 
@@ -644,7 +672,7 @@ impl<S: StorageBackend> SubSettings<S> {
                         lru::LruCache::new(std::num::NonZeroUsize::new(*max_size).ok_or_else(
                             || Error::InvalidCacheStrategy("LRU size must be > 0".into()),
                         )?);
-                    for (k, v) in obj.iter() {
+                    for (k, v) in obj {
                         lru.put(k.clone(), v.clone());
                     }
                     SubSettingsCache::Lru(lru)
@@ -668,6 +696,15 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Load an entry (returns raw JSON Value)
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the entry to load
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::SubSettingsEntryNotFound` if the entry does not exist,
+    /// or other I/O errors if reading fails.
     pub fn get_value(&self, name: &str) -> Result<Value> {
         self.ensure_cache_populated()?;
 
@@ -703,7 +740,7 @@ impl<S: StorageBackend> SubSettings<S> {
                 )));
             }
             return Err(Error::FileRead {
-                path: path.to_path_buf(),
+                path: path.clone(),
                 source: e,
             });
         }
@@ -749,12 +786,29 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Load a typed entry
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the entry to load
+    ///
+    /// # Errors
+    ///
+    /// Returns errors from `get_value` or if deserialization fails.
     pub fn get<T: DeserializeOwned>(&self, name: &str) -> Result<T> {
         let value = self.get_value(name)?;
         serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
     }
 
     /// Save an entry
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the entry to save
+    /// * `value` - The value to save
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors if writing fails or serialization errors.
     pub fn set<T: Serialize + Sync>(&self, name: &str, value: &T) -> Result<()> {
         self.ensure_cache_populated()?;
         let json_value = serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
@@ -780,7 +834,7 @@ impl<S: StorageBackend> SubSettings<S> {
             };
 
             let base_dir = &state.base_dir; // use current base dir
-                                            // Ensure dir exists
+            // Ensure dir exists
             if !base_dir.exists() {
                 std::fs::create_dir_all(base_dir).map_err(|e| Error::DirectoryCreate {
                     path: base_dir.clone(),
@@ -838,6 +892,14 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Delete an entry
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the entry to delete
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors if the file cannot be removed (except `NotFound`).
     pub fn delete(&self, name: &str) -> Result<()> {
         self.ensure_cache_populated()?;
 
@@ -853,7 +915,7 @@ impl<S: StorageBackend> SubSettings<S> {
 
         if self.is_single_file() {
             if !existed {
-                warn!("Sub-settings entry '{}' not found, nothing to delete", name);
+                warn!("Sub-settings entry '{name}' not found, nothing to delete");
                 return Ok(());
             }
 
@@ -873,20 +935,20 @@ impl<S: StorageBackend> SubSettings<S> {
             if let Err(e) = std::fs::metadata(&path) {
                 if e.kind() != std::io::ErrorKind::NotFound {
                     return Err(Error::FileRead {
-                        path: path.to_path_buf(),
+                        path: path.clone(),
                         source: e,
                     });
                 }
                 // If not found, that's fine from deletion perspective
             } else {
                 std::fs::remove_file(&path).map_err(|e| Error::FileDelete {
-                    path: path.to_path_buf(),
+                    path: path.clone(),
                     source: e,
                 })?;
             }
         }
 
-        info!("Sub-settings '{}' deleted", name);
+        info!("Sub-settings '{name}' deleted");
         drop(state); // Drop lock before notify
 
         self.notify_change(name, SubSettingsAction::Deleted);
@@ -894,6 +956,10 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// List all entries
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors if reading the directory fails.
     pub fn list(&self) -> Result<Vec<String>> {
         self.ensure_cache_populated()?;
 
@@ -947,6 +1013,14 @@ impl<S: StorageBackend> SubSettings<S> {
     }
 
     /// Check if an entry exists
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the entry to check
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors if checking file metadata fails (except `NotFound`).
     pub fn exists(&self, name: &str) -> Result<bool> {
         self.ensure_cache_populated()?;
 
@@ -969,7 +1043,7 @@ impl<S: StorageBackend> SubSettings<S> {
                 Ok(_) => Ok(true),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
                 Err(e) => Err(Error::FileRead {
-                    path: path.to_path_buf(),
+                    path: path.clone(),
                     source: e,
                 }),
             }
@@ -978,18 +1052,17 @@ impl<S: StorageBackend> SubSettings<S> {
 
     /// Get the directory path for this sub-settings type
     pub fn directory(&self) -> PathBuf {
-        self.state.read_recovered().map(|s| s.base_dir.clone()).unwrap_or_default()
+        self.state
+            .read_recovered()
+            .map(|s| s.base_dir.clone())
+            .unwrap_or_default()
     }
 
     /// Get the single file path (only applicable in single-file mode)
     pub fn file_path(&self) -> Option<PathBuf> {
         if self.is_single_file() {
             self.state.read_recovered().ok().map(|state| {
-                Self::single_file_path(
-                    &state.base_dir,
-                    &self.config.name,
-                    &self.config.extension,
-                )
+                Self::single_file_path(&state.base_dir, &self.config.name, &self.config.extension)
             })
         } else {
             None
@@ -1138,8 +1211,7 @@ mod tests {
     fn test_invalid_cache_strategy() {
         let dir = tempdir().unwrap();
         // Create config with invalid LRU size (0)
-        let config = SubSettingsConfig::new("items")
-            .with_cache(crate::CacheStrategy::Lru(0));
+        let config = SubSettingsConfig::new("items").with_cache(crate::CacheStrategy::Lru(0));
         let storage = JsonStorage::new();
 
         // Should return error instead of panicking
@@ -1147,7 +1219,10 @@ mod tests {
         assert!(result.is_err());
         match result {
             Err(Error::InvalidCacheStrategy(msg)) => {
-                assert_eq!(msg, "Configuration error: LRU cache size must be greater than 0");
+                assert_eq!(
+                    msg,
+                    "Configuration error: LRU cache size must be greater than 0"
+                );
             }
             _ => panic!("Expected InvalidCacheStrategy error"),
         }

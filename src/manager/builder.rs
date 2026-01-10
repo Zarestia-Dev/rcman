@@ -55,12 +55,14 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     /// Set the configuration directory path.
     ///
     /// If not set, uses the system config directory.
+    #[must_use]
     pub fn with_config_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.config_builder = self.config_builder.with_config_dir(path); // Still delegates to old name
         self
     }
 
     /// Set the settings filename (default: "settings.json").
+    #[must_use]
     pub fn with_settings_file(mut self, filename: impl Into<String>) -> Self {
         self.config_builder = self.config_builder.settings_file(filename); // Still delegates to old name
         self

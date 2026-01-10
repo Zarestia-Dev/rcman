@@ -149,13 +149,13 @@ fn test_advanced_attributes() {
     let metadata = AdvancedSettings::get_metadata();
 
     let api_key = metadata.get("advanced.api_key").unwrap();
-    assert!(api_key.secret);
+    assert!(api_key.flags.system.secret);
 
     let debug_mode = metadata.get("advanced.debug_mode").unwrap();
-    assert!(debug_mode.advanced);
+    assert!(debug_mode.flags.ui.advanced);
 
     let port = metadata.get("advanced.port").unwrap();
-    assert!(port.requires_restart);
+    assert!(port.flags.system.requires_restart);
 }
 
 // =============================================================================

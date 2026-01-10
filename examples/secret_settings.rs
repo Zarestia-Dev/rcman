@@ -3,7 +3,7 @@
 // Run with: cargo run --example secret_settings --features keychain
 
 #[cfg(feature = "keychain")]
-use rcman::{settings, SettingMetadata, SettingsManager, SettingsSchema};
+use rcman::{SettingMetadata, SettingsManager, SettingsSchema, settings};
 #[cfg(feature = "keychain")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "keychain")]
@@ -53,12 +53,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Save a secret (stored in keychain)
     println!("💾 Saving API key to keychain...");
-    manager.save_setting("secrets", "api_key", json!("sk_test_1234567890"))?;
+    manager.save_setting("secrets", "api_key", &json!("sk_test_1234567890"))?;
     println!("✅ API key saved securely\n");
 
     // Save another secret
     println!("💾 Saving database password to keychain...");
-    manager.save_setting("secrets", "db_password", json!("super_secret_password"))?;
+    manager.save_setting("secrets", "db_password", &json!("super_secret_password"))?;
     println!("✅ Database password saved securely\n");
 
     // Load settings again - secrets will be retrieved from keychain
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}\n", serde_json::to_string_pretty(&settings)?);
 
     println!("📁 Check your settings file - secrets are NOT there!");
-    println!("   File: {:?}\n", manager.config().settings_path());
+    println!("   File: {}\n", manager.config().settings_path().display());
 
     println!("🔑 Secrets are stored in your OS keychain:");
     #[cfg(target_os = "macos")]

@@ -657,7 +657,6 @@ fn sanitize_filename(name: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::SettingsConfig;
-    use crate::storage::JsonStorage;
     use crate::sub_settings::SubSettingsConfig;
     use serde_json::json;
     use tempfile::tempdir;
@@ -665,23 +664,9 @@ mod tests {
     #[test]
     fn test_create_full_backup() {
         let temp = tempdir().unwrap();
-        let config = SettingsConfig {
-            config_dir: temp.path().to_path_buf(),
-            settings_file: "settings.json".into(),
-            app_name: "test-app".into(),
-            app_version: "1.0.0".into(),
-            storage: JsonStorage::new(),
-            enable_credentials: false,
-            external_configs: Vec::new(),
-            env_prefix: None,
-            env_overrides_secrets: false,
-            migrator: None,
-            #[cfg(feature = "profiles")]
-            profiles_enabled: false,
-            #[cfg(feature = "profiles")]
-            profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData::<()>,
-        };
+        let config = SettingsConfig::builder("test-app", "1.0.0")
+            .with_config_dir(temp.path())
+            .build();
 
         let manager = SettingsManager::new(config).unwrap();
 
@@ -693,7 +678,9 @@ mod tests {
         .unwrap();
 
         // Register and populate sub-settings
-        manager.register_sub_settings(SubSettingsConfig::new("profiles")).unwrap();
+        manager
+            .register_sub_settings(SubSettingsConfig::new("profiles"))
+            .unwrap();
         let profiles = manager.sub_settings("profiles").unwrap();
         profiles
             .set("default", &json!({"name": "Default"}))
@@ -718,23 +705,9 @@ mod tests {
     #[test]
     fn test_analyze_backup() {
         let temp = tempdir().unwrap();
-        let config = SettingsConfig {
-            config_dir: temp.path().to_path_buf(),
-            settings_file: "settings.json".into(),
-            app_name: "test-app".into(),
-            app_version: "1.0.0".into(),
-            storage: JsonStorage::new(),
-            enable_credentials: false,
-            external_configs: Vec::new(),
-            env_prefix: None,
-            env_overrides_secrets: false,
-            migrator: None,
-            #[cfg(feature = "profiles")]
-            profiles_enabled: false,
-            #[cfg(feature = "profiles")]
-            profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData::<()>,
-        };
+        let config = SettingsConfig::builder("test-app", "1.0.0")
+            .with_config_dir(temp.path())
+            .build();
 
         let manager = SettingsManager::new(config).unwrap();
 
@@ -767,23 +740,9 @@ mod tests {
     #[test]
     fn test_partial_backup_logic() {
         let temp = tempdir().unwrap();
-        let config = SettingsConfig {
-            config_dir: temp.path().to_path_buf(),
-            settings_file: "settings.json".into(),
-            app_name: "test-app".into(),
-            app_version: "1.0.0".into(),
-            storage: JsonStorage::new(),
-            enable_credentials: false,
-            external_configs: Vec::new(),
-            env_prefix: None,
-            env_overrides_secrets: false,
-            migrator: None,
-            #[cfg(feature = "profiles")]
-            profiles_enabled: false,
-            #[cfg(feature = "profiles")]
-            profile_migrator: crate::profiles::ProfileMigrator::None,
-            _schema: std::marker::PhantomData::<()>,
-        };
+        let config = SettingsConfig::builder("test-app", "1.0.0")
+            .with_config_dir(temp.path())
+            .build();
 
         let manager = SettingsManager::new(config).unwrap();
 
@@ -795,7 +754,9 @@ mod tests {
         .unwrap();
 
         // Register and populate sub-settings
-        manager.register_sub_settings(SubSettingsConfig::new("profiles")).unwrap();
+        manager
+            .register_sub_settings(SubSettingsConfig::new("profiles"))
+            .unwrap();
         let profiles = manager.sub_settings("profiles").unwrap();
         profiles
             .set("default", &json!({"name": "Default"}))

@@ -1,4 +1,4 @@
-msrv = "1.70"
+msrv = "1.85"
 
 # Documentation: Allow these uppercase acronyms in doc comments
 doc-valid-idents = [

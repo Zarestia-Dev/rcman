@@ -9,6 +9,29 @@ use crate::storage::{JsonStorage, StorageBackend};
 #[cfg(feature = "backup")]
 use crate::backup::ExternalConfig;
 
+/// Trait for retrieving environment variables
+///
+/// This allows mocking environment variables in tests without
+/// using unsafe `std::env::set_var`.
+pub trait EnvSource: Send + Sync {
+    /// Retrieve an environment variable
+    ///
+    /// # Errors
+    ///
+    /// Returns `VarError` if the variable is not present or invalid unicode.
+    fn var(&self, key: &str) -> std::result::Result<String, std::env::VarError>;
+}
+
+/// Default implementation using `std::env`
+#[derive(Clone, Default)]
+pub struct DefaultEnvSource;
+
+impl EnvSource for DefaultEnvSource {
+    fn var(&self, key: &str) -> std::result::Result<String, std::env::VarError> {
+        std::env::var(key)
+    }
+}
+
 /// Configuration for initializing the `SettingsManager`
 pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchema = ()> {
     /// Directory where settings files will be stored
@@ -23,7 +46,7 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchem
     /// Application version (used for backup compatibility checks)
     pub app_version: String,
 
-    /// Storage backend (defaults to JsonStorage)
+    /// Storage backend (defaults to `JsonStorage`)
     pub(crate) storage: S,
 
     /// Enable credential management for secret settings
@@ -58,6 +81,9 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchem
     /// Marker for schema type (internal use)
     #[doc(hidden)]
     pub _schema: PhantomData<Schema>,
+
+    /// Source for environment variables (defaults to `std::env`)
+    pub env_source: std::sync::Arc<dyn EnvSource>,
 }
 
 impl Default for SettingsConfig {
@@ -79,6 +105,7 @@ impl Default for SettingsConfig {
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::default(),
             _schema: PhantomData,
+            env_source: std::sync::Arc::new(DefaultEnvSource),
         }
     }
 }
@@ -154,20 +181,37 @@ pub struct SettingsConfigBuilder<S: StorageBackend = JsonStorage, Schema: Settin
     settings_file: String,
     app_name: String,
     app_version: String,
-    pretty_json: bool,
-    enable_credentials: bool,
+    options: BuilderOptions,
     env_prefix: Option<String>,
-    env_overrides_secrets: bool,
     #[cfg(feature = "backup")]
     external_configs: Vec<ExternalConfig>,
     migrator: Option<std::sync::Arc<dyn Fn(serde_json::Value) -> serde_json::Value + Send + Sync>>,
     #[cfg(feature = "profiles")]
-    profiles_enabled: bool,
-    #[cfg(feature = "profiles")]
     profile_migrator: Option<crate::profiles::ProfileMigrator>,
+
+    env_source: Option<std::sync::Arc<dyn EnvSource>>,
 
     _schema: PhantomData<Schema>,
     _storage: PhantomData<S>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct BuilderConfigFlags {
+    pretty_json: bool,
+    #[cfg(feature = "profiles")]
+    profiles_enabled: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct BuilderSecurityFlags {
+    enable_credentials: bool,
+    env_overrides_secrets: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct BuilderOptions {
+    config: BuilderConfigFlags,
+    security: BuilderSecurityFlags,
 }
 
 impl<S: StorageBackend, Schema: SettingsSchema> std::fmt::Debug
@@ -180,16 +224,22 @@ impl<S: StorageBackend, Schema: SettingsSchema> std::fmt::Debug
             .field("settings_file", &self.settings_file)
             .field("app_name", &self.app_name)
             .field("app_version", &self.app_version)
-            .field("pretty_json", &self.pretty_json)
-            .field("enable_credentials", &self.enable_credentials)
+            .field("pretty_json", &self.options.config.pretty_json)
+            .field(
+                "enable_credentials",
+                &self.options.security.enable_credentials,
+            )
             .field("env_prefix", &self.env_prefix)
-            .field("env_overrides_secrets", &self.env_overrides_secrets);
+            .field(
+                "env_overrides_secrets",
+                &self.options.security.env_overrides_secrets,
+            );
 
         #[cfg(feature = "backup")]
         debug.field("external_configs", &self.external_configs);
 
         #[cfg(feature = "profiles")]
-        debug.field("profiles_enabled", &self.profiles_enabled);
+        debug.field("profiles_enabled", &self.options.config.profiles_enabled);
         #[cfg(feature = "profiles")]
         debug.field("profile_migrator", &self.profile_migrator);
 
@@ -206,17 +256,14 @@ impl SettingsConfigBuilder {
             settings_file: "settings.json".into(),
             app_name: app_name.into(),
             app_version: app_version.into(),
-            pretty_json: true,
-            enable_credentials: false,
+            options: BuilderOptions::default(),
             env_prefix: None,
-            env_overrides_secrets: false,
             #[cfg(feature = "backup")]
             external_configs: Vec::new(),
             migrator: None,
             #[cfg(feature = "profiles")]
-            profiles_enabled: false,
-            #[cfg(feature = "profiles")]
             profile_migrator: None,
+            env_source: None,
             _schema: PhantomData,
             _storage: PhantomData,
         }
@@ -236,8 +283,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     ///     .build();
     /// ```
     #[must_use]
-    pub fn compact_json(mut self) -> Self {
-        self.pretty_json = false;
+    pub fn with_pretty_json(mut self, pretty: bool) -> Self {
+        self.options.config.pretty_json = pretty;
         self
     }
     /// Set the configuration directory
@@ -267,13 +314,11 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         self
     }
 
-    /// Enable credential management for secret settings
-    ///
     /// When enabled, settings marked as `secret: true` in metadata
     /// will be stored in the OS keychain instead of the settings file.
     #[must_use]
     pub fn with_credentials(mut self) -> Self {
-        self.enable_credentials = true;
+        self.options.security.enable_credentials = true;
         self
     }
 
@@ -335,7 +380,16 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// ```
     #[must_use]
     pub fn env_overrides_secrets(mut self, allow: bool) -> Self {
-        self.env_overrides_secrets = allow;
+        self.options.security.env_overrides_secrets = allow;
+        self
+    }
+
+    /// Set a custom environment variable source
+    ///
+    /// Useful for testing or injecting env vars procedurally.
+    #[must_use]
+    pub fn with_env_source(mut self, source: std::sync::Arc<dyn EnvSource>) -> Self {
+        self.env_source = Some(source);
         self
     }
 
@@ -395,7 +449,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "profiles")]
     #[must_use]
     pub fn with_profiles(mut self) -> Self {
-        self.profiles_enabled = true;
+        self.options.config.profiles_enabled = true;
         self
     }
 
@@ -431,23 +485,21 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     ///     .with_schema::<AppSettings>()  // Bind the schema
     ///     .build();
     /// ```
+    #[must_use]
     pub fn with_schema<NewSchema: SettingsSchema>(self) -> SettingsConfigBuilder<S, NewSchema> {
         SettingsConfigBuilder {
             config_dir: self.config_dir,
             settings_file: self.settings_file,
             app_name: self.app_name,
             app_version: self.app_version,
-            pretty_json: self.pretty_json,
-            enable_credentials: self.enable_credentials,
+            options: self.options,
             env_prefix: self.env_prefix,
-            env_overrides_secrets: self.env_overrides_secrets,
             #[cfg(feature = "backup")]
             external_configs: self.external_configs,
             migrator: self.migrator,
             #[cfg(feature = "profiles")]
-            profiles_enabled: self.profiles_enabled,
-            #[cfg(feature = "profiles")]
             profile_migrator: self.profile_migrator,
+            env_source: self.env_source,
             _schema: PhantomData,
             _storage: PhantomData,
         }
@@ -456,6 +508,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// Build the `SettingsConfig`
     ///
     /// If `config_dir` is not set, uses the system config directory for the app.
+    #[must_use]
     pub fn build(self) -> SettingsConfig<S, Schema>
     where
         S: Default,
@@ -473,19 +526,20 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             app_name: self.app_name,
             app_version: self.app_version,
             storage,
-            enable_credentials: self.enable_credentials,
+            enable_credentials: self.options.security.enable_credentials,
             env_prefix: self.env_prefix,
-            env_overrides_secrets: self.env_overrides_secrets,
+            env_overrides_secrets: self.options.security.env_overrides_secrets,
             #[cfg(feature = "backup")]
             external_configs: self.external_configs,
             migrator: self.migrator,
             #[cfg(feature = "profiles")]
-            profiles_enabled: self.profiles_enabled,
+            profiles_enabled: self.options.config.profiles_enabled,
             #[cfg(feature = "profiles")]
-            profile_migrator: self
-                .profile_migrator
-                .unwrap_or(crate::profiles::ProfileMigrator::Auto),
+            profile_migrator: self.profile_migrator.unwrap_or_default(),
             _schema: PhantomData,
+            env_source: self
+                .env_source
+                .unwrap_or_else(|| std::sync::Arc::new(DefaultEnvSource)),
         }
     }
 }

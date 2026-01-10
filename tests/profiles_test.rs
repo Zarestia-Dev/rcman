@@ -209,7 +209,7 @@ fn test_profile_events() {
     let events_clone = events.clone();
 
     profiles.set_on_event(move |event| {
-        events_clone.lock().unwrap().push(format!("{:?}", event));
+        events_clone.lock().unwrap().push(format!("{event:?}"));
     });
 
     profiles.create("work").unwrap();
@@ -268,11 +268,13 @@ fn test_profile_directory_structure() {
     assert!(remotes_dir.join(".profiles.json").exists());
     assert!(remotes_dir.join("profiles").join("default").is_dir());
     assert!(remotes_dir.join("profiles").join("work").is_dir());
-    assert!(remotes_dir
-        .join("profiles")
-        .join("default")
-        .join("gdrive.json")
-        .exists());
+    assert!(
+        remotes_dir
+            .join("profiles")
+            .join("default")
+            .join("gdrive.json")
+            .exists()
+    );
 }
 
 // =============================================================================
@@ -302,11 +304,13 @@ fn test_single_file_mode_with_profiles() {
     // Verify single file in profile directory
     let backends_dir = temp_dir.path().join("backends");
     assert!(backends_dir.join(".profiles.json").exists());
-    assert!(backends_dir
-        .join("profiles")
-        .join("default")
-        .join("backends.json")
-        .exists());
+    assert!(
+        backends_dir
+            .join("profiles")
+            .join("default")
+            .join("backends.json")
+            .exists()
+    );
 }
 
 // =============================================================================
@@ -371,7 +375,7 @@ fn test_main_settings_profiles() {
 
     // Save setting in default profile
     manager
-        .save_setting("general", "theme", json!("dark"))
+        .save_setting("general", "theme", &json!("dark"))
         .unwrap();
 
     // Create and switch to work profile
@@ -386,7 +390,7 @@ fn test_main_settings_profiles() {
 
     // Save a different theme in work profile
     manager
-        .save_setting("general", "theme", json!("ocean"))
+        .save_setting("general", "theme", &json!("ocean"))
         .unwrap();
 
     // Switch back to default - should have dark theme
@@ -437,7 +441,7 @@ fn test_main_settings_profiles_directory_structure() {
     let manager = SettingsManager::new(config).unwrap();
 
     // Save something to create the default profile directory
-    manager.save_setting("ui", "theme", json!("dark")).unwrap();
+    manager.save_setting("ui", "theme", &json!("dark")).unwrap();
 
     manager.create_profile("work").unwrap();
 

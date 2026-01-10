@@ -14,11 +14,11 @@
 
 use eframe::egui;
 use rcman::{
-    opt, settings, BackupOptions, RestoreOptions, SettingMetadata, SettingsConfig, SettingsManager,
-    SettingsSchema, SubSettingsConfig,
+    BackupOptions, RestoreOptions, SettingMetadata, SettingsConfig, SettingsManager,
+    SettingsSchema, SubSettingsConfig, opt, settings,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -117,58 +117,110 @@ impl SettingsSchema for DemoSettings {
 }
 
 // ============================================================================
-// GUI APPLICATION
+// GUI STATES
 // ============================================================================
 
-struct DemoApp {
-    manager: Arc<SettingsManager<rcman::storage::JsonStorage, DemoSettings>>,
-
-    keychain_enabled: bool,
-    encrypted_backend_status: String,
-
-    // Current values (editable)
-    app_name: String,
-    theme: String,
-    font_size: f32,
-    animations: bool,
-    timeout: f32,
-    retries: f32,
-    email: String,
-    username: String,
-    api_key: String,
-    db_password: String,
-    debug: bool,
-
-    // UI state
+struct DemoUiState {
     status_message: String,
     show_json: bool,
     current_json: String,
     show_api_key: bool,
     show_db_password: bool,
+}
 
-    // Backup state
-    backup_password: String,
-    backup_note: String,
+impl Default for DemoUiState {
+    fn default() -> Self {
+        Self {
+            status_message: "✅ Settings loaded".to_string(),
+            show_json: false,
+            current_json: String::new(),
+            show_api_key: false,
+            show_db_password: false,
+        }
+    }
+}
+
+struct DemoSettingsState {
+    app_name: String,
+    theme: String,
+    font_size: f64,
+    animations: bool,
+    timeout: f64,
+    retries: f64,
+    email: String,
+    username: String,
+    api_key: String,
+    db_password: String,
+    debug: bool,
+}
+
+impl Default for DemoSettingsState {
+    fn default() -> Self {
+        Self {
+            app_name: "My App".to_string(),
+            theme: "light".to_string(),
+            font_size: 14.0,
+            animations: true,
+            timeout: 30.0,
+            retries: 3.0,
+            email: String::new(),
+            username: String::new(),
+            api_key: String::new(),
+            db_password: String::new(),
+            debug: false,
+        }
+    }
+}
+
+#[derive(Default)]
+struct BackupState {
+    password: String,
+    note: String,
     use_encryption: bool,
-    last_backup_path: Option<PathBuf>,
-    backup_list: Vec<PathBuf>,
-    selected_backup_index: Option<usize>,
+    last_path: Option<PathBuf>,
+    list: Vec<PathBuf>,
+    selected_index: Option<usize>,
     restore_password: String,
     restore_requires_password: bool,
-    backup_analysis: Option<String>,
+    analysis: Option<String>,
+}
 
-    // Sub-settings state (remotes demo)
-    remotes_list: Vec<String>,
-    new_remote_name: String,
-    new_remote_type: String,
-    selected_remote: Option<String>,
-    selected_remote_data: String,
+struct RemotesState {
+    list: Vec<String>,
+    new_name: String,
+    new_type: String,
+    selected: Option<String>,
+    selected_data: String,
+}
+
+impl Default for RemotesState {
+    fn default() -> Self {
+        Self {
+            list: Vec::new(),
+            new_name: String::new(),
+            new_type: "drive".to_string(),
+            selected: None,
+            selected_data: String::new(),
+        }
+    }
+}
+
+// ============================================================================
+// GUI APPLICATION
+// ============================================================================
+
+struct DemoApp {
+    manager: Arc<SettingsManager<rcman::storage::JsonStorage, DemoSettings>>,
+    keychain_enabled: bool,
+    encrypted_backend_status: String,
+    settings: DemoSettingsState,
+    ui: DemoUiState,
+    backup: BackupState,
+    remotes: RemotesState,
 }
 
 impl DemoApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // Create runtime for async operations
-
         // Check if keychain feature is available
         let keychain_enabled = cfg!(feature = "keychain");
 
@@ -197,10 +249,40 @@ impl DemoApp {
 
         let manager = Arc::new(SettingsManager::new(config).expect("Failed to create manager"));
 
-        // Load initial settings
-        let settings = { manager.metadata().unwrap_or_default() };
+        let mut app = Self {
+            manager,
+            keychain_enabled,
+            encrypted_backend_status,
+            settings: DemoSettingsState::default(),
+            ui: DemoUiState::default(),
+            backup: BackupState::default(),
+            remotes: RemotesState::default(),
+        };
 
-        // Extract values from loaded settings (SettingMetadata has a `value` field)
+        // Load initial settings
+        app.load_settings_values();
+
+        // Scan for existing backups
+        app.backup.list = Self::scan_backups();
+
+        // Register sub-settings for remotes and load list
+        app.remotes.list = {
+            app.manager
+                .register_sub_settings(SubSettingsConfig::new("remotes"))
+                .unwrap();
+
+            // Load remotes list
+            match app.manager.sub_settings("remotes") {
+                Ok(sub) => sub.list().unwrap_or_default(),
+                Err(_) => Vec::new(),
+            }
+        };
+
+        app
+    }
+
+    fn load_settings_values(&mut self) {
+        let settings = { self.manager.metadata().unwrap_or_default() };
         let get_value = |key: &str| -> Value {
             settings
                 .get(key)
@@ -208,74 +290,34 @@ impl DemoApp {
                 .unwrap_or(Value::Null)
         };
 
-        // Scan for existing backups
-        let backup_list = Self::scan_backups();
+        self.settings.app_name = get_value("app.name")
+            .as_str()
+            .unwrap_or("My App")
+            .to_string();
+        self.settings.theme = get_value("app.theme")
+            .as_str()
+            .unwrap_or("light")
+            .to_string();
+        self.settings.font_size = get_value("app.font_size").as_f64().unwrap_or(14.0);
+        self.settings.animations = get_value("app.animations").as_bool().unwrap_or(true);
+        self.settings.timeout = get_value("network.timeout").as_f64().unwrap_or(30.0);
+        self.settings.retries = get_value("network.retries").as_f64().unwrap_or(3.0);
+        self.settings.email = get_value("user.email").as_str().unwrap_or("").to_string();
+        self.settings.username = get_value("user.username")
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        self.settings.api_key = get_value("secrets.api_key")
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        self.settings.db_password = get_value("secrets.db_password")
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        self.settings.debug = get_value("advanced.debug").as_bool().unwrap_or(false);
 
-        // Register sub-settings for remotes and load list
-        let manager_clone = manager.clone();
-        let remotes_list = {
-            manager_clone.register_sub_settings(SubSettingsConfig::new("remotes")).unwrap();
-
-            // Load remotes list
-            match manager_clone.sub_settings("remotes") {
-                Ok(sub) => sub.list().unwrap_or_default(),
-                Err(_) => Vec::new(),
-            }
-        };
-
-        Self {
-            manager,
-
-            keychain_enabled,
-            encrypted_backend_status,
-            app_name: get_value("app.name")
-                .as_str()
-                .unwrap_or("My App")
-                .to_string(),
-            theme: get_value("app.theme")
-                .as_str()
-                .unwrap_or("light")
-                .to_string(),
-            font_size: get_value("app.font_size").as_f64().unwrap_or(14.0) as f32,
-            animations: get_value("app.animations").as_bool().unwrap_or(true),
-            timeout: get_value("network.timeout").as_f64().unwrap_or(30.0) as f32,
-            retries: get_value("network.retries").as_f64().unwrap_or(3.0) as f32,
-            email: get_value("user.email").as_str().unwrap_or("").to_string(),
-            username: get_value("user.username")
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
-            api_key: get_value("secrets.api_key")
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
-            db_password: get_value("secrets.db_password")
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
-            debug: get_value("advanced.debug").as_bool().unwrap_or(false),
-            status_message: "✅ Settings loaded".to_string(),
-            show_json: false,
-            current_json: String::new(),
-            show_api_key: false,
-            show_db_password: false,
-            // Backup state
-            backup_password: String::new(),
-            backup_note: String::new(),
-            use_encryption: false,
-            last_backup_path: None,
-            backup_list,
-            selected_backup_index: None,
-            restore_password: String::new(),
-            restore_requires_password: false,
-            backup_analysis: None,
-            // Sub-settings state
-            remotes_list,
-            new_remote_name: String::new(),
-            new_remote_type: "drive".to_string(),
-            selected_remote: None,
-            selected_remote_data: String::new(),
-        }
+        self.update_json_view();
     }
 
     fn scan_backups() -> Vec<PathBuf> {
@@ -286,9 +328,9 @@ impl DemoApp {
         std::fs::read_dir(&backup_dir)
             .map(|entries| {
                 entries
-                    .filter_map(|e| e.ok())
+                    .filter_map(std::result::Result::ok)
                     .map(|e| e.path())
-                    .filter(|p| p.extension().map(|e| e == "rcman").unwrap_or(false))
+                    .filter(|p| p.extension().is_some_and(|e| e == "rcman"))
                     .collect()
             })
             .unwrap_or_default()
@@ -296,15 +338,15 @@ impl DemoApp {
 
     fn create_backup(&mut self) {
         let manager = self.manager.clone();
-        let password = if self.use_encryption && !self.backup_password.is_empty() {
-            Some(self.backup_password.clone())
+        let password = if self.backup.use_encryption && !self.backup.password.is_empty() {
+            Some(self.backup.password.clone())
         } else {
             None
         };
-        let note = if self.backup_note.is_empty() {
+        let note = if self.backup.note.is_empty() {
             None
         } else {
-            Some(self.backup_note.clone())
+            Some(self.backup.note.clone())
         };
 
         let res = {
@@ -319,40 +361,40 @@ impl DemoApp {
         };
         match res {
             Ok(path) => {
-                let encrypted = if self.use_encryption && !self.backup_password.is_empty() {
+                let encrypted = if self.backup.use_encryption && !self.backup.password.is_empty() {
                     " (encrypted)"
                 } else {
                     ""
                 };
-                self.status_message = format!(
+                self.ui.status_message = format!(
                     "📦 Backup created{}: {:?}",
                     encrypted,
                     path.file_name().unwrap_or_default()
                 );
-                self.last_backup_path = Some(path);
-                self.backup_list = Self::scan_backups();
+                self.backup.last_path = Some(path);
+                self.backup.list = Self::scan_backups();
             }
             Err(e) => {
-                self.status_message = format!("❌ Backup failed: {}", e);
+                self.ui.status_message = format!("❌ Backup failed: {e}");
             }
         }
     }
 
     fn restore_backup(&mut self) {
-        let Some(index) = self.selected_backup_index else {
-            self.status_message = "❌ No backup selected".to_string();
+        let Some(index) = self.backup.selected_index else {
+            self.ui.status_message = "❌ No backup selected".to_string();
             return;
         };
-        let Some(backup_path) = self.backup_list.get(index).cloned() else {
-            self.status_message = "❌ Invalid backup selection".to_string();
+        let Some(backup_path) = self.backup.list.get(index).cloned() else {
+            self.ui.status_message = "❌ Invalid backup selection".to_string();
             return;
         };
 
         let manager = self.manager.clone();
-        let password = if !self.restore_password.is_empty() {
-            Some(self.restore_password.clone())
-        } else {
+        let password = if self.backup.restore_password.is_empty() {
             None
+        } else {
+            Some(self.backup.restore_password.clone())
         };
 
         let res = {
@@ -366,22 +408,22 @@ impl DemoApp {
         };
         match res {
             Ok(_) => {
-                self.status_message = "✅ Backup restored successfully!".to_string();
+                self.ui.status_message = "✅ Backup restored successfully!".to_string();
                 self.reload_settings();
             }
             Err(e) => {
-                self.status_message = format!("❌ Restore failed: {}", e);
+                self.ui.status_message = format!("❌ Restore failed: {e}");
             }
         }
     }
 
     fn analyze_backup(&mut self) {
-        let Some(index) = self.selected_backup_index else {
-            self.status_message = "❌ No backup selected".to_string();
+        let Some(index) = self.backup.selected_index else {
+            self.ui.status_message = "❌ No backup selected".to_string();
             return;
         };
-        let Some(backup_path) = self.backup_list.get(index).cloned() else {
-            self.status_message = "❌ Invalid backup selection".to_string();
+        let Some(backup_path) = self.backup.list.get(index).cloned() else {
+            self.ui.status_message = "❌ Invalid backup selection".to_string();
             return;
         };
 
@@ -413,14 +455,14 @@ impl DemoApp {
                         analysis.warnings.join(", ")
                     }
                 );
-                self.backup_analysis = Some(info);
-                self.restore_requires_password = analysis.requires_password;
-                self.status_message = "✅ Backup analyzed".to_string();
+                self.backup.analysis = Some(info);
+                self.backup.restore_requires_password = analysis.requires_password;
+                self.ui.status_message = "✅ Backup analyzed".to_string();
             }
             Err(e) => {
-                self.backup_analysis = None;
-                self.restore_requires_password = false;
-                self.status_message = format!("❌ Analysis failed: {}", e);
+                self.backup.analysis = None;
+                self.backup.restore_requires_password = false;
+                self.ui.status_message = format!("❌ Analysis failed: {e}");
             }
         }
     }
@@ -432,24 +474,24 @@ impl DemoApp {
             sub.list()
         })() {
             Ok(list) => {
-                self.remotes_list = list;
-                self.status_message = format!("📂 Found {} remotes", self.remotes_list.len());
+                self.remotes.list = list;
+                self.ui.status_message = format!("📂 Found {} remotes", self.remotes.list.len());
             }
             Err(e) => {
-                self.status_message = format!("❌ Failed to load remotes: {}", e);
+                self.ui.status_message = format!("❌ Failed to load remotes: {e}");
             }
         }
     }
 
     fn add_remote(&mut self) {
-        if self.new_remote_name.is_empty() {
-            self.status_message = "❌ Remote name cannot be empty".to_string();
+        if self.remotes.new_name.is_empty() {
+            self.ui.status_message = "❌ Remote name cannot be empty".to_string();
             return;
         }
 
         let manager = self.manager.clone();
-        let name = self.new_remote_name.clone();
-        let remote_type = self.new_remote_type.clone();
+        let name = self.remotes.new_name.clone();
+        let remote_type = self.remotes.new_type.clone();
 
         match (|| -> rcman::Result<_> {
             let sub = manager.sub_settings("remotes")?;
@@ -460,13 +502,13 @@ impl DemoApp {
                 }),
             )
         })() {
-            Ok(_) => {
-                self.status_message = format!("✅ Added remote: {}", self.new_remote_name);
-                self.new_remote_name.clear();
+            Ok(()) => {
+                self.ui.status_message = format!("✅ Added remote: {}", self.remotes.new_name);
+                self.remotes.new_name.clear();
                 self.refresh_remotes();
             }
             Err(e) => {
-                self.status_message = format!("❌ Failed to add remote: {}", e);
+                self.ui.status_message = format!("❌ Failed to add remote: {e}");
             }
         }
     }
@@ -479,14 +521,14 @@ impl DemoApp {
             let sub = manager.sub_settings("remotes")?;
             sub.delete(&remote_name)
         })() {
-            Ok(_) => {
-                self.status_message = format!("🗑️ Deleted remote: {}", name);
-                self.selected_remote = None;
-                self.selected_remote_data.clear();
+            Ok(()) => {
+                self.ui.status_message = format!("🗑️ Deleted remote: {name}");
+                self.remotes.selected = None;
+                self.remotes.selected_data.clear();
                 self.refresh_remotes();
             }
             Err(e) => {
-                self.status_message = format!("❌ Failed to delete remote: {}", e);
+                self.ui.status_message = format!("❌ Failed to delete remote: {e}");
             }
         }
     }
@@ -500,22 +542,23 @@ impl DemoApp {
             sub.get::<Value>(&remote_name)
         })() {
             Ok(data) => {
-                self.selected_remote_data = serde_json::to_string_pretty(&data).unwrap_or_default();
+                self.remotes.selected_data =
+                    serde_json::to_string_pretty(&data).unwrap_or_default();
             }
             Err(e) => {
-                self.selected_remote_data = format!("Error: {}", e);
+                self.remotes.selected_data = format!("Error: {e}");
             }
         }
     }
 
-    fn save_setting(&mut self, category: &str, key: &str, value: Value) {
+    fn save_setting(&mut self, category: &str, key: &str, value: &Value) {
         let manager = self.manager.clone();
         match manager.save_setting(category, key, value) {
-            Ok(_) => {
-                self.status_message = format!("✅ Saved {}.{}", category, key);
+            Ok(()) => {
+                self.ui.status_message = format!("✅ Saved {category}.{key}");
             }
             Err(e) => {
-                self.status_message = format!("❌ Error: {}", e);
+                self.ui.status_message = format!("❌ Error: {e}");
             }
         }
         self.update_json_view();
@@ -525,69 +568,35 @@ impl DemoApp {
         let manager = self.manager.clone();
         match manager.reset_setting(category, key) {
             Ok(default_value) => {
-                self.status_message = format!(
-                    "🔄 Reset {}.{} to default: {}",
-                    category, key, default_value
-                );
+                self.ui.status_message =
+                    format!("🔄 Reset {category}.{key} to default: {default_value}");
             }
             Err(e) => {
-                self.status_message = format!("❌ Error: {}", e);
+                self.ui.status_message = format!("❌ Error: {e}");
             }
         }
         self.reload_settings();
     }
 
     fn reload_settings(&mut self) {
-        let manager = self.manager.clone();
-        let settings = { manager.metadata().unwrap_or_default() };
-
-        let get_value = |key: &str| -> Value {
-            settings
-                .get(key)
-                .and_then(|m| m.value.clone())
-                .unwrap_or(Value::Null)
-        };
-
-        self.app_name = get_value("app.name")
-            .as_str()
-            .unwrap_or("My App")
-            .to_string();
-        self.theme = get_value("app.theme")
-            .as_str()
-            .unwrap_or("light")
-            .to_string();
-        self.font_size = get_value("app.font_size").as_f64().unwrap_or(14.0) as f32;
-        self.animations = get_value("app.animations").as_bool().unwrap_or(true);
-        self.timeout = get_value("network.timeout").as_f64().unwrap_or(30.0) as f32;
-        self.retries = get_value("network.retries").as_f64().unwrap_or(3.0) as f32;
-        self.email = get_value("user.email").as_str().unwrap_or("").to_string();
-        self.username = get_value("user.username")
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        self.api_key = get_value("secrets.api_key")
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        self.db_password = get_value("secrets.db_password")
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        self.debug = get_value("advanced.debug").as_bool().unwrap_or(false);
-
-        self.update_json_view();
+        self.load_settings_values();
+        self.ui.status_message = "✅ Settings reloaded".to_string();
     }
 
     fn update_json_view(&mut self) {
         let path = self.manager.config().settings_path();
-        self.current_json = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
+        self.ui.current_json = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
     }
 }
+
+// ============================================================================
+// UI IMPLEMENTATION
+// ============================================================================
 
 impl eframe::App for DemoApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply theme
-        if self.theme == "dark" {
+        if self.settings.theme == "dark" {
             ctx.set_visuals(egui::Visuals::dark());
         } else {
             ctx.set_visuals(egui::Visuals::light());
@@ -597,569 +606,26 @@ impl eframe::App for DemoApp {
             ui.heading("🔧 rcman GUI Demo");
             ui.label("Interactive demonstration of the rcman settings library");
 
-            // Keychain status
-            if self.keychain_enabled {
-                ui.label(
-                    egui::RichText::new("🔐 Keychain: Enabled")
-                        .color(egui::Color32::GREEN)
-                        .small(),
-                );
-            } else {
-                ui.label(
-                    egui::RichText::new("🔒 Keychain: Disabled (run with --features keychain)")
-                        .color(egui::Color32::YELLOW)
-                        .small(),
-                );
-            }
-
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new(format!(
-                    "🗄️ Encrypted File: {}",
-                    self.encrypted_backend_status
-                ))
-                .small(),
-            );
-
-            ui.separator();
-
-            // Status bar
-            ui.horizontal(|ui| {
-                ui.label(&self.status_message);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("🔄 Reload").clicked() {
-                        self.reload_settings();
-                        self.status_message = "✅ Settings reloaded".to_string();
-                    }
-                    ui.checkbox(&mut self.show_json, "📄 Show JSON");
-                });
-            });
-            ui.separator();
+            self.ui_status_status(ui);
+            ui.add_space(8.0);
 
             egui::ScrollArea::vertical().show(ui, |ui| {
-                // ================================================================
-                // APP SECTION
-                // ================================================================
-                ui.collapsing("📱 App Settings", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("App Name:");
-                        let response = ui.text_edit_singleline(&mut self.app_name);
-                        if response.lost_focus() {
-                            self.save_setting("app", "name", json!(self.app_name));
-                        }
-                        if ui
-                            .small_button("↩")
-                            .on_hover_text("Reset to default")
-                            .clicked()
-                        {
-                            self.reset_setting("app", "name");
-                        }
-                    });
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("Theme:");
-                        let old_theme = self.theme.clone();
-                        egui::ComboBox::from_id_salt("theme")
-                            .selected_text(match self.theme.as_str() {
-                                "light" => "☀️ Light",
-                                "dark" => "🌙 Dark",
-                                "auto" => "🔄 Auto",
-                                _ => "Unknown",
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.theme,
-                                    "light".to_string(),
-                                    "☀️ Light",
-                                );
-                                ui.selectable_value(&mut self.theme, "dark".to_string(), "🌙 Dark");
-                                ui.selectable_value(&mut self.theme, "auto".to_string(), "🔄 Auto");
-                            });
-                        if self.theme != old_theme {
-                            self.save_setting("app", "theme", json!(self.theme));
-                        }
-                        if ui.small_button("↩").clicked() {
-                            self.reset_setting("app", "theme");
-                        }
-                    });
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("Font Size:");
-                        let old_size = self.font_size;
-                        ui.add(egui::Slider::new(&mut self.font_size, 8.0..=32.0).suffix("px"));
-                        if (self.font_size - old_size).abs() > 0.1 {
-                            self.save_setting("app", "font_size", json!(f64::from(self.font_size)));
-                        }
-                        if ui.small_button("↩").clicked() {
-                            self.reset_setting("app", "font_size");
-                        }
-                    });
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        let old_anim = self.animations;
-                        ui.checkbox(&mut self.animations, "Enable Animations");
-                        if self.animations != old_anim {
-                            self.save_setting("app", "animations", json!(self.animations));
-                        }
-                        if ui.small_button("↩").clicked() {
-                            self.reset_setting("app", "animations");
-                        }
-                    });
-                });
-
+                self.ui_app_settings(ui);
                 ui.add_space(8.0);
-
-                // ================================================================
-                // NETWORK SECTION
-                // ================================================================
-                ui.collapsing("🌐 Network", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Timeout:");
-                        let old_timeout = self.timeout;
-                        ui.add(egui::Slider::new(&mut self.timeout, 5.0..=300.0).suffix(" sec"));
-                        if (self.timeout - old_timeout).abs() > 0.1 {
-                            self.save_setting("network", "timeout", json!(f64::from(self.timeout)));
-                        }
-                        if ui.small_button("↩").clicked() {
-                            self.reset_setting("network", "timeout");
-                        }
-                    });
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("Max Retries:");
-                        let old_retries = self.retries;
-                        ui.add(egui::Slider::new(&mut self.retries, 0.0..=10.0).step_by(1.0));
-                        if (self.retries - old_retries).abs() > 0.1 {
-                            self.save_setting("network", "retries", json!(f64::from(self.retries)));
-                        }
-                        if ui.small_button("↩").clicked() {
-                            self.reset_setting("network", "retries");
-                        }
-                    });
-                });
-
+                self.ui_network_settings(ui);
                 ui.add_space(8.0);
-
-                // ================================================================
-                // USER SECTION (with validation)
-                // ================================================================
-                ui.collapsing("👤 User (Validation Demo)", |ui| {
-                    ui.label("These fields have regex validation:");
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("Email:");
-                        let response = ui.text_edit_singleline(&mut self.email);
-                        if response.lost_focus() {
-                            self.save_setting("user", "email", json!(self.email));
-                        }
-                        if ui.small_button("↩").clicked() {
-                            self.reset_setting("user", "email");
-                        }
-                    });
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("Username:");
-                        let response = ui.text_edit_singleline(&mut self.username);
-                        if response.lost_focus() {
-                            self.save_setting("user", "username", json!(self.username));
-                        }
-                        if ui.small_button("↩").clicked() {
-                            self.reset_setting("user", "username");
-                        }
-                    });
-
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("💡 Try invalid values to see validation errors!")
-                            .small()
-                            .weak(),
-                    );
-                });
-
+                self.ui_user_settings(ui);
                 ui.add_space(8.0);
-
-                // ================================================================
-                // SECRETS SECTION (keychain)
-                // ================================================================
-                ui.collapsing("🔐 Secrets (Keychain Demo)", |ui| {
-                    if self.keychain_enabled {
-                        ui.label(
-                            egui::RichText::new(
-                                "Secrets are stored in your OS keychain, NOT in settings.json!",
-                            )
-                            .color(egui::Color32::GREEN)
-                            .small(),
-                        );
-                    } else {
-                        ui.label(
-                            egui::RichText::new(
-                                "⚠️ Run with --features keychain to enable secure storage",
-                            )
-                            .color(egui::Color32::YELLOW)
-                            .small(),
-                        );
-                    }
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("API Key:");
-                        if self.show_api_key {
-                            let response = ui.text_edit_singleline(&mut self.api_key);
-                            if response.lost_focus() {
-                                self.save_setting("secrets", "api_key", json!(self.api_key));
-                            }
-                        } else {
-                            ui.label(if self.api_key.is_empty() {
-                                "(empty)"
-                            } else {
-                                "••••••••"
-                            });
-                        }
-                        if ui
-                            .small_button(if self.show_api_key {
-                                "👁"
-                            } else {
-                                "👁‍🗨"
-                            })
-                            .clicked()
-                        {
-                            self.show_api_key = !self.show_api_key;
-                        }
-                        if ui.small_button("↩").clicked() {
-                            self.reset_setting("secrets", "api_key");
-                        }
-                    });
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label("DB Password:");
-                        if self.show_db_password {
-                            let response = ui.text_edit_singleline(&mut self.db_password);
-                            if response.lost_focus() {
-                                self.save_setting(
-                                    "secrets",
-                                    "db_password",
-                                    json!(self.db_password),
-                                );
-                            }
-                        } else {
-                            ui.label(if self.db_password.is_empty() {
-                                "(empty)"
-                            } else {
-                                "••••••••"
-                            });
-                        }
-                        if ui
-                            .small_button(if self.show_db_password {
-                                "👁"
-                            } else {
-                                "👁‍🗨"
-                            })
-                            .clicked()
-                        {
-                            self.show_db_password = !self.show_db_password;
-                        }
-                        if ui.small_button("↩").clicked() {
-                            self.reset_setting("secrets", "db_password");
-                        }
-                    });
-
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("💡 Check 'Show JSON' - secrets won't appear there!")
-                            .small()
-                            .weak(),
-                    );
-                });
-
+                self.ui_secrets_settings(ui);
                 ui.add_space(8.0);
-
-                // ================================================================
-                // ADVANCED SECTION
-                // ================================================================
-                ui.collapsing("⚙️ Advanced", |ui| {
-                    ui.horizontal(|ui| {
-                        let old_debug = self.debug;
-                        ui.checkbox(&mut self.debug, "Debug Mode");
-                        if self.debug != old_debug {
-                            self.save_setting("advanced", "debug", json!(self.debug));
-                        }
-                        if ui.small_button("↩").clicked() {
-                            self.reset_setting("advanced", "debug");
-                        }
-                    });
-                });
-
+                self.ui_advanced_settings(ui);
                 ui.add_space(8.0);
-
-                // ================================================================
-                // SUB-SETTINGS SECTION (Per-Entity Config)
-                // ================================================================
-                ui.collapsing("📂 Sub-Settings (Per-Entity Config)", |ui| {
-                    ui.label(
-                        egui::RichText::new("Each 'remote' is stored as a separate JSON file")
-                            .small()
-                            .weak(),
-                    );
-                    ui.add_space(8.0);
-
-                    // Add new remote
-                    ui.group(|ui| {
-                        ui.label(egui::RichText::new("➕ Add Remote").strong());
-                        ui.add_space(4.0);
-
-                        ui.horizontal(|ui| {
-                            ui.label("Name:");
-                            ui.text_edit_singleline(&mut self.new_remote_name);
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.label("Type:");
-                            egui::ComboBox::from_id_salt("remote_type")
-                                .selected_text(&self.new_remote_type)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.new_remote_type,
-                                        "drive".to_string(),
-                                        "Google Drive",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.new_remote_type,
-                                        "s3".to_string(),
-                                        "Amazon S3",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.new_remote_type,
-                                        "dropbox".to_string(),
-                                        "Dropbox",
-                                    );
-                                    ui.selectable_value(
-                                        &mut self.new_remote_type,
-                                        "onedrive".to_string(),
-                                        "OneDrive",
-                                    );
-                                });
-                        });
-
-                        ui.add_space(4.0);
-                        if ui.button("➕ Add Remote").clicked() {
-                            self.add_remote();
-                        }
-                    });
-
-                    ui.add_space(8.0);
-
-                    // List remotes
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("📋 Existing Remotes").strong());
-                            if ui.small_button("🔄 Refresh").clicked() {
-                                self.refresh_remotes();
-                            }
-                        });
-                        ui.add_space(4.0);
-
-                        if self.remotes_list.is_empty() {
-                            ui.label(egui::RichText::new("No remotes configured yet").weak());
-                        } else {
-                            for remote in self.remotes_list.clone() {
-                                ui.horizontal(|ui| {
-                                    let is_selected =
-                                        self.selected_remote.as_ref() == Some(&remote);
-                                    if ui.selectable_label(is_selected, &remote).clicked() {
-                                        self.selected_remote = Some(remote.clone());
-                                        self.load_remote_data(&remote);
-                                    }
-                                    if ui.small_button("🗑️").on_hover_text("Delete").clicked()
-                                    {
-                                        self.delete_remote(&remote);
-                                    }
-                                });
-                            }
-                        }
-                    });
-
-                    // Show selected remote data
-                    if let Some(ref selected) = self.selected_remote.clone() {
-                        ui.add_space(8.0);
-                        ui.group(|ui| {
-                            ui.label(egui::RichText::new(format!("📄 {selected}")).strong());
-                            ui.add_space(4.0);
-                            ui.add(
-                                egui::TextEdit::multiline(&mut self.selected_remote_data.clone())
-                                    .code_editor()
-                                    .desired_width(f32::INFINITY)
-                                    .desired_rows(4),
-                            );
-                        });
-                    }
-
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("💡 Files stored in ./example_config/remotes/")
-                            .small()
-                            .weak(),
-                    );
-                });
-
+                self.ui_remotes_settings(ui);
                 ui.add_space(8.0);
+                self.ui_backup_settings(ui);
 
-                // ================================================================
-                // BACKUP & RESTORE SECTION
-                // ================================================================
-                ui.collapsing("💾 Backup & Restore", |ui| {
-                    ui.label(
-                        egui::RichText::new("Create and restore encrypted or plain backups")
-                            .small()
-                            .weak(),
-                    );
-                    ui.add_space(8.0);
-
-                    // Create backup subsection
-                    ui.group(|ui| {
-                        ui.label(egui::RichText::new("📦 Create Backup").strong());
-                        ui.add_space(4.0);
-
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut self.use_encryption, "Encrypt backup");
-                            if self.use_encryption {
-                                ui.label("Password:");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.backup_password)
-                                        .password(true)
-                                        .desired_width(120.0),
-                                );
-                            }
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.label("Note (optional):");
-                            ui.text_edit_singleline(&mut self.backup_note);
-                        });
-
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("📦 Create Backup").clicked() {
-                                self.create_backup();
-                            }
-                            if let Some(ref path) = self.last_backup_path {
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "Last: {:?}",
-                                        path.file_name().unwrap_or_default()
-                                    ))
-                                    .small()
-                                    .weak(),
-                                );
-                            }
-                        });
-                    });
-
-                    ui.add_space(8.0);
-
-                    // Restore backup subsection
-                    ui.group(|ui| {
-                        ui.label(egui::RichText::new("♻️ Restore Backup").strong());
-                        ui.add_space(4.0);
-
-                        ui.horizontal(|ui| {
-                            if ui.button("🔄 Refresh List").clicked() {
-                                self.backup_list = Self::scan_backups();
-                                self.status_message =
-                                    format!("Found {} backups", self.backup_list.len());
-                            }
-                            ui.label(format!("{} backup(s) found", self.backup_list.len()));
-                        });
-
-                        if !self.backup_list.is_empty() {
-                            ui.add_space(4.0);
-                            let mut selection_changed = false;
-                            egui::ComboBox::from_label("")
-                                .selected_text(
-                                    self.selected_backup_index
-                                        .and_then(|i| {
-                                            self.backup_list.get(i).map(|p| {
-                                                p.file_name()
-                                                    .unwrap_or_default()
-                                                    .to_string_lossy()
-                                                    .to_string()
-                                            })
-                                        })
-                                        .unwrap_or_else(|| "Select a backup...".to_string()),
-                                )
-                                .show_ui(ui, |ui| {
-                                    for (i, path) in self.backup_list.iter().enumerate() {
-                                        let name = path
-                                            .file_name()
-                                            .unwrap_or_default()
-                                            .to_string_lossy()
-                                            .to_string();
-                                        if ui
-                                            .selectable_value(
-                                                &mut self.selected_backup_index,
-                                                Some(i),
-                                                &name,
-                                            )
-                                            .clicked()
-                                        {
-                                            selection_changed = true;
-                                        }
-                                    }
-                                });
-
-                            // Analyze after loop to avoid borrow conflict
-                            if selection_changed {
-                                self.analyze_backup();
-                            }
-                            if self.restore_requires_password {
-                                ui.horizontal(|ui| {
-                                    ui.label("🔒 Password:");
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut self.restore_password)
-                                            .password(true)
-                                            .desired_width(120.0),
-                                    );
-                                });
-                            }
-
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                if ui.button("🔍 Analyze").clicked() {
-                                    self.analyze_backup();
-                                }
-                                if ui.button("♻️ Restore Selected").clicked() {
-                                    self.restore_backup();
-                                }
-                            });
-
-                            // Show analysis results
-                            if let Some(ref analysis) = self.backup_analysis {
-                                ui.add_space(4.0);
-                                ui.group(|ui| {
-                                    ui.label(egui::RichText::new(analysis).monospace().small());
-                                });
-                            }
-                        }
-                    });
-
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("💡 Backups are stored in ./example_config/backups/")
-                            .small()
-                            .weak(),
-                    );
-                });
-
-                // ================================================================
-                // JSON VIEW (shows what's actually stored)
-                // ================================================================
-                if self.show_json {
+                // JSON VIEW
+                if self.ui.show_json {
                     ui.add_space(16.0);
                     ui.separator();
                     ui.heading("📄 settings.json (actual file contents)");
@@ -1176,16 +642,14 @@ impl eframe::App for DemoApp {
                         .max_height(200.0)
                         .show(ui, |ui| {
                             ui.add(
-                                egui::TextEdit::multiline(&mut self.current_json.clone())
+                                egui::TextEdit::multiline(&mut self.ui.current_json.clone())
                                     .code_editor()
                                     .desired_width(f32::INFINITY),
                             );
                         });
                 }
 
-                // ================================================================
                 // HELP SECTION
-                // ================================================================
                 ui.add_space(16.0);
                 ui.separator();
                 ui.collapsing("❓ How rcman Works", |ui| {
@@ -1205,6 +669,553 @@ impl eframe::App for DemoApp {
                     );
                 });
             });
+        });
+    }
+}
+
+// UI Helper Methods
+impl DemoApp {
+    fn ui_status_status(&mut self, ui: &mut egui::Ui) {
+        // Keychain status
+        if self.keychain_enabled {
+            ui.label(
+                egui::RichText::new("🔐 Keychain: Enabled")
+                    .color(egui::Color32::GREEN)
+                    .small(),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new("🔒 Keychain: Disabled (run with --features keychain)")
+                    .color(egui::Color32::YELLOW)
+                    .small(),
+            );
+        }
+
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "🗄️ Encrypted File: {}",
+                self.encrypted_backend_status
+            ))
+            .small(),
+        );
+
+        ui.separator();
+
+        // Status bar
+        ui.horizontal(|ui| {
+            ui.label(&self.ui.status_message);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("🔄 Reload").clicked() {
+                    self.reload_settings();
+                }
+                ui.checkbox(&mut self.ui.show_json, "📄 Show JSON");
+            });
+        });
+        ui.separator();
+    }
+
+    fn ui_app_settings(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("📱 App Settings", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("App Name:");
+                let response = ui.text_edit_singleline(&mut self.settings.app_name);
+                if response.lost_focus() {
+                    self.save_setting("app", "name", &json!(self.settings.app_name));
+                }
+                if ui
+                    .small_button("↩")
+                    .on_hover_text("Reset to default")
+                    .clicked()
+                {
+                    self.reset_setting("app", "name");
+                }
+            });
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("Theme:");
+                let old_theme = self.settings.theme.clone();
+                egui::ComboBox::from_id_salt("theme")
+                    .selected_text(match self.settings.theme.as_str() {
+                        "light" => "☀️ Light",
+                        "dark" => "🌙 Dark",
+                        "auto" => "🔄 Auto",
+                        _ => "Unknown",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.settings.theme,
+                            "light".to_string(),
+                            "☀️ Light",
+                        );
+                        ui.selectable_value(
+                            &mut self.settings.theme,
+                            "dark".to_string(),
+                            "🌙 Dark",
+                        );
+                        ui.selectable_value(
+                            &mut self.settings.theme,
+                            "auto".to_string(),
+                            "🔄 Auto",
+                        );
+                    });
+                if self.settings.theme != old_theme {
+                    self.save_setting("app", "theme", &json!(self.settings.theme));
+                }
+                if ui.small_button("↩").clicked() {
+                    self.reset_setting("app", "theme");
+                }
+            });
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("Font Size:");
+                let old_size = self.settings.font_size;
+                ui.add(egui::Slider::new(&mut self.settings.font_size, 8.0..=32.0).suffix("px"));
+                if (self.settings.font_size - old_size).abs() > 0.1 {
+                    self.save_setting("app", "font_size", &json!(self.settings.font_size));
+                }
+                if ui.small_button("↩").clicked() {
+                    self.reset_setting("app", "font_size");
+                }
+            });
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                let old_anim = self.settings.animations;
+                ui.checkbox(&mut self.settings.animations, "Enable Animations");
+                if self.settings.animations != old_anim {
+                    self.save_setting("app", "animations", &json!(self.settings.animations));
+                }
+                if ui.small_button("↩").clicked() {
+                    self.reset_setting("app", "animations");
+                }
+            });
+        });
+    }
+
+    fn ui_network_settings(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("🌐 Network", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Timeout:");
+                let old_timeout = self.settings.timeout;
+                ui.add(egui::Slider::new(&mut self.settings.timeout, 5.0..=300.0).suffix(" sec"));
+                if (self.settings.timeout - old_timeout).abs() > 0.1 {
+                    self.save_setting("network", "timeout", &json!(self.settings.timeout));
+                }
+                if ui.small_button("↩").clicked() {
+                    self.reset_setting("network", "timeout");
+                }
+            });
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("Max Retries:");
+                let old_retries = self.settings.retries;
+                ui.add(egui::Slider::new(&mut self.settings.retries, 0.0..=10.0).step_by(1.0));
+                if (self.settings.retries - old_retries).abs() > 0.1 {
+                    self.save_setting("network", "retries", &json!(self.settings.retries));
+                }
+                if ui.small_button("↩").clicked() {
+                    self.reset_setting("network", "retries");
+                }
+            });
+        });
+    }
+
+    fn ui_user_settings(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("👤 User (Validation Demo)", |ui| {
+            ui.label("These fields have regex validation:");
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("Email:");
+                let response = ui.text_edit_singleline(&mut self.settings.email);
+                if response.lost_focus() {
+                    self.save_setting("user", "email", &json!(self.settings.email));
+                }
+                if ui.small_button("↩").clicked() {
+                    self.reset_setting("user", "email");
+                }
+            });
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("Username:");
+                let response = ui.text_edit_singleline(&mut self.settings.username);
+                if response.lost_focus() {
+                    self.save_setting("user", "username", &json!(self.settings.username));
+                }
+                if ui.small_button("↩").clicked() {
+                    self.reset_setting("user", "username");
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("💡 Try invalid values to see validation errors!")
+                    .small()
+                    .weak(),
+            );
+        });
+    }
+
+    fn ui_secrets_settings(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("🔐 Secrets (Keychain Demo)", |ui| {
+            if self.keychain_enabled {
+                ui.label(
+                    egui::RichText::new(
+                        "Secrets are stored in your OS keychain, NOT in settings.json!",
+                    )
+                    .color(egui::Color32::GREEN)
+                    .small(),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new("⚠️ Run with --features keychain to enable secure storage")
+                        .color(egui::Color32::YELLOW)
+                        .small(),
+                );
+            }
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("API Key:");
+                if self.ui.show_api_key {
+                    let response = ui.text_edit_singleline(&mut self.settings.api_key);
+                    if response.lost_focus() {
+                        self.save_setting("secrets", "api_key", &json!(self.settings.api_key));
+                    }
+                } else {
+                    ui.label(if self.settings.api_key.is_empty() {
+                        "(empty)"
+                    } else {
+                        "••••••••"
+                    });
+                }
+                if ui
+                    .small_button(if self.ui.show_api_key {
+                        "👁"
+                    } else {
+                        "👁‍🗨"
+                    })
+                    .clicked()
+                {
+                    self.ui.show_api_key = !self.ui.show_api_key;
+                }
+                if ui.small_button("↩").clicked() {
+                    self.reset_setting("secrets", "api_key");
+                }
+            });
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("DB Password:");
+                if self.ui.show_db_password {
+                    let response = ui.text_edit_singleline(&mut self.settings.db_password);
+                    if response.lost_focus() {
+                        self.save_setting(
+                            "secrets",
+                            "db_password",
+                            &json!(self.settings.db_password),
+                        );
+                    }
+                } else {
+                    ui.label(if self.settings.db_password.is_empty() {
+                        "(empty)"
+                    } else {
+                        "••••••••"
+                    });
+                }
+                if ui
+                    .small_button(if self.ui.show_db_password {
+                        "👁"
+                    } else {
+                        "👁‍🗨"
+                    })
+                    .clicked()
+                {
+                    self.ui.show_db_password = !self.ui.show_db_password;
+                }
+                if ui.small_button("↩").clicked() {
+                    self.reset_setting("secrets", "db_password");
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("💡 Check 'Show JSON' - secrets won't appear there!")
+                    .small()
+                    .weak(),
+            );
+        });
+    }
+
+    fn ui_advanced_settings(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("⚙️ Advanced", |ui| {
+            ui.horizontal(|ui| {
+                let old_debug = self.settings.debug;
+                ui.checkbox(&mut self.settings.debug, "Debug Mode");
+                if self.settings.debug != old_debug {
+                    self.save_setting("advanced", "debug", &json!(self.settings.debug));
+                }
+                if ui.small_button("↩").clicked() {
+                    self.reset_setting("advanced", "debug");
+                }
+            });
+        });
+    }
+
+    fn ui_remotes_settings(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("📂 Sub-Settings (Per-Entity Config)", |ui| {
+            ui.label(
+                egui::RichText::new("Each 'remote' is stored as a separate JSON file")
+                    .small()
+                    .weak(),
+            );
+            ui.add_space(8.0);
+
+            // Add new remote
+            ui.group(|ui| {
+                ui.label(egui::RichText::new("➕ Add Remote").strong());
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.text_edit_singleline(&mut self.remotes.new_name);
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Type:");
+                    egui::ComboBox::from_id_salt("remote_type")
+                        .selected_text(&self.remotes.new_type)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.remotes.new_type,
+                                "drive".to_string(),
+                                "Google Drive",
+                            );
+                            ui.selectable_value(
+                                &mut self.remotes.new_type,
+                                "s3".to_string(),
+                                "Amazon S3",
+                            );
+                            ui.selectable_value(
+                                &mut self.remotes.new_type,
+                                "dropbox".to_string(),
+                                "Dropbox",
+                            );
+                            ui.selectable_value(
+                                &mut self.remotes.new_type,
+                                "onedrive".to_string(),
+                                "OneDrive",
+                            );
+                        });
+                });
+
+                ui.add_space(4.0);
+                if ui.button("➕ Add Remote").clicked() {
+                    self.add_remote();
+                }
+            });
+
+            ui.add_space(8.0);
+
+            // List remotes
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("📋 Existing Remotes").strong());
+                    if ui.small_button("🔄 Refresh").clicked() {
+                        self.refresh_remotes();
+                    }
+                });
+                ui.add_space(4.0);
+
+                if self.remotes.list.is_empty() {
+                    ui.label(egui::RichText::new("No remotes configured yet").weak());
+                } else {
+                    for remote in self.remotes.list.clone() {
+                        ui.horizontal(|ui| {
+                            let is_selected = self.remotes.selected.as_ref() == Some(&remote);
+                            if ui.selectable_label(is_selected, &remote).clicked() {
+                                self.remotes.selected = Some(remote.clone());
+                                self.load_remote_data(&remote);
+                            }
+                            if ui.small_button("🗑️").on_hover_text("Delete").clicked() {
+                                self.delete_remote(&remote);
+                            }
+                        });
+                    }
+                }
+            });
+
+            // Show selected remote data
+            if let Some(ref selected) = self.remotes.selected.clone() {
+                ui.add_space(8.0);
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new(format!("📄 {selected}")).strong());
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.remotes.selected_data.clone())
+                            .code_editor()
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(4),
+                    );
+                });
+            }
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("💡 Files stored in ./example_config/remotes/")
+                    .small()
+                    .weak(),
+            );
+        });
+    }
+
+    fn ui_backup_settings(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("💾 Backup & Restore", |ui| {
+            ui.label(
+                egui::RichText::new("Create and restore encrypted or plain backups")
+                    .small()
+                    .weak(),
+            );
+            ui.add_space(8.0);
+
+            self.ui_backup_create(ui);
+            ui.add_space(8.0);
+            self.ui_backup_restore(ui);
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("💡 Backups are stored in ./example_config/backups/")
+                    .small()
+                    .weak(),
+            );
+        });
+    }
+
+    fn ui_backup_create(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("📦 Create Backup").strong());
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.backup.use_encryption, "Encrypt backup");
+                if self.backup.use_encryption {
+                    ui.label("Password:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.backup.password)
+                            .password(true)
+                            .desired_width(120.0),
+                    );
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Note (optional):");
+                ui.text_edit_singleline(&mut self.backup.note);
+            });
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("📦 Create Backup").clicked() {
+                    self.create_backup();
+                }
+                if let Some(ref path) = self.backup.last_path {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Last: {:?}",
+                            path.file_name().unwrap_or_default()
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                }
+            });
+        });
+    }
+
+    fn ui_backup_restore(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("♻️ Restore Backup").strong());
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                if ui.button("🔄 Refresh List").clicked() {
+                    self.backup.list = Self::scan_backups();
+                    self.ui.status_message = format!("Found {} backups", self.backup.list.len());
+                }
+                ui.label(format!("{} backup(s) found", self.backup.list.len()));
+            });
+
+            if !self.backup.list.is_empty() {
+                ui.add_space(4.0);
+                let mut selection_changed = false;
+                egui::ComboBox::from_label("")
+                    .selected_text(
+                        self.backup
+                            .selected_index
+                            .and_then(|i| {
+                                self.backup.list.get(i).map(|p| {
+                                    p.file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                        .to_string()
+                                })
+                            })
+                            .unwrap_or_else(|| "Select a backup...".to_string()),
+                    )
+                    .show_ui(ui, |ui| {
+                        for (i, path) in self.backup.list.iter().enumerate() {
+                            let name = path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
+                            if ui
+                                .selectable_value(&mut self.backup.selected_index, Some(i), &name)
+                                .clicked()
+                            {
+                                selection_changed = true;
+                            }
+                        }
+                    });
+
+                // Analyze after loop to avoid borrow conflict
+                if selection_changed {
+                    self.analyze_backup();
+                }
+                if self.backup.restore_requires_password {
+                    ui.horizontal(|ui| {
+                        ui.label("🔒 Password:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.backup.restore_password)
+                                .password(true)
+                                .desired_width(120.0),
+                        );
+                    });
+                }
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("🔍 Analyze").clicked() {
+                        self.analyze_backup();
+                    }
+                    if ui.button("♻️ Restore Selected").clicked() {
+                        self.restore_backup();
+                    }
+                });
+
+                // Show analysis results
+                if let Some(ref analysis) = self.backup.analysis {
+                    ui.add_space(4.0);
+                    ui.group(|ui| {
+                        ui.label(egui::RichText::new(analysis).monospace().small());
+                    });
+                }
+            }
         });
     }
 }

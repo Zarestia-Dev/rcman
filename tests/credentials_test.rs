@@ -49,7 +49,7 @@ fn create_manager_with_credentials() -> (
 // =============================================================================
 
 #[test]
-#[ignore] // Requires Secret Service daemon (not available in CI)
+#[ignore = "Requires Secret Service daemon (not available in CI)"]
 fn test_secret_not_in_json_file() {
     let (temp_dir, manager) = create_manager_with_credentials();
 
@@ -58,7 +58,7 @@ fn test_secret_not_in_json_file() {
 
     // Save a secret setting
     manager
-        .save_setting("api", "key", json!("super_secret_api_key_123"))
+        .save_setting("api", "key", &json!("super_secret_api_key_123"))
         .unwrap();
 
     // Read the JSON file directly
@@ -72,7 +72,7 @@ fn test_secret_not_in_json_file() {
 }
 
 #[test]
-#[ignore] // Requires Secret Service daemon (not available in CI)
+#[ignore = "Requires Secret Service daemon (not available in CI)"]
 fn test_secret_retrieved_correctly() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
@@ -81,7 +81,7 @@ fn test_secret_retrieved_correctly() {
 
     // Save a secret
     manager
-        .save_setting("api", "key", json!("my_secret_value"))
+        .save_setting("api", "key", &json!("my_secret_value"))
         .unwrap();
 
     // Load settings again
@@ -97,14 +97,14 @@ fn test_secret_retrieved_correctly() {
 // =============================================================================
 
 #[test]
-#[ignore] // Requires Secret Service daemon (not available in CI)
+#[ignore = "Requires Secret Service daemon (not available in CI)"]
 fn test_reset_secret_clears_value() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
     // Load and set secret
     let _ = manager.get_all().unwrap();
     manager
-        .save_setting("api", "key", json!("secret_to_reset"))
+        .save_setting("api", "key", &json!("secret_to_reset"))
         .unwrap();
 
     // Verify it's set
@@ -126,14 +126,14 @@ fn test_reset_secret_clears_value() {
 }
 
 #[test]
-#[ignore] // Requires Secret Service daemon (not available in CI)
+#[ignore = "Requires Secret Service daemon (not available in CI)"]
 fn test_reset_all_clears_secrets() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
     // Load and set secret
     let _ = manager.get_all().unwrap();
     manager
-        .save_setting("api", "key", json!("will_be_cleared"))
+        .save_setting("api", "key", &json!("will_be_cleared"))
         .unwrap();
 
     // Reset all
@@ -152,7 +152,7 @@ fn test_reset_all_clears_secrets() {
 // =============================================================================
 
 #[test]
-#[ignore] // Requires Secret Service daemon (not available in CI)
+#[ignore = "Requires Secret Service daemon (not available in CI)"]
 fn test_secret_default_not_stored() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
@@ -161,11 +161,11 @@ fn test_secret_default_not_stored() {
 
     // Set to non-default first
     manager
-        .save_setting("api", "key", json!("temporary_key"))
+        .save_setting("api", "key", &json!("temporary_key"))
         .unwrap();
 
     // Now set back to default (empty string)
-    manager.save_setting("api", "key", json!("")).unwrap();
+    manager.save_setting("api", "key", &json!("")).unwrap();
 
     // Load again - should get default
     let metadata = manager.metadata().unwrap();
@@ -177,7 +177,7 @@ fn test_secret_default_not_stored() {
 // =============================================================================
 
 #[test]
-#[ignore] // Requires Secret Service daemon (not available in CI)
+#[ignore = "Requires Secret Service daemon (not available in CI)"]
 fn test_multiple_secrets() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
@@ -186,11 +186,13 @@ fn test_multiple_secrets() {
 
     // Save secret
     manager
-        .save_setting("api", "key", json!("secret1"))
+        .save_setting("api", "key", &json!("secret1"))
         .unwrap();
 
     // Also save a non-secret
-    manager.save_setting("ui", "theme", json!("light")).unwrap();
+    manager
+        .save_setting("ui", "theme", &json!("light"))
+        .unwrap();
 
     // Verify both are retrievable
     let metadata = manager.metadata().unwrap();
@@ -238,7 +240,7 @@ fn test_credentials_not_available_when_disabled() {
 // =============================================================================
 
 #[test]
-#[ignore] // Requires Secret Service daemon (not available in CI)
+#[ignore = "Requires Secret Service daemon (not available in CI)"]
 fn test_secret_persists_across_sessions() {
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().to_path_buf();
@@ -248,13 +250,14 @@ fn test_secret_persists_across_sessions() {
     {
         let config = SettingsConfig::builder(&app_name, "1.0.0")
             .with_config_dir(&config_path)
+            .with_schema::<TestSettings>()
             .with_credentials()
             .build();
         let manager = SettingsManager::new(config).unwrap();
 
         manager.get_all().unwrap();
         manager
-            .save_setting("api", "key", json!("persistent_secret"))
+            .save_setting("api", "key", &json!("persistent_secret"))
             .unwrap();
     }
 
@@ -262,6 +265,7 @@ fn test_secret_persists_across_sessions() {
     {
         let config = SettingsConfig::builder(&app_name, "1.0.0")
             .with_config_dir(&config_path)
+            .with_schema::<TestSettings>()
             .with_credentials()
             .build();
         let manager = SettingsManager::new(config).unwrap();
@@ -291,15 +295,11 @@ fn test_secret_persists_across_sessions() {
 fn test_secret_has_correct_metadata() {
     let (_temp_dir, manager) = create_manager_with_credentials();
 
-    let _ = manager.get_all().unwrap();
-
+    // Verify metadata reflects secret status
     let metadata = manager.metadata().unwrap();
     let api_key_meta = metadata.get("api.key").unwrap();
+    assert!(api_key_meta.flags.system.secret);
 
-    // Should be marked as secret
-    assert!(api_key_meta.secret);
-
-    // Theme should NOT be secret
     let theme_meta = metadata.get("ui.theme").unwrap();
-    assert!(!theme_meta.secret);
+    assert!(!theme_meta.flags.system.secret);
 }

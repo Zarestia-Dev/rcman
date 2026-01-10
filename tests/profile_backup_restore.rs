@@ -19,7 +19,9 @@ fn test_profile_backup_restore_full() {
         .build();
 
     let manager = SettingsManager::new(config).unwrap();
-    manager.register_sub_settings(SubSettingsConfig::new("items").with_profiles()).unwrap();
+    manager
+        .register_sub_settings(SubSettingsConfig::new("items").with_profiles())
+        .unwrap();
 
     // 2. Create profiles
     if !manager.profiles().unwrap().exists("default").unwrap() {
@@ -56,23 +58,30 @@ fn test_profile_backup_restore_full() {
 
     // 6. Restore to fresh instance (profiled)
     let temp2 = tempdir().unwrap();
-    let config2_dir = temp2.path().join("config");
-    fs::create_dir_all(&config2_dir).unwrap();
+    let restore_config_dir = temp2.path().join("config");
+    fs::create_dir_all(&restore_config_dir).unwrap();
 
     let config2 = SettingsConfigBuilder::new("test-app", "1.0.0")
-        .with_config_dir(&config2_dir)
+        .with_config_dir(&restore_config_dir)
         .with_profiles()
         .build();
 
     let manager2 = SettingsManager::new(config2).unwrap();
-    manager2.register_sub_settings(SubSettingsConfig::new("items").with_profiles()).unwrap();
+    manager2
+        .register_sub_settings(SubSettingsConfig::new("items").with_profiles())
+        .unwrap();
 
     // Restore ALL
     let result = manager2
         .backup()
         .restore(&RestoreOptions {
             backup_path: backup_path.clone(),
-            restore_settings: true,
+            flags: rcman::backup::RestoreFlags {
+                scope: rcman::backup::RestoreScope {
+                    restore_settings: true,
+                },
+                ..Default::default()
+            },
             restore_sub_settings: vec!["items".into()]
                 .into_iter()
                 .map(|s| (s, vec![]))

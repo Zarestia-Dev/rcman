@@ -17,13 +17,13 @@ use crate::storage::StorageBackend;
 use crate::sub_settings::{SubSettings, SubSettingsConfig};
 use std::marker::PhantomData;
 
+use crate::sync::{MutexExt, RwLockExt};
 #[cfg(feature = "profiles")]
 use log::warn;
 use log::{debug, info};
-use crate::sync::{MutexExt, RwLockExt};
-use std::sync::{Arc, Mutex, RwLock};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Main settings manager for loading, saving, and managing application settings.
 ///
@@ -80,7 +80,7 @@ use std::collections::HashMap;
 /// manager.metadata().unwrap();
 ///
 /// // Save a setting
-/// manager.save_setting("ui", "theme", json!("light")).unwrap();
+/// manager.save_setting("ui", "theme", &json!("light")).unwrap();
 ///
 /// // Load settings again to verify
 /// let metadata = manager.metadata().unwrap();
@@ -98,7 +98,7 @@ pub struct SettingsManager<
     /// Configuration
     config: SettingsConfig<S, Schema>,
 
-    /// Storage backend (defaults to JsonStorage)
+    /// Storage backend (defaults to `JsonStorage`)
     storage: S,
 
     /// Directory where settings file is located (may change if profiles enabled)
@@ -254,7 +254,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         );
         info!(
             "Initialized rcman SettingsManager at: {:?}",
-            config.config_dir
+            config.config_dir.display()
         );
 
         Ok(Self {
@@ -359,6 +359,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// manager.switch_profile("work")?;
     /// // Now all settings operations use the work profile
     /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the profile to switch to
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Profiles are not enabled for this manager
+    /// - The profile does not exist
+    /// - The profile switch fails (e.g. IO error)
     #[cfg(feature = "profiles")]
     pub fn switch_profile(&self, name: &str) -> Result<()> {
         let pm = self
@@ -410,6 +421,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     }
 
     /// Create a new profile for main settings
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the profile to create
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Profiles are not enabled
+    /// - The profile already exists
+    /// - Creation fails (e.g. IO error)
     #[cfg(feature = "profiles")]
     pub fn create_profile(&self, name: &str) -> Result<()> {
         let pm = self
@@ -425,7 +447,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 match pm.create(name) {
                     Ok(()) => debug!("Created profile '{name}' in sub-settings '{key}'"),
                     Err(e) => {
-                        warn!("Failed to create profile '{name}' in sub-settings '{key}': {e}")
+                        warn!("Failed to create profile '{name}' in sub-settings '{key}': {e}");
                     }
                 }
             }
@@ -434,6 +456,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     }
 
     /// List all available profiles
+    /// # Errors
+    ///
+    /// Returns an error if profiles are not enabled or reading the profile list fails.
     #[cfg(feature = "profiles")]
     pub fn list_profiles(&self) -> Result<Vec<String>> {
         let pm = self
@@ -444,6 +469,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     }
 
     /// Get the active profile name
+    /// # Errors
+    ///
+    /// Returns an error if profiles are not enabled or determining the active profile fails.
     #[cfg(feature = "profiles")]
     pub fn active_profile(&self) -> Result<String> {
         let pm = self
@@ -472,25 +500,29 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Returns the parsed value if env var is set and successfully parsed.
     fn get_env_override(&self, key: &str) -> Option<Value> {
         let env_var_name = self.get_env_var_name(key)?;
-        std::env::var(&env_var_name).ok().map(|env_value| {
-            // Try to parse as JSON first, fallback to string
-            serde_json::from_str(&env_value).unwrap_or_else(|_| {
-                // If not valid JSON, treat as string
-                // But also try to parse booleans and numbers
-                if env_value.eq_ignore_ascii_case("true") {
-                    Value::Bool(true)
-                } else if env_value.eq_ignore_ascii_case("false") {
-                    Value::Bool(false)
-                } else if let Ok(n) = env_value.parse::<i64>() {
-                    Value::Number(n.into())
-                } else if let Ok(n) = env_value.parse::<f64>() {
-                    serde_json::Number::from_f64(n)
-                        .map_or_else(|| Value::String(env_value.clone()), Value::Number)
-                } else {
-                    Value::String(env_value)
-                }
+        self.config
+            .env_source
+            .var(&env_var_name)
+            .ok()
+            .map(|env_value| {
+                // Try to parse as JSON first, fallback to string
+                serde_json::from_str(&env_value).unwrap_or_else(|_| {
+                    // If not valid JSON, treat as string
+                    // But also try to parse booleans and numbers
+                    if env_value.eq_ignore_ascii_case("true") {
+                        Value::Bool(true)
+                    } else if env_value.eq_ignore_ascii_case("false") {
+                        Value::Bool(false)
+                    } else if let Ok(n) = env_value.parse::<i64>() {
+                        Value::Number(n.into())
+                    } else if let Ok(n) = env_value.parse::<f64>() {
+                        serde_json::Number::from_f64(n)
+                            .map_or_else(|| Value::String(env_value.clone()), Value::Number)
+                    } else {
+                        Value::String(env_value)
+                    }
+                })
             })
-        })
     }
 
     /// Get the event manager for registering change listeners and validators
@@ -538,6 +570,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Invalidate the settings cache
     ///
     /// Call this if the settings file was modified externally.
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn invalidate_cache(&self) {
         let mut cache = self.settings_cache.write().expect("Lock poisoned");
         *cache = None;
@@ -596,6 +631,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// let restrict: bool = manager.get("general.restrict")?;
     /// # Ok::<(), rcman::Error>(())
     /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - Setting key in "category.name" format (e.g., "general.restrict")
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The setting doesn't exist (and no default)
+    /// - The value cannot be deserialized to type `T`
+    /// - Storage read fails
     pub fn get<T>(&self, key: &str) -> Result<T>
     where
         T: serde::de::DeserializeOwned,
@@ -641,6 +687,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// let value: Value = manager.get_value("core.rclone_path")?;
     /// # Ok::<(), rcman::Error>(())
     /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - Setting key in "category.name" format
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The setting key format is invalid
+    /// - The setting doesn't exist
+    /// - Storage read fails
     pub fn get_value(&self, key: &str) -> Result<Value> {
         let parts: Vec<&str> = key.split('.').collect();
         if parts.len() != 2 {
@@ -702,6 +759,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// println!("Theme: {}", settings.ui.theme);
     /// # Ok::<(), rcman::Error>(())
     /// ```
+    /// # Errors
+    ///
+    /// Returns an error if settings cannot be read or parsed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal cache lock is poisoned or if the `OnceLock` fails to initialize (should never happen).
     pub fn get_all(&self) -> Result<Schema> {
         // Ensure cache is populated
         self.ensure_cache_populated()?;
@@ -810,11 +874,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     /// Get all setting metadata with current values populated.
     ///
-    /// Returns a HashMap of all settings with their metadata (type, label, default, current value).
+    /// Returns a `HashMap` of all settings with their metadata (type, label, default, current value).
     /// Useful for rendering settings UI.
     ///
     /// Returns metadata map with current values populated.
     /// Uses in-memory cache when available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Storage read fails
+    /// - Data is corrupted
     pub fn metadata(&self) -> Result<HashMap<String, SettingMetadata>> {
         // Ensure cache is populated
         self.ensure_cache_populated()?;
@@ -838,12 +908,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
                 // Handle secret settings - fetch from credential manager
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                if option.secret {
+                if option.flags.system.secret {
                     // Check env var override for secrets if enabled
                     if self.config.env_overrides_secrets {
                         if let Some(env_value) = self.get_env_override(key) {
                             option.value = Some(env_value);
-                            option.env_override = true;
+                            option.flags.system.env_override = true;
                             debug!("Secret {key} overridden by env var");
                             continue;
                         }
@@ -862,7 +932,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 // Check for environment variable override first
                 if let Some(env_value) = self.get_env_override(key) {
                     option.value = Some(env_value);
-                    option.env_override = true; // Mark as env-overridden for UI
+                    option.flags.system.env_override = true; // Mark as env-overridden for UI
                     debug!("Setting {key} overridden by env var");
                     continue;
                 }
@@ -910,13 +980,24 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # impl SettingsSchema for MySettings {
     /// #     fn get_metadata() -> HashMap<String, SettingMetadata> { let mut m = HashMap::new(); m.insert("ui.theme".into(), SettingMetadata::text("T", "d")); m }
     /// # }
+    /// # fn main() {
     /// # let temp = tempfile::tempdir().unwrap();
     /// # let config = SettingsConfig::builder("test", "1.0").with_config_dir(temp.path()).with_schema::<MySettings>().build();
     /// # let manager = SettingsManager::new(config).unwrap();
-    /// manager.save_setting("ui", "theme", json!("dark"))?;
-    /// # Ok::<(), rcman::Error>(())
+    /// # manager.save_setting("ui", "theme", &serde_json::json!("d")).unwrap();
+    /// # }
     /// ```
-    pub fn save_setting(&self, category: &str, key: &str, value: Value) -> Result<()> {
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// * Validation fails
+    /// * Saving to storage fails
+    /// * Parsing the existing settings fails
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
+    pub fn save_setting(&self, category: &str, key: &str, value: &Value) -> Result<()> {
         // Acquire save mutex to prevent race conditions
         let _save_guard = self.save_mutex.lock_recovered()?;
 
@@ -925,7 +1006,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         // Validate the value before saving
         self.events
-            .validate(&full_key, &value)
+            .validate(&full_key, value)
             .map_err(|msg| Error::InvalidSettingValue {
                 key: key.to_string(),
                 reason: msg,
@@ -938,14 +1019,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         // Handle secret settings separately
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        if metadata.get(&full_key).is_some_and(|m| m.secret) {
+        if metadata
+            .get(&full_key)
+            .is_some_and(|m| m.flags.system.secret)
+        {
             // Get default value from metadata
             let default_value = metadata
                 .get(&full_key)
                 .map_or(Value::Null, |m| m.default.clone());
 
             // If value equals default, remove from keychain (keep storage minimal)
-            if value == default_value {
+            if *value == default_value {
                 if let Some(ref creds) = self.credentials {
                     creds.remove(&full_key)?;
                 }
@@ -953,7 +1037,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 return Ok(());
             }
 
-            let value_str = match &value {
+            let value_str = match value {
                 Value::String(s) => s.clone(),
                 _ => value.to_string(),
             };
@@ -985,7 +1069,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         // Validate value
         if let Some(m) = validator {
-            if let Err(e) = m.validate(&value) {
+            if let Err(e) = m.validate(value) {
                 return Err(Error::Config(format!(
                     "Validation failed for {category}.{key}: {e}"
                 )));
@@ -1000,7 +1084,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .unwrap_or_else(|| default_value.clone());
 
         // Skip if value unchanged
-        if old_value == value {
+        if old_value == *value {
             debug!("Setting {category}.{key} unchanged, skipping save");
             return Ok(());
         }
@@ -1021,7 +1105,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .ok_or_else(|| Error::Parse(format!("Category {category} is not an object")))?;
 
         // If value equals default, remove it (keep settings file minimal)
-        if value == default_value {
+        if *value == default_value {
             category_obj.remove(key);
             debug!("Setting {category}.{key} set to default, removed from store");
         } else {
@@ -1050,12 +1134,23 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         info!("Setting {category}.{key} saved");
 
         // Notify change listeners
-        self.events.notify(&full_key, &old_value, &value);
+        self.events.notify(&full_key, &old_value, value);
 
         Ok(())
     }
 
     /// Reset a single setting to default
+    ///
+    /// # Arguments
+    ///
+    /// * `category` - Category of the setting
+    /// * `key` - Key of the setting
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The setting doesn't exist
+    /// - Writing to storage fails
     pub fn reset_setting(&self, category: &str, key: &str) -> Result<Value> {
         let metadata_key = format!("{category}.{key}");
         let default_value = Schema::get_metadata()
@@ -1063,13 +1158,16 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .map(|m| m.default.clone())
             .ok_or_else(|| Error::SettingNotFound(format!("{category}.{key}")))?;
 
-        self.save_setting(category, key, default_value.clone())?;
+        self.save_setting(category, key, &default_value)?;
 
         info!("Setting {category}.{key} reset to default");
         Ok(default_value)
     }
 
     /// Reset all settings to defaults
+    /// # Errors
+    ///
+    /// Returns an error if writing to storage fails or credential clearing fails.
     pub fn reset_all(&self) -> Result<()> {
         let path = self.settings_path();
 
@@ -1107,6 +1205,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// manager.register_sub_settings(SubSettingsConfig::new("remotes")).unwrap();
     /// manager.register_sub_settings(SubSettingsConfig::new("profiles")).unwrap();
     /// ```
+    /// # Errors
+    ///
+    /// Returns an error if the sub-settings handler cannot be initialized (e.g. invalid path).
     pub fn register_sub_settings(&self, config: SubSettingsConfig) -> Result<()> {
         let name = config.name.clone();
         let handler = Arc::new(SubSettings::new(
@@ -1140,6 +1241,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// let config = remotes.get_value("gdrive")?;
     /// # Ok::<(), rcman::Error>(())
     /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the sub-settings type to get
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::SubSettingsNotFound` if the sub-settings type is not registered.
     pub fn sub_settings(&self, name: &str) -> Result<Arc<SubSettings<S>>> {
         let guard = self.sub_settings.read_recovered()?;
         guard
@@ -1148,14 +1257,30 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .ok_or_else(|| Error::SubSettingsNotRegistered(name.to_string()))
     }
 
-    /// Check if a sub-settings type is registered
+    /// Check if a sub-settings type exists
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn has_sub_settings(&self, name: &str) -> bool {
-        self.sub_settings.read().expect("Lock poisoned").contains_key(name)
+        self.sub_settings
+            .read()
+            .expect("Lock poisoned")
+            .contains_key(name)
     }
 
-    /// Get all registered sub-settings types
+    /// List all registered sub-settings types
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn sub_settings_types(&self) -> Vec<String> {
-        self.sub_settings.read().expect("Lock poisoned").keys().cloned().collect()
+        self.sub_settings
+            .read()
+            .expect("Lock poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// List all entries in a sub-settings type (convenience method)
@@ -1176,6 +1301,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// let items = manager.list_sub_settings("remotes")?;
     /// # Ok::<(), rcman::Error>(())
     /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the sub-settings type to list
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::SubSettingsNotFound` if the type is not registered, or I/O errors from the handler.
     pub fn list_sub_settings(&self, name: &str) -> Result<Vec<String>> {
         let sub = self.sub_settings(name)?;
         sub.list()
@@ -1184,6 +1317,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Register an external config provider for backups.
     ///
     /// This allows dynamic registration of external files to be included in backups.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     #[cfg(feature = "backup")]
     pub fn register_external_provider(&self, provider: Box<dyn ExternalConfigProvider>) {
         let mut providers = self.external_providers.write().expect("Lock poisoned");
@@ -1277,10 +1414,43 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 mod tests {
     use super::*;
     use crate::config::SettingsConfig;
-    use crate::config::{SettingMetadata, SettingType, SettingsSchema};
+    use crate::config::{
+        DefaultEnvSource, EnvSource, SettingMetadata, SettingType, SettingsSchema,
+    };
     use crate::storage::JsonStorage;
     use serde::{Deserialize, Serialize};
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
+
+    struct MockEnvSource {
+        vars: Mutex<HashMap<String, String>>,
+    }
+
+    impl MockEnvSource {
+        fn new() -> Self {
+            Self {
+                vars: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn set(&self, key: &str, value: &str) {
+            self.vars
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), value.to_string());
+        }
+    }
+
+    impl EnvSource for MockEnvSource {
+        fn var(&self, key: &str) -> std::result::Result<String, std::env::VarError> {
+            self.vars
+                .lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .ok_or(std::env::VarError::NotPresent)
+        }
+    }
 
     #[derive(Debug, Default, Serialize, Deserialize)]
     struct TestSettings {
@@ -1346,6 +1516,7 @@ mod tests {
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
             _schema: std::marker::PhantomData::<TestSettings>,
+            env_source: Arc::new(DefaultEnvSource),
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1382,6 +1553,7 @@ mod tests {
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
             _schema: std::marker::PhantomData::<TestSettings>,
+            env_source: Arc::new(DefaultEnvSource),
         };
 
         let manager = SettingsManager::new(config).unwrap();
@@ -1412,13 +1584,14 @@ mod tests {
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
             _schema: std::marker::PhantomData::<TestSettings>,
+            env_source: Arc::new(DefaultEnvSource),
         };
 
         let manager = SettingsManager::new(config).unwrap();
 
         // Save a setting
         manager
-            .save_setting("general", "language", json!("de"))
+            .save_setting("general", "language", &json!("de"))
             .unwrap();
 
         // Load settings
@@ -1447,13 +1620,14 @@ mod tests {
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
             _schema: std::marker::PhantomData::<TestSettings>,
+            env_source: Arc::new(DefaultEnvSource),
         };
 
         let manager = SettingsManager::new(config).unwrap();
 
         // Save a non-default value
         manager
-            .save_setting("general", "dark_mode", json!(true))
+            .save_setting("general", "dark_mode", &json!(true))
             .unwrap();
 
         // Reset it
@@ -1481,12 +1655,15 @@ mod tests {
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
             _schema: std::marker::PhantomData::<TestSettings>,
+            env_source: Arc::new(DefaultEnvSource),
         };
 
         let manager = SettingsManager::new(config).unwrap();
 
         // Register sub-settings
-        manager.register_sub_settings(SubSettingsConfig::new("remotes")).unwrap();
+        manager
+            .register_sub_settings(SubSettingsConfig::new("remotes"))
+            .unwrap();
 
         assert!(manager.has_sub_settings("remotes"));
         assert!(!manager.has_sub_settings("nonexistent"));
@@ -1502,6 +1679,7 @@ mod tests {
     #[test]
     fn test_env_var_override() {
         let dir = tempdir().unwrap();
+        let env_source = Arc::new(MockEnvSource::new());
         let config = SettingsConfig {
             config_dir: dir.path().to_path_buf(),
             settings_file: "settings.json".into(),
@@ -1518,12 +1696,13 @@ mod tests {
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
             _schema: std::marker::PhantomData::<TestSettings>,
+            env_source: env_source.clone(),
         };
 
         let manager = SettingsManager::new(config).unwrap();
 
-        // Set an environment variable for testing
-        std::env::set_var("RCMAN_TEST_GENERAL_LANGUAGE", "fr");
+        // Set an environment variable for testing through mock
+        env_source.set("RCMAN_TEST_GENERAL_LANGUAGE", "fr");
 
         // Load settings - should get value from env var
         let metadata = manager.metadata().unwrap();
@@ -1533,12 +1712,9 @@ mod tests {
         assert_eq!(lang.value, Some(json!("fr")));
         // Should be marked as env override
         assert!(
-            lang.env_override,
+            lang.flags.system.env_override,
             "Setting should be marked as env-overridden"
         );
-
-        // Clean up
-        std::env::remove_var("RCMAN_TEST_GENERAL_LANGUAGE");
     }
 
     #[test]
@@ -1557,6 +1733,8 @@ mod tests {
         )
         .unwrap();
 
+        let env_source = Arc::new(MockEnvSource::new());
+
         let config = SettingsConfig {
             config_dir: dir.path().to_path_buf(),
             settings_file: "settings.json".into(),
@@ -1573,26 +1751,27 @@ mod tests {
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
             _schema: std::marker::PhantomData::<TestSettings>,
+            env_source: env_source.clone(),
         };
 
         let manager = SettingsManager::new(config).unwrap();
 
         // Set env var - should take priority over stored value
-        std::env::set_var("RCMAN_TEST2_GENERAL_LANGUAGE", "es");
+        env_source.set("RCMAN_TEST2_GENERAL_LANGUAGE", "es");
 
         let metadata = manager.metadata().unwrap();
         let lang = metadata.get("general.language").unwrap();
 
         // Env var should win over stored value
         assert_eq!(lang.value, Some(json!("es")));
-        assert!(lang.env_override);
-
-        std::env::remove_var("RCMAN_TEST2_GENERAL_LANGUAGE");
+        assert!(lang.flags.system.env_override);
     }
 
     #[test]
     fn test_env_var_type_parsing() {
         let dir = tempdir().unwrap();
+        let env_source = Arc::new(MockEnvSource::new());
+
         let config = SettingsConfig {
             config_dir: dir.path().to_path_buf(),
             settings_file: "settings.json".into(),
@@ -1609,19 +1788,18 @@ mod tests {
             #[cfg(feature = "profiles")]
             profile_migrator: crate::profiles::ProfileMigrator::None,
             _schema: std::marker::PhantomData::<TestSettings>,
+            env_source: env_source.clone(),
         };
 
         let manager = SettingsManager::new(config).unwrap();
 
         // Test boolean parsing
-        std::env::set_var("RCMAN_TEST3_GENERAL_DARK_MODE", "true");
+        env_source.set("RCMAN_TEST3_GENERAL_DARK_MODE", "true");
 
         let metadata = manager.metadata().unwrap();
         let dark_mode = metadata.get("general.dark_mode").unwrap();
 
         // Should parse "true" as boolean true
         assert_eq!(dark_mode.value, Some(json!(true)));
-
-        std::env::remove_var("RCMAN_TEST3_GENERAL_DARK_MODE");
     }
 }

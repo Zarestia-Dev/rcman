@@ -3,16 +3,16 @@ members = [".", "rcman-derive"]
 
 [package]
 name = "rcman"
-version = "0.1.1"
-edition = "2021"
-authors = ["Hakan"]
+version = "0.1.2"
+edition = "2024"
+authors = ["Hakan İSMAİL <hakanismail53@gmail.com>"]
 description = "Framework-agnostic settings management with schema, backup/restore, secrets and derive macro support"
 license = "MIT"
 repository = "https://github.com/Zarestia-Dev/rcman"
 readme = "README.md"
 keywords = ["settings", "configuration", "backup", "preferences", "keychain"]
 categories = ["config", "filesystem", "development-tools"]
-rust-version = "1.70"
+rust-version = "1.85"
 
 [package.metadata.docs.rs]
 all-features = true

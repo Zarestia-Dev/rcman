@@ -61,7 +61,7 @@ mod manager;
 mod migrator;
 
 pub use manager::{ProfileEvent, ProfileManager, ProfileManifest};
-pub use migrator::{migrate, ProfileMigrator};
+pub use migrator::{ProfileMigrator, migrate};
 
 /// Default profile name used when migrating or initializing
 pub const DEFAULT_PROFILE: &str = "default";

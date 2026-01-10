@@ -3,7 +3,7 @@
 //! Handles profile lifecycle: create, switch, delete, rename, duplicate.
 
 use crate::error::{Error, Result};
-use crate::profiles::{validate_profile_name, DEFAULT_PROFILE, MANIFEST_FILE, PROFILES_DIR};
+use crate::profiles::{DEFAULT_PROFILE, MANIFEST_FILE, PROFILES_DIR, validate_profile_name};
 use crate::sync::RwLockExt;
 
 use log::{debug, info};
@@ -186,6 +186,14 @@ impl ProfileManager {
     }
 
     /// Set the event callback
+    ///
+    /// # Arguments
+    ///
+    /// * `callback` - The callback function to be called when a profile event occurs
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn set_on_event<F>(&self, callback: F)
     where
         F: Fn(ProfileEvent) + Send + Sync + 'static,
@@ -195,6 +203,14 @@ impl ProfileManager {
     }
 
     /// Set the cache invalidation callback
+    ///
+    /// # Arguments
+    ///
+    /// * `callback` - The callback function to be called when a profile switch occurs
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn set_on_invalidate<F>(&self, callback: F)
     where
         F: Fn() + Send + Sync + 'static,
@@ -692,6 +708,9 @@ impl ProfileManager {
     /// # Errors
     ///
     /// Returns an error if the manifest cannot be read or saved.
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
     pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
     where
         F: FnOnce() -> bool,
@@ -928,9 +947,8 @@ mod tests {
 
     #[test]
     fn test_event_callback() {
-        let (_dir, manager) = create_test_manager();
-
         use std::sync::atomic::{AtomicUsize, Ordering};
+        let (_dir, manager) = create_test_manager();
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = counter.clone();
 

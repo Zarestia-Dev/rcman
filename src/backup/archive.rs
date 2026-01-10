@@ -131,12 +131,12 @@ fn add_directory_to_zip<W: Write + std::io::Seek>(
                 .map_err(|e| Error::Archive(e.to_string()))?;
 
             let mut file = File::open(&path).map_err(|e| Error::FileRead {
-                path: path.to_path_buf(),
+                path: path.clone(),
                 source: e,
             })?;
 
             std::io::copy(&mut file, zip).map_err(|e| Error::FileRead {
-                path: path.to_path_buf(),
+                path: path.clone(),
                 source: e,
             })?;
         }

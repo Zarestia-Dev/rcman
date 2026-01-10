@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::security::{set_secure_dir_permissions, set_secure_file_permissions};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
 
 /// Trait for storage backend implementations
@@ -112,7 +112,7 @@ pub trait StorageBackend: Clone + Send + Sync {
         let temp_path = path.with_file_name(temp_filename);
 
         std::fs::write(&temp_path, &content).map_err(|e| Error::FileWrite {
-            path: temp_path.to_path_buf(),
+            path: temp_path.clone(),
             source: e,
         })?;
 

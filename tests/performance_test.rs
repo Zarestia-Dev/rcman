@@ -7,7 +7,7 @@
 //! - File I/O efficiency
 //!
 //! Note: These tests are marked with #[ignore] by default.
-//! Run with: cargo test --test performance_test -- --ignored
+//! Run with: cargo test --test `performance_test` -- --ignored
 
 mod common;
 
@@ -22,7 +22,7 @@ use std::time::Instant;
 // =============================================================================
 
 #[test]
-#[ignore]
+#[ignore = "Performance test"]
 fn test_rapid_sequential_saves() {
     let fixture = TestFixture::new();
     let _ = fixture.manager.get_all().unwrap();
@@ -34,19 +34,19 @@ fn test_rapid_sequential_saves() {
         let theme = if i % 2 == 0 { "light" } else { "dark" };
         fixture
             .manager
-            .save_setting("ui", "theme", json!(theme))
+            .save_setting("ui", "theme", &json!(theme))
             .unwrap();
     }
 
     let duration = start.elapsed();
-    println!("1000 sequential saves took: {:?}", duration);
+    println!("1000 sequential saves took: {duration:?}");
 
     // Should complete in reasonable time (< 5 seconds for 1000 operations)
     assert!(duration.as_secs() < 5);
 }
 
 #[test]
-#[ignore]
+#[ignore = "Performance test"]
 fn test_rapid_sequential_loads() {
     let fixture = TestFixture::new();
     let _ = fixture.manager.get_all().unwrap();
@@ -54,7 +54,7 @@ fn test_rapid_sequential_loads() {
     // Save once
     fixture
         .manager
-        .save_setting("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", &json!("light"))
         .unwrap();
 
     let start = Instant::now();
@@ -65,14 +65,14 @@ fn test_rapid_sequential_loads() {
     }
 
     let duration = start.elapsed();
-    println!("1000 sequential loads took: {:?}", duration);
+    println!("1000 sequential loads took: {duration:?}");
 
     // Cached loads should be very fast (< 1 second for 1000 operations)
     assert!(duration.as_secs() < 1);
 }
 
 #[test]
-#[ignore]
+#[ignore = "Performance test"]
 fn test_mixed_read_write_workload() {
     let fixture = TestFixture::new();
     let _ = fixture.manager.get_all().unwrap();
@@ -84,7 +84,7 @@ fn test_mixed_read_write_workload() {
         let theme = if i % 2 == 0 { "light" } else { "dark" };
         fixture
             .manager
-            .save_setting("ui", "theme", json!(theme))
+            .save_setting("ui", "theme", &json!(theme))
             .unwrap();
 
         // Load
@@ -92,7 +92,7 @@ fn test_mixed_read_write_workload() {
     }
 
     let duration = start.elapsed();
-    println!("500 save+load cycles took: {:?}", duration);
+    println!("500 save+load cycles took: {duration:?}");
 
     assert!(duration.as_secs() < 10);
 }
@@ -102,7 +102,7 @@ fn test_mixed_read_write_workload() {
 // =============================================================================
 
 #[test]
-#[ignore]
+#[ignore = "Performance test"]
 fn test_many_sub_settings_entities() {
     let fixture = TestFixture::with_sub_settings();
 
@@ -114,7 +114,7 @@ fn test_many_sub_settings_entities() {
     for i in 0..1000 {
         remotes
             .set(
-                &format!("remote{}", i),
+                &format!("remote{i}"),
                 &json!({
                     "type": "s3",
                     "bucket": format!("bucket-{}", i),
@@ -126,24 +126,24 @@ fn test_many_sub_settings_entities() {
     }
 
     let create_duration = start.elapsed();
-    println!("Creating 1000 entities took: {:?}", create_duration);
+    println!("Creating 1000 entities took: {create_duration:?}");
 
     // List all entities
     let start = Instant::now();
     let all_keys = remotes.list().unwrap();
     let list_duration = start.elapsed();
 
-    println!("Listing 1000 entities took: {:?}", list_duration);
+    println!("Listing 1000 entities took: {list_duration:?}");
     assert_eq!(all_keys.len(), 1000);
 
     // Read them back
     let start = Instant::now();
     for i in 0..1000 {
-        let _: serde_json::Value = remotes.get(&format!("remote{}", i)).unwrap();
+        let _: serde_json::Value = remotes.get(&format!("remote{i}")).unwrap();
     }
     let read_duration = start.elapsed();
 
-    println!("Reading 1000 entities took: {:?}", read_duration);
+    println!("Reading 1000 entities took: {read_duration:?}");
 
     // Operations should complete in reasonable time
     assert!(create_duration.as_secs() < 30);
@@ -152,7 +152,7 @@ fn test_many_sub_settings_entities() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "Performance test"]
 fn test_sub_settings_bulk_operations() {
     let fixture = TestFixture::with_sub_settings();
     let remotes = fixture.manager.sub_settings("remotes").unwrap();
@@ -160,18 +160,18 @@ fn test_sub_settings_bulk_operations() {
     // Create some entities
     for i in 0..100 {
         remotes
-            .set(&format!("remote{}", i), &json!({"id": i}))
+            .set(&format!("remote{i}"), &json!({"id": i}))
             .unwrap();
     }
 
     // Measure bulk delete time
     let start = Instant::now();
     for i in 0..100 {
-        remotes.delete(&format!("remote{}", i)).unwrap();
+        remotes.delete(&format!("remote{i}")).unwrap();
     }
     let duration = start.elapsed();
 
-    println!("Deleting 100 entities took: {:?}", duration);
+    println!("Deleting 100 entities took: {duration:?}");
     assert!(duration.as_secs() < 5);
 
     // Verify all deleted
@@ -184,14 +184,14 @@ fn test_sub_settings_bulk_operations() {
 // =============================================================================
 
 #[test]
-#[ignore]
+#[ignore = "Performance test"]
 fn test_high_concurrency_reads() {
     let fixture = Arc::new(TestFixture::new());
     let _ = fixture.manager.get_all().unwrap();
 
     fixture
         .manager
-        .save_setting("ui", "theme", json!("light"))
+        .save_setting("ui", "theme", &json!("light"))
         .unwrap();
 
     let mut handles = vec![];
@@ -214,14 +214,14 @@ fn test_high_concurrency_reads() {
     }
 
     let duration = start.elapsed();
-    println!("5000 concurrent reads (50 threads) took: {:?}", duration);
+    println!("5000 concurrent reads (50 threads) took: {duration:?}");
 
     // Should handle high concurrency efficiently
     assert!(duration.as_secs() < 10);
 }
 
 #[test]
-#[ignore]
+#[ignore = "Performance test"]
 fn test_high_concurrency_writes() {
     let fixture = Arc::new(TestFixture::new());
     let _ = fixture.manager.get_all().unwrap();
@@ -242,7 +242,7 @@ fn test_high_concurrency_writes() {
                 };
                 fixture_clone
                     .manager
-                    .save_setting("ui", "theme", json!(theme))
+                    .save_setting("ui", "theme", &json!(theme))
                     .unwrap();
             }
         });
@@ -266,7 +266,7 @@ fn test_high_concurrency_writes() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "Performance test"]
 fn test_mixed_concurrent_operations() {
     let fixture = Arc::new(TestFixture::new());
     let _ = fixture.manager.get_all().unwrap();
@@ -298,7 +298,7 @@ fn test_mixed_concurrent_operations() {
                 };
                 fixture_clone
                     .manager
-                    .save_setting("ui", "theme", json!(theme))
+                    .save_setting("ui", "theme", &json!(theme))
                     .unwrap();
             }
         });
@@ -320,7 +320,7 @@ fn test_mixed_concurrent_operations() {
 // =============================================================================
 
 #[test]
-#[ignore]
+#[ignore = "Performance test"]
 fn test_memory_efficient_large_settings() {
     let fixture = TestFixture::with_sub_settings();
     let remotes = fixture.manager.sub_settings("remotes").unwrap();
@@ -359,7 +359,7 @@ fn test_memory_efficient_large_settings() {
 
 #[cfg(feature = "backup")]
 #[test]
-#[ignore]
+#[ignore = "Performance test"]
 fn test_backup_large_settings() {
     use rcman::BackupOptions;
     use tempfile::TempDir;
@@ -399,7 +399,7 @@ fn test_backup_large_settings() {
 
 #[cfg(feature = "backup")]
 #[test]
-#[ignore]
+#[ignore = "Performance test"]
 fn test_restore_large_backup() {
     use rcman::{BackupOptions, RestoreOptions};
     use tempfile::TempDir;

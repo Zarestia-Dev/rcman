@@ -2,7 +2,7 @@
 //
 // Run with: cargo run --example with_validation
 
-use rcman::{settings, SettingMetadata, SettingsManager, SettingsSchema};
+use rcman::{SettingMetadata, SettingsManager, SettingsSchema, settings};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -51,44 +51,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test valid email
     println!("✅ Testing valid email...");
-    match manager.save_setting("user", "email", json!("john@example.com")) {
-        Ok(_) => println!("   Success: Email saved\n"),
-        Err(e) => println!("   Error: {}\n", e),
+    match manager.save_setting("user", "email", &json!("john@example.com")) {
+        Ok(()) => println!("   Success: Email saved\n"),
+        Err(e) => println!("   Error: {e}\n"),
     }
 
     // Test invalid email
     println!("❌ Testing invalid email...");
-    match manager.save_setting("user", "email", json!("not-an-email")) {
-        Ok(_) => println!("   Unexpected success\n"),
-        Err(e) => println!("   Expected error: {}\n", e),
+    match manager.save_setting("user", "email", &json!("not-an-email")) {
+        Ok(()) => println!("   Unexpected success\n"),
+        Err(e) => println!("   Expected error: {e}\n"),
     }
 
     // Test valid username
     println!("✅ Testing valid username...");
-    match manager.save_setting("user", "username", json!("john_doe")) {
-        Ok(_) => println!("   Success: Username saved\n"),
-        Err(e) => println!("   Error: {}\n", e),
+    match manager.save_setting("user", "username", &json!("john_doe")) {
+        Ok(()) => println!("   Success: Username saved\n"),
+        Err(e) => println!("   Error: {e}\n"),
     }
 
     // Test invalid username (too short)
     println!("❌ Testing invalid username (too short)...");
-    match manager.save_setting("user", "username", json!("ab")) {
-        Ok(_) => println!("   Unexpected success\n"),
-        Err(e) => println!("   Expected error: {}\n", e),
+    match manager.save_setting("user", "username", &json!("ab")) {
+        Ok(()) => println!("   Unexpected success\n"),
+        Err(e) => println!("   Expected error: {e}\n"),
     }
 
     // Test port range validation
     println!("✅ Testing valid port...");
-    match manager.save_setting("network", "port", json!(8080)) {
-        Ok(_) => println!("   Success: Port saved\n"),
-        Err(e) => println!("   Error: {}\n", e),
+    match manager.save_setting("network", "port", &json!(8080)) {
+        Ok(()) => println!("   Success: Port saved\n"),
+        Err(e) => println!("   Error: {e}\n"),
     }
 
     // Test port out of range
     println!("❌ Testing port out of range...");
-    match manager.save_setting("network", "port", json!(80)) {
-        Ok(_) => println!("   Unexpected success\n"),
-        Err(e) => println!("   Expected error: {}\n", e),
+    match manager.save_setting("network", "port", &json!(80)) {
+        Ok(()) => println!("   Unexpected success\n"),
+        Err(e) => println!("   Expected error: {e}\n"),
     }
 
     println!("✨ Validation example complete!");

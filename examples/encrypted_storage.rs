@@ -8,7 +8,7 @@
 //! - AES-256-GCM for encryption
 //! - Salt stored in plain text (safe) for key reconstruction
 //!
-//! Run with: cargo run --example encrypted_storage --features encrypted-file
+//! Run with: cargo run --example `encrypted_storage` --features encrypted-file
 
 use rcman::credentials::{CredentialBackend, EncryptedFileBackend};
 
@@ -78,10 +78,7 @@ fn main() {
     println!("     \"entries\": {{");
     if let Some(entries) = preview["entries"].as_object() {
         for key in entries.keys().take(1) {
-            println!(
-                "       \"{}\": {{ \"nonce\": \"...\", \"ciphertext\": \"...\" }}, ...",
-                key
-            );
+            println!("       \"{key}\": {{ \"nonce\": \"...\", \"ciphertext\": \"...\" }}, ...");
         }
     }
     println!("     }}\n   }}\n");
@@ -118,7 +115,7 @@ fn main() {
 
     match wrong_backend.get("api_key") {
         Ok(_) => println!("   ❌ This shouldn't happen!"),
-        Err(e) => println!("   ✅ Correctly rejected wrong password: {}", e),
+        Err(e) => println!("   ✅ Correctly rejected wrong password: {e}"),
     }
     println!();
 
@@ -130,7 +127,7 @@ fn main() {
     let keys = backend2.list_keys().unwrap();
     println!("   Stored secrets:");
     for key in &keys {
-        println!("     - {}", key);
+        println!("     - {key}");
     }
     println!();
 

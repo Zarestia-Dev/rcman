@@ -2,7 +2,7 @@
 
 use crate::credentials::SecretStorage;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 /// Type of setting for UI rendering
@@ -56,6 +56,41 @@ pub enum SettingType {
 ///     opt("dark", "Dark"),
 /// ]);
 /// ```
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SettingUiFlags {
+    /// Whether this setting is experimental/advanced
+    #[serde(default)]
+    pub advanced: bool,
+
+    /// Whether this setting should be disabled
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SettingSystemFlags {
+    /// Whether this setting requires app restart
+    #[serde(default)]
+    pub requires_restart: bool,
+
+    /// Whether this is a secret/sensitive value (stored in credential manager)
+    #[serde(default)]
+    pub secret: bool,
+
+    /// Whether the value is overridden by an environment variable
+    /// (populated at runtime for UI display)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub env_override: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SettingFlags {
+    #[serde(flatten)]
+    pub ui: SettingUiFlags,
+    #[serde(flatten)]
+    pub system: SettingSystemFlags,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingMetadata {
     /// Type of setting (for UI rendering)
@@ -96,10 +131,6 @@ pub struct SettingMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
 
-    /// Whether this setting requires app restart
-    #[serde(default)]
-    pub requires_restart: bool,
-
     /// Category for grouping in UI
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
@@ -107,18 +138,6 @@ pub struct SettingMetadata {
     /// Order within category (lower = higher priority)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub order: Option<i32>,
-
-    /// Whether this setting is experimental/advanced
-    #[serde(default)]
-    pub advanced: bool,
-
-    /// Whether this setting should be disabled
-    #[serde(default)]
-    pub disabled: bool,
-
-    /// Whether this is a secret/sensitive value (stored in credential manager)
-    #[serde(default)]
-    pub secret: bool,
 
     /// Where to store secret values (only used if secret=true)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -132,10 +151,8 @@ pub struct SettingMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern_error: Option<String>,
 
-    /// Whether the value is overridden by an environment variable
-    /// (populated at runtime for UI display)
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub env_override: bool,
+    #[serde(flatten)]
+    pub flags: SettingFlags,
 }
 
 impl Default for SettingMetadata {
@@ -151,16 +168,12 @@ impl Default for SettingMetadata {
             max: None,
             step: None,
             placeholder: None,
-            requires_restart: false,
             category: None,
             order: None,
-            advanced: false,
-            disabled: false,
-            secret: false,
             secret_storage: None,
             pattern: None,
             pattern_error: None,
-            env_override: false,
+            flags: SettingFlags::default(),
         }
     }
 }
@@ -266,7 +279,7 @@ impl SettingMetadata {
     }
 
     /// Create a list setting (`Vec<String>`)
-    pub fn list(label: impl Into<String>, default: Vec<String>) -> Self {
+    pub fn list(label: impl Into<String>, default: &[String]) -> Self {
         Self {
             setting_type: SettingType::List,
             label: label.into(),
@@ -280,6 +293,7 @@ impl SettingMetadata {
     // =========================================================================
 
     /// Set description
+    #[must_use]
     pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());
         self
@@ -314,19 +328,21 @@ impl SettingMetadata {
     }
 
     /// Set placeholder text
+    #[must_use]
     pub fn placeholder(mut self, text: impl Into<String>) -> Self {
         self.placeholder = Some(text.into());
         self
     }
 
-    /// Mark as requiring restart
+    /// Mark setting as requiring restart
     #[must_use]
     pub fn requires_restart(mut self) -> Self {
-        self.requires_restart = true;
+        self.flags.system.requires_restart = true;
         self
     }
 
     /// Set category for grouping
+    #[must_use]
     pub fn category(mut self, cat: impl Into<String>) -> Self {
         self.category = Some(cat.into());
         self
@@ -339,22 +355,20 @@ impl SettingMetadata {
         self
     }
 
-    /// Mark as advanced setting
+    /// Mark setting as advanced
     #[must_use]
     pub fn advanced(mut self) -> Self {
-        self.advanced = true;
+        self.flags.ui.advanced = true;
         self
     }
 
-    /// Mark as disabled
+    /// Mark setting as disabled
     #[must_use]
     pub fn disabled(mut self) -> Self {
-        self.disabled = true;
+        self.flags.ui.disabled = true;
         self
     }
 
-    /// Mark this setting as a secret (requires `keychain` or `encrypted-file` feature).
-    ///
     /// **⚠️ IMPORTANT:** This method requires enabling one of the following features:
     /// - `keychain` - Store secrets in OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
     /// - `encrypted-file` - Store secrets in an encrypted file using Argon2id
@@ -391,7 +405,7 @@ impl SettingMetadata {
     #[must_use]
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub fn secret(mut self) -> Self {
-        self.secret = true;
+        self.flags.system.secret = true;
         self
     }
 
@@ -443,17 +457,19 @@ impl SettingMetadata {
             ╠══════════════════════════════════════════════════════════════════════╣\n\
             ║                                                                      ║\n\
             ║  You called .secret() but haven't enabled secret storage!            ║\n\
-            ║  Without the required feature, secrets would be stored in            ║\n\
-            ║  PLAINTEXT JSON files - a serious security vulnerability!            ║\n\
             ║                                                                      ║\n\
-            ║  FIX: Add to your Cargo.toml:                                        ║\n\
+            ║  QUICK FIX (choose one):                                             ║\n\
             ║                                                                      ║\n\
-            ║    [dependencies]                                                    ║\n\
-            ║    rcman = { version = \"0.2\", features = [\"keychain\"] }              ║\n\
+            ║    1. Enable keychain (recommended):                                 ║\n\
+            ║       cargo add rcman --features keychain                            ║\n\
             ║                                                                      ║\n\
-            ║  Or for encrypted file storage:                                      ║\n\
-            ║    rcman = { version = \"0.2\", features = [\"encrypted-file\"] }        ║\n\
+            ║    2. OR enable encrypted-file:                                      ║\n\
+            ║       cargo add rcman --features encrypted-file                      ║\n\
             ║                                                                      ║\n\
+            ║    3. OR remove .secret() if plaintext is okay:                      ║\n\
+            ║       SettingMetadata::password(\"Key\", \"\")  // without .secret()     ║\n\
+            ║                                                                      ║\n\
+            ║  Why: Without features, secrets would be stored in PLAINTEXT!        ║\n\
             ║  Learn more: https://docs.rs/rcman/latest/rcman/#secret-settings     ║\n\
             ║                                                                      ║\n\
             ╚══════════════════════════════════════════════════════════════════════╝\n\
@@ -463,12 +479,14 @@ impl SettingMetadata {
     }
 
     /// Set regex pattern for validation
+    #[must_use]
     pub fn pattern(mut self, pattern: impl Into<String>) -> Self {
         self.pattern = Some(pattern.into());
         self
     }
 
     /// Set pattern validation error message
+    #[must_use]
     pub fn pattern_error(mut self, msg: impl Into<String>) -> Self {
         self.pattern_error = Some(msg.into());
         self
@@ -484,6 +502,18 @@ impl SettingMetadata {
     /// - Number range (min/max)
     /// - Regex pattern for text
     /// - Valid option for select type
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The value to validate
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if validation passes, or `Err(String)` if validation fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if validation fails.
     pub fn validate(&self, value: &Value) -> Result<(), String> {
         match self.setting_type {
             SettingType::Number => {
@@ -720,9 +750,11 @@ mod tests {
 
         // Valid emails
         assert!(setting.validate(&Value::from("user@example.com")).is_ok());
-        assert!(setting
-            .validate(&Value::from("test.user@domain.org"))
-            .is_ok());
+        assert!(
+            setting
+                .validate(&Value::from("test.user@domain.org"))
+                .is_ok()
+        );
 
         // Invalid emails
         let result = setting.validate(&Value::from("not-an-email"));
@@ -784,7 +816,7 @@ mod tests {
     #[test]
     fn test_list_setting() {
         let default_items = vec!["item1".to_string(), "item2".to_string()];
-        let setting = SettingMetadata::list("Tags", default_items.clone())
+        let setting = SettingMetadata::list("Tags", &default_items)
             .description("List of tags")
             .category("metadata");
 
@@ -797,7 +829,7 @@ mod tests {
 
     #[test]
     fn test_list_setting_empty() {
-        let setting = SettingMetadata::list("Empty List", vec![]);
+        let setting = SettingMetadata::list("Empty List", &[]);
 
         assert_eq!(setting.setting_type, SettingType::List);
         assert_eq!(setting.default, json!(Vec::<String>::new()));
@@ -805,12 +837,14 @@ mod tests {
 
     #[test]
     fn test_list_validation() {
-        let setting = SettingMetadata::list("Items", vec!["default".to_string()]);
+        let setting = SettingMetadata::list("Items", &["default".to_string()]);
 
         // Valid list values
-        assert!(setting
-            .validate(&json!(vec!["one".to_string(), "two".to_string()]))
-            .is_ok());
+        assert!(
+            setting
+                .validate(&json!(vec!["one".to_string(), "two".to_string()]))
+                .is_ok()
+        );
         assert!(setting.validate(&json!(Vec::<String>::new())).is_ok());
         assert!(setting.validate(&json!(vec!["single"])).is_ok());
 
