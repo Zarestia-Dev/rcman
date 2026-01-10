@@ -4,7 +4,7 @@
 [![Documentation](https://docs.rs/rcman/badge.svg)](https://docs.rs/rcman)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/Zarestia-Dev/rcman/workflows/CI/badge.svg)](https://github.com/Zarestia-Dev/rcman/actions)
-[![MSRV](https://img.shields.io/badge/MSRV-1.70-blue)](https://github.com/rust-lang/rust/releases/tag/1.70.0)
+[![MSRV](https://img.shields.io/badge/MSRV-1.85-blue)](https://github.com/rust-lang/rust/releases/tag/1.85.0)
 
 A generic, **framework-agnostic** Rust library for managing application settings with backup/restore, sub-settings, and credential management.
 

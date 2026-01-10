@@ -4,9 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.1.2] - 2026-01-11
 
 ### Added
+
+  - Toml support for settings files
+  - New `TomlStorage` backend alongside existing `JsonStorage`
 
 - **Lock Poisoning Recovery System**
   - sync.rs module with `RwLockExt` and `MutexExt` traits
@@ -51,6 +54,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `SubSettings::new()` fails fast on migration errors with clear messages
   - Profile migrator properly propagates serialization errors (removed `unwrap()`)
   - Added `MigrationFn` type alias for cleaner signatures
+
+- **Other Improvements**
+  - Minimum Rust version updated to 1.85 and clippy.toml adjusted
 
 ### Fixed
 
