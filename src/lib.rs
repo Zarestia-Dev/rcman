@@ -227,10 +227,6 @@ pub use sub_settings::{SubSettings, SubSettingsConfig, SubSettingsMode};
 pub use storage::TomlStorage;
 pub use storage::{JsonStorage, StorageBackend};
 
-// =============================================================================
-// Convenient Type Aliases
-// =============================================================================
-
 // Re-exports from config
 pub use cache::CacheStrategy;
 pub use config::{

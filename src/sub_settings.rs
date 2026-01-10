@@ -64,8 +64,8 @@ pub struct SubSettingsConfig {
     /// - Single-file mode: used as file name (e.g., "backends" → config/backends.json)
     pub name: String,
 
-    /// File extension for entries (default: "json")
-    pub extension: String,
+    /// File extension for entries (default: derived from storage backend, e.g. "json" or "toml")
+    pub extension: Option<String>,
 
     /// Optional migration function for schema changes
     pub migrator: Option<Arc<dyn Fn(Value) -> Value + Send + Sync>>,
@@ -89,7 +89,7 @@ impl Default for SubSettingsConfig {
     fn default() -> Self {
         Self {
             name: "items".into(),
-            extension: "json".into(),
+            extension: None,
             migrator: None,
             mode: SubSettingsMode::MultiFile,
             cache_strategy: crate::CacheStrategy::default(),
@@ -206,7 +206,7 @@ impl SubSettingsConfig {
     /// Set a custom file extension
     #[must_use]
     pub fn with_extension(mut self, ext: impl Into<String>) -> Self {
-        self.extension = ext.into();
+        self.extension = Some(ext.into());
         self
     }
 
@@ -427,9 +427,14 @@ impl<S: StorageBackend> SubSettings<S> {
     /// Returns an error if the directory path is invalid or if the storage backend cannot be initialized.
     pub fn new(
         config_dir: &std::path::Path,
-        config: SubSettingsConfig,
+        mut config: SubSettingsConfig,
         storage: S,
     ) -> Result<Self> {
+        // Set default extension if not specified
+        if config.extension.is_none() {
+            config.extension = Some(storage.extension().to_string());
+        }
+
         // Validate cache strategy configuration (prevents LRU(0) panic)
         if let Err(e) = config.cache_strategy.validate() {
             return Err(Error::InvalidCacheStrategy(e.to_string()));
@@ -466,6 +471,7 @@ impl<S: StorageBackend> SubSettings<S> {
                 &root_dir,
                 &config.name,
                 is_single_file,
+                config.extension.as_deref(),
                 &config.profile_migrator,
             )
             .map_err(|e| Error::ProfileMigrationFailed(e.to_string()))?;
@@ -616,7 +622,8 @@ impl<S: StorageBackend> SubSettings<S> {
         let base_dir = state.base_dir.clone();
 
         if self.is_single_file() {
-            let path = Self::single_file_path(&base_dir, &self.config.name, &self.config.extension);
+            let extension = self.config.extension.as_deref().unwrap_or("json");
+            let path = Self::single_file_path(&base_dir, &self.config.name, extension);
             let mut file_data = match std::fs::metadata(&path) {
                 Ok(_) => self.storage.read::<Value>(&path)?,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -730,7 +737,8 @@ impl<S: StorageBackend> SubSettings<S> {
         let base_dir = state.base_dir.clone();
         drop(state); // DROP LOCK to allow other readers/writers/profile switches
 
-        let path = base_dir.join(format!("{}.{}", name, self.config.extension));
+        let extension = self.config.extension.as_deref().unwrap_or("json");
+        let path = base_dir.join(format!("{name}.{extension}"));
 
         if let Err(e) = std::fs::metadata(&path) {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -843,7 +851,8 @@ impl<S: StorageBackend> SubSettings<S> {
                 crate::security::set_secure_dir_permissions(base_dir)?;
             }
 
-            let path = Self::single_file_path(base_dir, &self.config.name, &self.config.extension);
+            let extension = self.config.extension.as_deref().unwrap_or("json");
+            let path = Self::single_file_path(base_dir, &self.config.name, extension);
             self.storage.write(&path, &full_obj)?;
         } else {
             // Multi-file: write individual file
@@ -854,7 +863,8 @@ impl<S: StorageBackend> SubSettings<S> {
             })?;
             crate::security::set_secure_dir_permissions(base_dir)?;
 
-            let path = base_dir.join(format!("{}.{}", name, self.config.extension));
+            let extension = self.config.extension.as_deref().unwrap_or("json");
+            let path = base_dir.join(format!("{name}.{extension}"));
             self.storage.write(&path, &json_value)?;
         }
 
@@ -875,16 +885,6 @@ impl<S: StorageBackend> SubSettings<S> {
             self.config.name
         );
 
-        // Notify handling requires dropping locks ideally, but `notify_change` uses its own ReadLock on `on_change`.
-        // We currently hold `state` write lock.
-        // `notify_change` locks `on_change`.
-        // If expectation is `on_change` callback might call back into `SubSettings`... deadlock risk?
-        // Callbacks should generally be async or not call back into same lock.
-        // But here we are safe from `state` deadlock if callback calls `get_value` (Read state), since RwLock allows recursion?
-        // No, RwLock does NOT allow `read` if `write` is held by same thread (typically deadlocks).
-        // `parking_lot::RwLock` will DEADLOCK if we try to read while holding write.
-
-        // FIX: Drop state lock before notifying.
         drop(state); // Ensure state lock is dropped.
 
         self.notify_change(name, action);
@@ -926,11 +926,13 @@ impl<S: StorageBackend> SubSettings<S> {
             };
 
             let base_dir = &state.base_dir;
-            let path = Self::single_file_path(base_dir, &self.config.name, &self.config.extension);
+            let extension = self.config.extension.as_deref().unwrap_or("json");
+            let path = Self::single_file_path(base_dir, &self.config.name, extension);
             self.storage.write(&path, &full_obj)?;
         } else {
             let base_dir = &state.base_dir;
-            let path = base_dir.join(format!("{}.{}", name, self.config.extension));
+            let extension = self.config.extension.as_deref().unwrap_or("json");
+            let path = base_dir.join(format!("{name}.{extension}"));
 
             if let Err(e) = std::fs::metadata(&path) {
                 if e.kind() != std::io::ErrorKind::NotFound {
@@ -990,7 +992,8 @@ impl<S: StorageBackend> SubSettings<S> {
             }
 
             let mut entries = Vec::new();
-            let ext = format!(".{}", self.config.extension);
+            let extension = self.config.extension.as_deref().unwrap_or("json");
+            let ext = format!(".{extension}");
 
             let read_dir = std::fs::read_dir(&base_dir).map_err(|e| Error::FileRead {
                 path: base_dir.clone(),
@@ -1038,7 +1041,8 @@ impl<S: StorageBackend> SubSettings<S> {
             let base_dir = state.base_dir.clone();
             drop(state); // Drop lock for I/O
 
-            let path = base_dir.join(format!("{}.{}", name, self.config.extension));
+            let extension = self.config.extension.as_deref().unwrap_or("json");
+            let path = base_dir.join(format!("{name}.{extension}"));
             match std::fs::metadata(&path) {
                 Ok(_) => Ok(true),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -1062,7 +1066,8 @@ impl<S: StorageBackend> SubSettings<S> {
     pub fn file_path(&self) -> Option<PathBuf> {
         if self.is_single_file() {
             self.state.read_recovered().ok().map(|state| {
-                Self::single_file_path(&state.base_dir, &self.config.name, &self.config.extension)
+                let extension = self.config.extension.as_deref().unwrap_or("json");
+                Self::single_file_path(&state.base_dir, &self.config.name, extension)
             })
         } else {
             None

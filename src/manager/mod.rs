@@ -230,6 +230,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 &config.config_dir,
                 "settings",
                 false, // Main settings is always multi-file logic (creates settings.json inside)
+                None,
                 &config.profile_migrator,
             )?;
 

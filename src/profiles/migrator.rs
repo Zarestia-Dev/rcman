@@ -51,24 +51,56 @@ impl std::fmt::Debug for ProfileMigrator {
 /// # Errors
 ///
 /// Returns an error if the migration fails.
+/// Execute migration if needed
+///
+/// # Arguments
+///
+/// * `root_dir` - The root directory of the *profiled* structure (e.g., "config/backends")
+/// * `target_name` - The name of the target (e.g., "backends")
+/// * `single_file_mode` - Whether to migrate in single file mode
+/// * `extension` - The file extension to look for (e.g., "json")
+/// * `strategy` - The migration strategy to use
+///
+/// # Errors
+///
+/// Returns an error if the migration fails.
 pub fn migrate(
     root_dir: &Path,
     target_name: &str,
     single_file_mode: bool,
+    extension: Option<&str>,
     strategy: &ProfileMigrator,
 ) -> Result<()> {
     let manifest_path = root_dir.join(MANIFEST_FILE);
-    let _profiles_dir = root_dir.join(PROFILES_DIR); // Used in check? No, check uses manifest.
 
-    // If manifest exists, we are already profiled
+    // If manifest exists, we are usually already profiled.
+    // However, we check for a specific failure case in single-file mode where
+    // the manifest exists but the legacy file was not moved (partial migration).
     if manifest_path.exists() {
-        debug!("Profiles already initialized for '{target_name}'");
-        return Ok(());
+        if single_file_mode {
+            let ext = extension.unwrap_or("json");
+            let legacy_file = root_dir.with_extension(ext);
+            if legacy_file.exists() && legacy_file.is_file() {
+                warn!(
+                    "Detected partial profile migration for '{target_name}'. Legacy file exists alongside manifest. Retrying migration."
+                );
+            } else {
+                debug!("Profiles already initialized for '{target_name}'");
+                return Ok(());
+            }
+        } else {
+            debug!("Profiles already initialized for '{target_name}'");
+            return Ok(());
+        }
     }
 
     // Determine if there's anything to migrate
     let needs_migration = if single_file_mode {
-        true
+        // In single file mode, we check for the existence of the sibling file
+        // e.g. "config/backends.json" when root_dir is "config/backends"
+        let ext = extension.unwrap_or("json");
+        let legacy_file = root_dir.with_extension(ext);
+        legacy_file.exists() && legacy_file.is_file()
     } else {
         root_dir.exists()
             && root_dir
@@ -95,11 +127,18 @@ pub fn migrate(
             Ok(())
         }
         ProfileMigrator::Custom(func) => func(root_dir),
-        ProfileMigrator::Auto => run_auto_migration(root_dir, target_name, single_file_mode),
+        ProfileMigrator::Auto => {
+            run_auto_migration(root_dir, target_name, single_file_mode, extension)
+        }
     }
 }
 
-fn run_auto_migration(root_dir: &Path, target_name: &str, _single_file_mode: bool) -> Result<()> {
+fn run_auto_migration(
+    root_dir: &Path,
+    target_name: &str,
+    single_file_mode: bool,
+    extension: Option<&str>,
+) -> Result<()> {
     // 1. Create profiles/default directory
     let default_profile_dir = root_dir.join(PROFILES_DIR).join(DEFAULT_PROFILE);
     std::fs::create_dir_all(&default_profile_dir).map_err(|e| Error::DirectoryCreate {
@@ -108,29 +147,47 @@ fn run_auto_migration(root_dir: &Path, target_name: &str, _single_file_mode: boo
     })?;
 
     // 2. Move files
-    if root_dir.is_dir() {
-        for entry in std::fs::read_dir(root_dir).map_err(|e| Error::DirectoryRead {
-            path: root_dir.to_path_buf(),
+    if single_file_mode {
+        // Single File Migration: Move sibling file into default profile
+        let ext = extension.unwrap_or("json");
+        let legacy_file = root_dir.with_extension(ext);
+        let dest = default_profile_dir.join(format!("{target_name}.{ext}"));
+
+        debug!(
+            "Moving single file {} -> {}",
+            legacy_file.display(),
+            dest.display()
+        );
+        std::fs::rename(&legacy_file, &dest).map_err(|e| Error::FileWrite {
+            path: dest.clone(),
             source: e,
-        })? {
-            let entry = entry.map_err(|e| Error::DirectoryRead {
+        })?;
+    } else {
+        // Multi File Migration: Move items from within root_dir
+        if root_dir.is_dir() {
+            for entry in std::fs::read_dir(root_dir).map_err(|e| Error::DirectoryRead {
                 path: root_dir.to_path_buf(),
                 source: e,
-            })?;
-            let path = entry.path();
-
-            // Skip .profiles.json and profiles/ dir
-            if path.ends_with(MANIFEST_FILE) || path.ends_with(PROFILES_DIR) {
-                continue;
-            }
-
-            if let Some(name) = path.file_name() {
-                let dest = default_profile_dir.join(name);
-                debug!("Moving {:?} -> {:?}", path.display(), dest.display());
-                std::fs::rename(&path, &dest).map_err(|e| Error::FileWrite {
-                    path: dest.clone(),
+            })? {
+                let entry = entry.map_err(|e| Error::DirectoryRead {
+                    path: root_dir.to_path_buf(),
                     source: e,
                 })?;
+                let path = entry.path();
+
+                // Skip .profiles.json and profiles/ dir
+                if path.ends_with(MANIFEST_FILE) || path.ends_with(PROFILES_DIR) {
+                    continue;
+                }
+
+                if let Some(name) = path.file_name() {
+                    let dest = default_profile_dir.join(name);
+                    debug!("Moving {:?} -> {:?}", path.display(), dest.display());
+                    std::fs::rename(&path, &dest).map_err(|e| Error::FileWrite {
+                        path: dest.clone(),
+                        source: e,
+                    })?;
+                }
             }
         }
     }

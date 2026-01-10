@@ -174,6 +174,29 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         }
     }
 
+    /// Specify the storage backend type.
+    ///
+    /// This transforms the builder to use the specified storage backend.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use rcman::{SettingsManager, JsonStorage};
+    ///
+    /// let manager = SettingsManager::builder("my-app", "1.0.0")
+    ///     .with_storage::<JsonStorage>()
+    ///     .build()
+    ///     .unwrap();
+    /// ```
+    #[must_use]
+    pub fn with_storage<NewS: StorageBackend + Default>(
+        self,
+    ) -> SettingsManagerBuilder<NewS, Schema> {
+        SettingsManagerBuilder {
+            config_builder: self.config_builder.with_storage::<NewS>(),
+            sub_settings: self.sub_settings,
+        }
+    }
+
     /// Enable profiles for main settings.
     ///
     /// When enabled, the main settings.json is stored per-profile, allowing

@@ -178,7 +178,7 @@ impl SettingsConfig {
 #[derive(Clone)]
 pub struct SettingsConfigBuilder<S: StorageBackend = JsonStorage, Schema: SettingsSchema = ()> {
     config_dir: Option<PathBuf>,
-    settings_file: String,
+    settings_file: Option<String>,
     app_name: String,
     app_version: String,
     options: BuilderOptions,
@@ -253,7 +253,7 @@ impl SettingsConfigBuilder {
     pub fn new(app_name: impl Into<String>, app_version: impl Into<String>) -> Self {
         Self {
             config_dir: None,
-            settings_file: "settings.json".into(),
+            settings_file: None,
             app_name: app_name.into(),
             app_version: app_version.into(),
             options: BuilderOptions::default(),
@@ -307,10 +307,10 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         self
     }
 
-    /// Set the settings filename (default: "settings.json")
+    /// Set the settings filename (default: "settings.{ext}")
     #[must_use]
     pub fn settings_file(mut self, filename: impl Into<String>) -> Self {
-        self.settings_file = filename.into();
+        self.settings_file = Some(filename.into());
         self
     }
 
@@ -505,6 +505,40 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         }
     }
 
+    /// Specify the storage backend type.
+    ///
+    /// This transforms the builder to use the specified storage backend.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use rcman::{SettingsConfig, JsonStorage};
+    ///
+    /// let config = SettingsConfig::builder("my-app", "1.0.0")
+    ///     .with_storage::<JsonStorage>()
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn with_storage<NewS: StorageBackend + Default>(
+        self,
+    ) -> SettingsConfigBuilder<NewS, Schema> {
+        SettingsConfigBuilder {
+            config_dir: self.config_dir,
+            settings_file: self.settings_file,
+            app_name: self.app_name,
+            app_version: self.app_version,
+            options: self.options,
+            env_prefix: self.env_prefix,
+            #[cfg(feature = "backup")]
+            external_configs: self.external_configs,
+            migrator: self.migrator,
+            #[cfg(feature = "profiles")]
+            profile_migrator: self.profile_migrator,
+            env_source: self.env_source,
+            _schema: PhantomData,
+            _storage: PhantomData,
+        }
+    }
+
     /// Build the `SettingsConfig`
     ///
     /// If `config_dir` is not set, uses the system config directory for the app.
@@ -520,9 +554,13 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
 
         let storage = S::default();
 
+        let settings_file = self
+            .settings_file
+            .unwrap_or_else(|| format!("settings.{}", storage.extension()));
+
         SettingsConfig {
             config_dir,
-            settings_file: self.settings_file,
+            settings_file,
             app_name: self.app_name,
             app_version: self.app_version,
             storage,

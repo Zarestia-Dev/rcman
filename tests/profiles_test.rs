@@ -313,6 +313,51 @@ fn test_single_file_mode_with_profiles() {
     );
 }
 
+#[test]
+fn test_single_file_profile_migration() {
+    let temp_dir = TempDir::new().unwrap();
+    let backends_file = temp_dir.path().join("backends.json");
+
+    // 1. Setup Legacy Flat Structure
+    std::fs::write(&backends_file, r#"{ "local": { "type": "local" } }"#).unwrap();
+
+    // 2. Initialize Manager with Profiles Enabled for this single-file sub-setting
+    let _manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_sub_settings(SubSettingsConfig::singlefile("backends").with_profiles())
+        .build()
+        .unwrap();
+
+    // 3. Verify Migration
+    // The original file should be gone (or rather, moved)
+    assert!(
+        !backends_file.exists(),
+        "Legacy file should have been moved"
+    );
+
+    // The single-file container directory should exist
+    let backends_dir = temp_dir.path().join("backends");
+    assert!(backends_dir.is_dir());
+
+    // Manifest should exist
+    assert!(backends_dir.join(".profiles.json").exists());
+
+    // The file should be inside the default profile
+    let migrated_file = backends_dir
+        .join("profiles")
+        .join("default")
+        .join("backends.json");
+
+    assert!(
+        migrated_file.exists(),
+        "File should be migrated to default profile"
+    );
+
+    // Check content
+    let content = std::fs::read_to_string(migrated_file).unwrap();
+    assert!(content.contains("local"));
+}
+
 // =============================================================================
 // Main Settings Profiles
 // =============================================================================
