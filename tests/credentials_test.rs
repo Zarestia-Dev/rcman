@@ -298,7 +298,10 @@ fn test_secret_has_correct_metadata() {
     // Verify metadata reflects secret status
     let metadata = manager.metadata().unwrap();
     let api_key_meta = metadata.get("api.key").unwrap();
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     assert!(api_key_meta.flags.system.secret);
+    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+    assert!(!api_key_meta.flags.system.secret);
 
     let theme_meta = metadata.get("ui.theme").unwrap();
     assert!(!theme_meta.flags.system.secret);

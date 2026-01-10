@@ -409,74 +409,74 @@ impl SettingMetadata {
         self
     }
 
-    /// Mark this setting as a secret - **REQUIRES FEATURE!**
-    ///
-    /// # ⚠️ Compile Error: Missing Required Feature
-    ///
-    /// You called `.secret()` but haven't enabled the `keychain` or `encrypted-file` feature.
-    /// Without these features, secrets would be stored in **plaintext JSON** files, which
-    /// is a serious security vulnerability!
-    ///
-    /// ## How to Fix
-    ///
-    /// Add one of these features to your `Cargo.toml`:
-    ///
-    /// ```toml
-    /// [dependencies]
-    /// # Option 1: Use OS keychain (recommended)
-    /// rcman = { version = "0.2", features = ["keychain"] }
-    ///
-    /// # Option 2: Use encrypted file storage
-    /// rcman = { version = "0.2", features = ["encrypted-file"] }
-    /// ```
-    ///
-    /// ## Why This Matters
-    ///
-    /// - **keychain**: Stores secrets in OS-provided secure storage (macOS Keychain, Windows Credential Manager, Linux Secret Service)
-    /// - **encrypted-file**: Stores secrets in an encrypted JSON file using Argon2id
-    /// - **Without features**: Secrets stored in plaintext `settings.json` ❌
-    ///
-    /// ## Alternative
-    ///
-    /// If you don't need secret storage, simply **remove** the `.secret()` call:
-    ///
-    /// ```rust
-    /// // Before (causes compile error):
-    /// SettingMetadata::password("API Key", "").secret()
-    ///
-    /// // After (compiles, but stored in plaintext):
-    /// SettingMetadata::password("API Key", "")
-    /// ```
-    #[must_use]
-    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
-    pub fn secret(self) -> Self {
-        compile_error!(
-            "\n\n\
-            ╔══════════════════════════════════════════════════════════════════════╗\n\
-            ║  ERROR: .secret() requires 'keychain' or 'encrypted-file' feature    ║\n\
-            ╠══════════════════════════════════════════════════════════════════════╣\n\
-            ║                                                                      ║\n\
-            ║  You called .secret() but haven't enabled secret storage!            ║\n\
-            ║                                                                      ║\n\
-            ║  QUICK FIX (choose one):                                             ║\n\
-            ║                                                                      ║\n\
-            ║    1. Enable keychain (recommended):                                 ║\n\
-            ║       cargo add rcman --features keychain                            ║\n\
-            ║                                                                      ║\n\
-            ║    2. OR enable encrypted-file:                                      ║\n\
-            ║       cargo add rcman --features encrypted-file                      ║\n\
-            ║                                                                      ║\n\
-            ║    3. OR remove .secret() if plaintext is okay:                      ║\n\
-            ║       SettingMetadata::password(\"Key\", \"\")  // without .secret()     ║\n\
-            ║                                                                      ║\n\
-            ║  Why: Without features, secrets would be stored in PLAINTEXT!        ║\n\
-            ║  Learn more: https://docs.rs/rcman/latest/rcman/#secret-settings     ║\n\
-            ║                                                                      ║\n\
-            ╚══════════════════════════════════════════════════════════════════════╝\n\
-            "
-        );
-        self
-    }
+    // /// Mark this setting as a secret - **REQUIRES FEATURE!**
+    // ///
+    // /// # ⚠️ Compile Error: Missing Required Feature
+    // ///
+    // /// You called `.secret()` but haven't enabled the `keychain` or `encrypted-file` feature.
+    // /// Without these features, secrets would be stored in **plaintext JSON** files, which
+    // /// is a serious security vulnerability!
+    // ///
+    // /// ## How to Fix
+    // ///
+    // /// Add one of these features to your `Cargo.toml`:
+    // ///
+    // /// ```toml
+    // /// [dependencies]
+    // /// # Option 1: Use OS keychain (recommended)
+    // /// rcman = { version = "0.2", features = ["keychain"] }
+    // ///
+    // /// # Option 2: Use encrypted file storage
+    // /// rcman = { version = "0.2", features = ["encrypted-file"] }
+    // /// ```
+    // ///
+    // /// ## Why This Matters
+    // ///
+    // /// - **keychain**: Stores secrets in OS-provided secure storage (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+    // /// - **encrypted-file**: Stores secrets in an encrypted JSON file using Argon2id
+    // /// - **Without features**: Secrets stored in plaintext `settings.json` ❌
+    // ///
+    // /// ## Alternative
+    // ///
+    // /// If you don't need secret storage, simply **remove** the `.secret()` call:
+    // ///
+    // /// ```rust
+    // /// // Before (causes compile error):
+    // /// SettingMetadata::password("API Key", "").secret()
+    // ///
+    // /// // After (compiles, but stored in plaintext):
+    // /// SettingMetadata::password("API Key", "")
+    // /// ```
+    // #[must_use]
+    // #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+    // pub fn secret(self) -> Self {
+    //     compile_error!(
+    //         "\n\n\
+    //         ╔══════════════════════════════════════════════════════════════════════╗\n\
+    //         ║  ERROR: .secret() requires 'keychain' or 'encrypted-file' feature    ║\n\
+    //         ╠══════════════════════════════════════════════════════════════════════╣\n\
+    //         ║                                                                      ║\n\
+    //         ║  You called .secret() but haven't enabled secret storage!            ║\n\
+    //         ║                                                                      ║\n\
+    //         ║  QUICK FIX (choose one):                                             ║\n\
+    //         ║                                                                      ║\n\
+    //         ║    1. Enable keychain (recommended):                                 ║\n\
+    //         ║       cargo add rcman --features keychain                            ║\n\
+    //         ║                                                                      ║\n\
+    //         ║    2. OR enable encrypted-file:                                      ║\n\
+    //         ║       cargo add rcman --features encrypted-file                      ║\n\
+    //         ║                                                                      ║\n\
+    //         ║    3. OR remove .secret() if plaintext is okay:                      ║\n\
+    //         ║       SettingMetadata::password(\"Key\", \"\")  // without .secret()     ║\n\
+    //         ║                                                                      ║\n\
+    //         ║  Why: Without features, secrets would be stored in PLAINTEXT!        ║\n\
+    //         ║  Learn more: https://docs.rs/rcman/latest/rcman/#secret-settings     ║\n\
+    //         ║                                                                      ║\n\
+    //         ╚══════════════════════════════════════════════════════════════════════╝\n\
+    //         "
+    //     );
+    //     self
+    // }
 
     /// Set regex pattern for validation
     #[must_use]

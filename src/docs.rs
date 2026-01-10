@@ -264,13 +264,17 @@ mod tests {
                     .max(65535.0)
                     .description("Server port number"),
             );
-            m.insert(
-                "security.api_key".into(),
-                SettingMetadata::text("API Key", "")
+            m.insert("security.api_key".into(), {
+                #[allow(unused_mut)]
+                let mut s = SettingMetadata::text("API Key", "")
                     .category("security")
-                    .secret()
-                    .advanced(),
-            );
+                    .advanced();
+                #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                {
+                    s = s.secret();
+                }
+                s
+            });
             m
         }
     }
@@ -288,6 +292,7 @@ mod tests {
         assert!(docs.contains("## Network"));
         assert!(docs.contains("## Security"));
         assert!(docs.contains("`appearance.theme`"));
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         assert!(docs.contains("Secret"));
         assert!(docs.contains("Advanced"));
     }

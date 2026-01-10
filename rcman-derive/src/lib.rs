@@ -21,7 +21,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Attribute, Data, DeriveInput, Expr, Fields, Lit, Meta, Type};
+use syn::{Attribute, Data, DeriveInput, Expr, Fields, Lit, Meta, Type, parse_macro_input};
 
 /// Derive macro for generating `SettingsSchema` implementations.
 ///
@@ -275,20 +275,28 @@ fn parse_field_attrs(attrs: &[Attribute]) -> FieldAttrs {
                                     if let Lit::Str(s) = &lit.lit {
                                         result.label = Some(s.value());
                                     } else {
-                                        panic!("#[setting(label)] must be a string literal.\n\nExample: #[setting(label = \"My Label\")]");
+                                        panic!(
+                                            "#[setting(label)] must be a string literal.\n\nExample: #[setting(label = \"My Label\")]"
+                                        );
                                     }
                                 } else {
-                                    panic!("#[setting(label)] must be a string literal.\n\nExample: #[setting(label = \"My Label\")]");
+                                    panic!(
+                                        "#[setting(label)] must be a string literal.\n\nExample: #[setting(label = \"My Label\")]"
+                                    );
                                 }
                             } else if nv.path.is_ident("description") {
                                 if let Expr::Lit(lit) = value {
                                     if let Lit::Str(s) = &lit.lit {
                                         result.description = Some(s.value());
                                     } else {
-                                        panic!("#[setting(description)] must be a string literal.\n\nExample: #[setting(description = \"Help text\")]");
+                                        panic!(
+                                            "#[setting(description)] must be a string literal.\n\nExample: #[setting(description = \"Help text\")]"
+                                        );
                                     }
                                 } else {
-                                    panic!("#[setting(description)] must be a string literal.\n\nExample: #[setting(description = \"Help text\")]");
+                                    panic!(
+                                        "#[setting(description)] must be a string literal.\n\nExample: #[setting(description = \"Help text\")]"
+                                    );
                                 }
                             } else if nv.path.is_ident("category") {
                                 if let Expr::Lit(lit) = value {
@@ -303,10 +311,14 @@ fn parse_field_attrs(attrs: &[Attribute]) -> FieldAttrs {
                                     } else if let Lit::Int(i) = &lit.lit {
                                         result.min = i.base10_parse::<i64>().ok().map(|v| v as f64);
                                     } else {
-                                        panic!("#[setting(min)] must be a number.\n\nExample: #[setting(min = 0)]");
+                                        panic!(
+                                            "#[setting(min)] must be a number.\n\nExample: #[setting(min = 0)]"
+                                        );
                                     }
                                 } else {
-                                    panic!("#[setting(min)] must be a number.\n\nExample: #[setting(min = 0)]");
+                                    panic!(
+                                        "#[setting(min)] must be a number.\n\nExample: #[setting(min = 0)]"
+                                    );
                                 }
                             } else if nv.path.is_ident("max") {
                                 if let Expr::Lit(lit) = value {
@@ -315,7 +327,9 @@ fn parse_field_attrs(attrs: &[Attribute]) -> FieldAttrs {
                                     } else if let Lit::Int(i) = &lit.lit {
                                         result.max = i.base10_parse::<i64>().ok().map(|v| v as f64);
                                     } else {
-                                        panic!("#[setting(max)] must be a number.\n\nExample: #[setting(max = 100)]");
+                                        panic!(
+                                            "#[setting(max)] must be a number.\n\nExample: #[setting(max = 100)]"
+                                        );
                                     }
                                 }
                             } else if nv.path.is_ident("step") {
