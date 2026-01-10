@@ -442,7 +442,7 @@ fn generate_setting_type(
         // Handle Vec<String> for List type
         // This is a bit rough but works for standard usage
         if let Some(seg) = path.path.segments.last() {
-            if seg.ident.to_string() == "Vec" {
+            if seg.ident == "Vec" {
                 // We could inspect generic args here to ensure it's String,
                 // but for now we'll assume Vec<String> maps to list.
                 return (

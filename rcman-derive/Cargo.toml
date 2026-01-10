@@ -1,13 +1,13 @@
 [package]
 name = "rcman-derive"
-version = "0.1.1"
-edition = "2021"
+version = "0.1.2"
+edition = "2024"
 description = "Derive macros for rcman settings library"
 license = "MIT"
 repository = "https://github.com/Zarestia-Dev/rcman"
 keywords = ["settings", "config", "derive", "macro"]
 categories = ["config", "development-tools::procedural-macro-helpers"]
-rust-version = "1.70"
+rust-version = "1.85"
 
 [lib]
 proc-macro = true
