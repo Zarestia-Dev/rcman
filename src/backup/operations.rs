@@ -425,7 +425,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         let dest_profiles_dir = sub_export_dir.join(PROFILES_DIR);
         crate::error::create_dir(&dest_profiles_dir)?;
 
-        let mut profile_names = Vec::new();
+        let mut profile_items: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
 
         for entry in crate::error::read_dir(&profiles_dir)? {
             let entry = entry.map_err(|e| Error::DirectoryRead {
@@ -446,7 +447,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             let profile_export_dir = dest_profiles_dir.join(&profile_name);
             crate::error::create_dir(&profile_export_dir)?;
 
-            // Copy all JSON files from this profile
+            let mut items_in_profile = Vec::new();
+
             if let Ok(profile_entries) = fs::read_dir(&profile_path) {
                 for item_entry in profile_entries.flatten() {
                     let path = item_entry.path();
@@ -455,18 +457,37 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                         crate::error::copy_file(&path, &dest)?;
                         total_size += crate::error::file_size(&dest);
                         file_count += 1;
+
+                        // Extract item name (without extension)
+                        if let Some(item_name) = path.file_stem().and_then(|s| s.to_str()) {
+                            items_in_profile.push(item_name.to_string());
+                        }
                     }
                 }
-                profile_names.push(profile_name);
+            }
+
+            if !items_in_profile.is_empty() {
+                profile_items.insert(profile_name, items_in_profile);
             }
         }
 
-        let manifest_entry = if profile_names.is_empty() {
+        let manifest_entry = if profile_items.is_empty() {
             None
         } else {
+            let profiles_map = profile_items
+                .into_iter()
+                .map(|(profile_name, items)| {
+                    let entry = if items.len() == 1 {
+                        super::types::ProfileEntry::Single(items.into_iter().next().unwrap())
+                    } else {
+                        super::types::ProfileEntry::Multiple(items)
+                    };
+                    (profile_name, entry)
+                })
+                .collect();
+
             Some(SubSettingsManifestEntry::Profiled {
-                profiles: profile_names,
-                single_file: sub.is_single_file(),
+                profiles: profiles_map,
             })
         };
 

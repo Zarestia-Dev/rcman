@@ -776,59 +776,45 @@ pub struct BackupIntegrity {
     pub compressed_size_bytes: Option<u64>,
 }
 
-/// Manifest entry for sub-settings (can be single file or list of items)
+/// Profile entry - polymorphic: String for single item, Array for multiple
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ProfileEntry {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+/// Manifest entry for sub-settings
 ///
-/// This supports the "Enterprise" polymorphic schema:
-/// - Single-file settings (e.g. "backend") -> stores filename string "backend.json"
-/// - Multi-file settings (e.g. "remotes") -> stores list of items [`gdrive`, `s3`]
-/// - Profiled settings -> stores profile names and mode
+/// Item names stored WITHOUT extensions (format-agnostic: .json, .toml, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum SubSettingsManifestEntry {
-    /// Single file (stored as filename)
+    /// Single item: `"backend"`
     SingleFile(String),
-    /// Multiple files (stored as list of item names)
+    /// Multiple items: `["gdrive", "s3"]`
     MultiFile(Vec<String>),
-    /// Profiled (stores profile names and indicates the mode)
+    /// Profiled: `{"default": "backend"}` or `{"default": ["item1", "item2"]}`
     #[cfg(feature = "profiles")]
     Profiled {
-        profiles: Vec<String>,
-        #[serde(default)]
-        single_file: bool,
+        profiles: std::collections::HashMap<String, ProfileEntry>,
     },
 }
 
 /// What's included in the backup
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BackupContents {
-    /// Main settings.json included
     pub settings: bool,
-
-    /// Sub-settings included (category -> entry info)
-    ///
-    /// The value is polymorphic:
-    /// - `String`: Filename for single-file settings
-    /// - `Vec<String>`: List of items for multi-file settings
     pub sub_settings: std::collections::HashMap<String, SubSettingsManifestEntry>,
-
-    /// External configs included (by id)
     pub external_configs: Vec<String>,
-
-    /// Profiles included
     #[cfg(feature = "profiles")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<String>>,
-
-    /// Total file count
     pub file_count: u32,
 }
 
 impl BackupContents {
-    /// Convert manifest entries to a simple `HashMap` for processing
-    ///
-    /// This is used during restore to get a list of (type, items) to process.
-    /// For `SingleFile` entries, returns an empty vec (meaning "all items").
-    /// For `MultiFile` entries, returns the list of item names.
+    /// Convert to `HashMap` for restore processing
     #[must_use]
     pub fn sub_settings_list(&self) -> std::collections::HashMap<String, Vec<String>> {
         self.sub_settings

@@ -460,7 +460,16 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 })?;
 
                 let value: serde_json::Value = serde_json::from_str(&content)?;
-                entries_to_restore.push((entry_name, value));
+
+                // If this is the main file for a SingleFile sub-setting (e.g. connections.json inside connections/),
+                // flatten its entries so we restore "Local" and "Remote" instead of "connections" -> {...}
+                if sub_ctx.sub.is_single_file() && entry_name == sub_ctx.sub_type {
+                    if let serde_json::Value::Object(map) = value {
+                        entries_to_restore.extend(map);
+                    }
+                } else {
+                    entries_to_restore.push((entry_name, value));
+                }
             }
         }
 
@@ -666,6 +675,29 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                         source: e,
                     })?;
                     let value: serde_json::Value = serde_json::from_str(&content)?;
+
+                    // Handle SingleFile sub-settings being restored from a profile containing the single file
+                    if sub_ctx.sub.is_single_file() && stem == sub_ctx.sub_type {
+                        if let serde_json::Value::Object(map) = value {
+                            for (k, v) in map {
+                                let item_id = format!("{}/{k}", sub_ctx.sub_type);
+
+                                if sub_ctx.sub.exists(&k)?
+                                    && !self.options.flags.control.overwrite_existing
+                                {
+                                    result.skipped.push(item_id);
+                                } else if self.options.flags.control.dry_run {
+                                    result.restored.push(item_id.clone());
+                                    debug!("{} Would restore flattened {item_id}", self.mode_str);
+                                } else {
+                                    sub_ctx.sub.set(&k, &v)?;
+                                    result.restored.push(item_id.clone());
+                                    debug!("Restored flattened {item_id}");
+                                }
+                            }
+                        }
+                        continue;
+                    }
 
                     let entry_id = format!("{}/{stem}", sub_ctx.sub_type);
 

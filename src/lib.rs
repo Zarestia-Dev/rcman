@@ -238,8 +238,8 @@ pub use config::{
 #[cfg(feature = "backup")]
 pub use backup::{
     BackupAnalysis, BackupContents, BackupManager, BackupManifest, BackupOptions, ExportCategory,
-    ExportCategoryType, ExportType, ExternalConfig, ExternalConfigProvider, RestoreOptions,
-    RestoreResult, SubSettingsManifestEntry,
+    ExportCategoryType, ExportType, ExternalConfig, ExternalConfigProvider, ProfileEntry,
+    RestoreOptions, RestoreResult, SubSettingsManifestEntry,
 };
 
 // Profiles re-exports (feature-gated)
