@@ -96,28 +96,22 @@ impl SettingsSchema for DemoSettings {
 
             // Secret settings (stored in keychain when feature enabled)
             "secrets.api_key" => {
-                #[allow(unused_mut)]
-                let mut s = SettingMetadata::password("API Key", "")
+                let s = SettingMetadata::password("API Key", "")
                     .description("Your API key (stored in keychain)")
                     .category("Secrets")
                     .order(1);
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                {
-                    s = s.secret();
-                }
+                let s = s.secret();
                 s
             },
 
             "secrets.db_password" => {
-                #[allow(unused_mut)]
-                let mut s = SettingMetadata::password("Database Password", "")
+                let s = SettingMetadata::password("Database Password", "")
                     .description("Database password (stored in keychain)")
                     .category("Secrets")
                     .order(2);
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                {
-                    s = s.secret();
-                }
+                let s = s.secret();
                 s
             },
 

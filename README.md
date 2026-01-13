@@ -46,6 +46,7 @@ cargo add rcman
 | Feature          | Description                       | Default? |
 | ---------------- | --------------------------------- | -------- |
 | `json`           | JSON storage                      | ✅       |
+| `toml`           | TOML storage                      | ❌       |
 | `backup`         | Backup/restore (zip)              | ✅       |
 | `derive`         | `#[derive(SettingsSchema)]` macro | ❌       |
 | `keychain`       | OS keychain support               | ❌       |

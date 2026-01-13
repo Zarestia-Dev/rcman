@@ -11,7 +11,7 @@ Thanks for considering contributing! This project aims to provide a robust, well
 
 ### Toolchain & MSRV
 
-- Minimum Supported Rust Version (MSRV): 1.70 (declared in `Cargo.toml`).
+- Minimum Supported Rust Version (MSRV): 1.85 (declared in `Cargo.toml`).
 - A `rust-toolchain.toml` pins the local channel to `stable` and installs `rustfmt` + `clippy`.
 
 ## Local Checks
@@ -22,6 +22,7 @@ Run these before pushing:
 cargo fmt --all
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all --all-features
+cargo clippy --all-features -- -W clippy::pedantic
 ```
 
 ### Pre-commit Hook (auto-run clippy)
@@ -48,6 +49,7 @@ If you have `just` installed, common tasks are available:
 ```bash
 just fmt
 just clippy
+just pedantic
 just test
 just docs
 just deny

@@ -88,12 +88,14 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchem
 
 impl Default for SettingsConfig {
     fn default() -> Self {
+        let storage = JsonStorage::new();
+        let settings_file = format!("settings.{}", storage.extension());
         Self {
             config_dir: PathBuf::from("."),
-            settings_file: "settings.json".into(),
+            settings_file,
             app_name: "app".into(),
             app_version: "0.1.0".into(),
-            storage: JsonStorage::new(),
+            storage,
             enable_credentials: false,
             env_prefix: None,
             env_overrides_secrets: false,
@@ -431,7 +433,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
 
     /// Enable profiles for main settings
     ///
-    /// When enabled, the main settings.json is stored per-profile, allowing
+    /// When enabled, the main settings file is stored per-profile, allowing
     /// completely different configurations (e.g., "work" vs "personal").
     ///
     /// # Example
@@ -508,6 +510,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// Specify the storage backend type.
     ///
     /// This transforms the builder to use the specified storage backend.
+    /// The settings filename will automatically be updated to match the format.
     ///
     /// # Example
     /// ```no_run

@@ -16,7 +16,7 @@ use std::fs;
 use std::path::Path;
 
 #[cfg(feature = "profiles")]
-use crate::profiles::{MANIFEST_FILE, PROFILES_DIR};
+use crate::profiles::PROFILES_DIR;
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'_, S, Schema> {
     /// Restore from a backup
@@ -240,26 +240,35 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
         // Logic for legacy flat settings (either profiles disabled or feature off)
         if self.analysis.manifest.contents.settings {
-            let settings_src = self.extract_dir.join("settings.json");
-            if settings_src.exists() {
+            // Try to load settings from backup (agnostic of extension)
+            if let Some((value, _ext)) = load_settings_agnostic(
+                self.extract_dir,
+                "settings",
+                self.manager.manager.storage(),
+            )? {
                 let settings_dest = self.manager.manager.config().settings_path();
+                let dest_filename = settings_dest
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
 
                 if settings_dest.exists() && !self.options.flags.control.overwrite_existing {
-                    result.skipped.push("settings.json".into());
+                    result.skipped.push(dest_filename.to_string());
                     warn!(
-                        "{} Skipping settings.json (exists, overwrite disabled)",
-                        self.mode_str
+                        "{} Skipping {} (exists, overwrite disabled)",
+                        self.mode_str, dest_filename
                     );
                 } else if self.options.flags.control.dry_run {
-                    result.restored.push("settings.json".into());
-                    debug!("{} Would restore settings.json", self.mode_str);
+                    result.restored.push(dest_filename.to_string());
+                    debug!("{} Would restore {}", self.mode_str, dest_filename);
                 } else {
-                    fs::copy(&settings_src, &settings_dest).map_err(|e| Error::FileWrite {
-                        path: settings_dest.clone(),
-                        source: e,
-                    })?;
-                    result.restored.push("settings.json".into());
-                    debug!("Restored settings.json");
+                    // Write using the configured storage backend (handles conversion!)
+                    self.manager
+                        .manager
+                        .storage()
+                        .write(&settings_dest, &value)?;
+                    result.restored.push(dest_filename.to_string());
+                    debug!("Restored {dest_filename}");
                 }
             }
         }
@@ -271,23 +280,25 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
     fn restore_main_settings_profiles(&self, result: &mut RestoreResult) -> Result<()> {
         let config = self.manager.manager.config();
 
-        // Restore .profiles.json
-        let profiles_manifest = self.extract_dir.join(MANIFEST_FILE);
-        let target_manifest = config.config_dir.join(MANIFEST_FILE);
+        // Restore .profiles.{ext}
+        let ext = self.manager.manager.storage().extension();
+        let manifest_filename = format!(".profiles.{ext}");
+        let profiles_manifest = self.extract_dir.join(&manifest_filename);
+        let target_manifest = config.config_dir.join(&manifest_filename);
 
         if profiles_manifest.exists() {
             if target_manifest.exists() && !self.options.flags.control.overwrite_existing {
-                result.skipped.push(MANIFEST_FILE.into());
-                warn!("{} Skipping {MANIFEST_FILE} (exists)", self.mode_str);
+                result.skipped.push(manifest_filename.clone());
+                warn!("{} Skipping {} (exists)", self.mode_str, manifest_filename);
             } else if self.options.flags.control.dry_run {
-                result.restored.push(MANIFEST_FILE.into());
-                debug!("{} Would restore {MANIFEST_FILE}", self.mode_str);
+                result.restored.push(manifest_filename.clone());
+                debug!("{} Would restore {}", self.mode_str, manifest_filename);
             } else {
                 fs::copy(&profiles_manifest, &target_manifest).map_err(|e| Error::FileWrite {
                     path: target_manifest.clone(),
                     source: e,
                 })?;
-                result.restored.push(MANIFEST_FILE.into());
+                result.restored.push(manifest_filename);
             }
         }
 
@@ -329,34 +340,31 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 };
 
                 let target_profile_path = target_profiles_dir.join(&target_profile_name);
-                fs::create_dir_all(&target_profile_path).map_err(|e| Error::DirectoryCreate {
-                    path: target_profile_path.clone(),
-                    source: e,
-                })?;
+                crate::security::ensure_secure_dir(&target_profile_path)?;
 
-                let src_settings = src_profile_path.join("settings.json");
-                if src_settings.exists() {
-                    let dest_settings = target_profile_path.join("settings.json");
+                let target_settings_file = &self.manager.manager.config().settings_file;
+                let dest_settings = target_profile_path.join(target_settings_file);
+                let restore_id = format!("profiles/{target_profile_name}/{target_settings_file}");
+
+                if let Some((value, _ext)) = load_settings_agnostic(
+                    &src_profile_path,
+                    "settings",
+                    self.manager.manager.storage(),
+                )? {
                     if dest_settings.exists() && !self.options.flags.control.overwrite_existing {
-                        result
-                            .skipped
-                            .push(format!("profiles/{target_profile_name}/settings.json"));
+                        result.skipped.push(restore_id);
                     } else if self.options.flags.control.dry_run {
-                        result
-                            .restored
-                            .push(format!("profiles/{target_profile_name}/settings.json"));
+                        result.restored.push(restore_id);
                         debug!(
                             "{} Would restore settings for profile {target_profile_name}",
                             self.mode_str
                         );
                     } else {
-                        fs::copy(&src_settings, &dest_settings).map_err(|e| Error::FileWrite {
-                            path: dest_settings.clone(),
-                            source: e,
-                        })?;
-                        result
-                            .restored
-                            .push(format!("profiles/{target_profile_name}/settings.json"));
+                        self.manager
+                            .manager
+                            .storage()
+                            .write(&dest_settings, &value)?;
+                        result.restored.push(restore_id);
                         debug!("Restored settings for profile {target_profile_name}");
                     }
                 }
@@ -416,7 +424,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         sub_src_dir: &Path,
         result: &mut RestoreResult,
     ) -> Result<()> {
-        let sub_single_file_src = self.extract_dir.join(format!("{}.json", sub_ctx.sub_type));
+        let ext = sub_ctx.sub.extension();
+        let sub_single_file_src = self
+            .extract_dir
+            .join(format!("{}.{}", sub_ctx.sub_type, ext));
 
         // Collect entries to restore from either directory or single file
         let mut entries_to_restore: Vec<(String, serde_json::Value)> = Vec::new();
@@ -429,8 +440,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     source: e,
                 })?;
 
-            let file_data: serde_json::Value =
-                serde_json::from_str(&content).map_err(|e| Error::Parse(e.to_string()))?;
+            let file_data: serde_json::Value = self
+                .manager
+                .manager
+                .storage()
+                .deserialize(&content)
+                .map_err(|e| Error::Parse(e.to_string()))?;
 
             if let Some(obj) = file_data.as_object() {
                 for (key, value) in obj {
@@ -447,19 +462,21 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
                 let file_name = entry.file_name();
                 let name_str = file_name.to_string_lossy();
+                let ext_str = format!(".{ext}");
 
-                if !name_str.ends_with(".json") {
+                if !name_str.ends_with(&ext_str) {
                     continue;
                 }
 
-                let entry_name = name_str.trim_end_matches(".json").to_string();
+                let entry_name = name_str.trim_end_matches(&ext_str).to_string();
 
                 let content = fs::read_to_string(entry.path()).map_err(|e| Error::FileRead {
                     path: entry.path(),
                     source: e,
                 })?;
 
-                let value: serde_json::Value = serde_json::from_str(&content)?;
+                let value: serde_json::Value =
+                    self.manager.manager.storage().deserialize(&content)?;
 
                 // If this is the main file for a SingleFile sub-setting (e.g. connections.json inside connections/),
                 // flatten its entries so we restore "Local" and "Remote" instead of "connections" -> {...}
@@ -511,11 +528,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
     ) -> Result<()> {
         let target_profiles_enabled = sub_ctx.sub.profiles_enabled();
 
-        // Restore .profiles.json if target supports it
+        // Restore .profiles.{ext} if target supports it
         if target_profiles_enabled {
-            let profiles_manifest = sub_src_dir.join(MANIFEST_FILE);
+            #[cfg(feature = "profiles")]
+            let ext = sub_ctx.sub.storage().extension();
+            #[cfg(not(feature = "profiles"))]
+            let ext = "json"; // fallback
+
+            let manifest_filename = format!(".profiles.{ext}");
+            let profiles_manifest = sub_src_dir.join(&manifest_filename);
             let target_root = sub_ctx.sub.root_path();
-            let target_manifest = target_root.join(MANIFEST_FILE);
+            let target_manifest = target_root.join(&manifest_filename);
 
             if profiles_manifest.exists() {
                 if target_manifest.exists() && !self.options.flags.control.overwrite_existing {
@@ -598,9 +621,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
         // Restore content of profile (SingleFile or MultiFile)
         if let Ok(entries) = fs::read_dir(&src_profile_path) {
+            let ext = sub_ctx.sub.extension();
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                if path.extension().and_then(|s| s.to_str()) == Some(ext) {
                     let file_name = entry.file_name();
                     let stem = path
                         .file_stem()
@@ -659,9 +683,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
     ) -> Result<()> {
         // Restore items from this profile to active flat root
         if let Ok(entries) = fs::read_dir(src_profile_path) {
+            let ext = sub_ctx.sub.extension();
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                if path.extension().and_then(|s| s.to_str()) == Some(ext) {
                     let stem = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
@@ -674,7 +699,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                         path: path.clone(),
                         source: e,
                     })?;
-                    let value: serde_json::Value = serde_json::from_str(&content)?;
+                    let value: serde_json::Value =
+                        self.manager.manager.storage().deserialize(&content)?;
 
                     // Handle SingleFile sub-settings being restored from a profile containing the single file
                     if sub_ctx.sub.is_single_file() && stem == sub_ctx.sub_type {
@@ -842,6 +868,61 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         }
         Ok(())
     }
+}
+
+/// Attempt to load settings from a file, trying generic extensions
+fn load_settings_agnostic<S: StorageBackend>(
+    dir: &Path,
+    stem: &str,
+    storage: &S,
+) -> Result<Option<(serde_json::Value, String)>> {
+    // 0. Try configured storage extension
+    let current_ext = storage.extension();
+    let current_path = dir.join(format!("{stem}.{current_ext}"));
+    if current_path.exists() {
+        let content = fs::read_to_string(&current_path).map_err(|e| Error::FileRead {
+            path: current_path.clone(),
+            source: e,
+        })?;
+        // Try deserializing using storage backend first
+        // If it fails, maybe try generic? But usually if extension matches, format should match.
+        // We map deserialize error to generic Parse error
+        // Note: we need explicit type annotation for deserialize
+        let val: serde_json::Value = storage.deserialize(&content)?;
+        return Ok(Some((val, current_ext.to_string())));
+    }
+
+    // 1. Try JSON (Fallback)
+    if current_ext != "json" {
+        let json_path = dir.join(format!("{stem}.json"));
+        if json_path.exists() {
+            let content = fs::read_to_string(&json_path).map_err(|e| Error::FileRead {
+                path: json_path.clone(),
+                source: e,
+            })?;
+            let val: serde_json::Value =
+                serde_json::from_str(&content).map_err(|e| Error::Parse(e.to_string()))?;
+            return Ok(Some((val, "json".to_string())));
+        }
+    }
+
+    // 2. Try TOML (if enabled)
+    #[cfg(feature = "toml")]
+    {
+        let toml_path = dir.join(format!("{stem}.toml"));
+        if toml_path.exists() {
+            let content = fs::read_to_string(&toml_path).map_err(|e| Error::FileRead {
+                path: toml_path.clone(),
+                source: e,
+            })?;
+            // toml deserializes into serde_json::Value via Serde
+            let val: serde_json::Value =
+                toml::from_str(&content).map_err(|e| Error::Parse(e.to_string()))?;
+            return Ok(Some((val, "toml".to_string())));
+        }
+    }
+
+    Ok(None)
 }
 
 /// Result of a restore operation

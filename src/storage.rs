@@ -1,7 +1,7 @@
 //! Storage backend trait and implementations
 
 use crate::error::{Error, Result};
-use crate::security::{set_secure_dir_permissions, set_secure_file_permissions};
+use crate::security::{ensure_secure_dir, set_secure_file_permissions};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
 
@@ -88,14 +88,8 @@ pub trait StorageBackend: Clone + Send + Sync {
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            let dir_existed = parent.exists();
-            std::fs::create_dir_all(parent).map_err(|e| Error::DirectoryCreate {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-            // Only secure the directory if we just created it
-            if !dir_existed {
-                set_secure_dir_permissions(parent)?;
+            if !parent.exists() {
+                ensure_secure_dir(parent)?;
             }
         }
 
@@ -108,7 +102,14 @@ pub trait StorageBackend: Clone + Send + Sync {
             ))
         })?;
         let mut temp_filename = file_name.to_os_string();
-        temp_filename.push(".tmp");
+
+        // Use nanoseconds timestamp for uniqueness to prevent collision in concurrent writes
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
+        temp_filename.push(format!(".{now}.tmp"));
         let temp_path = path.with_file_name(temp_filename);
 
         std::fs::write(&temp_path, &content).map_err(|e| Error::FileWrite {

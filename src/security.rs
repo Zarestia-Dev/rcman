@@ -89,6 +89,30 @@ pub fn set_secure_dir_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Ensure a directory exists with secure permissions (Unix: 0o700)
+///
+/// This function combines `fs::create_dir_all` with `set_secure_dir_permissions`.
+/// It is cross-platform safe: on Windows it just creates the directory.
+///
+/// # Arguments
+///
+/// * `path` - Path to the directory to ensure exists and is secure
+///
+/// # Errors
+///
+/// * `Error::Io` - If directory creation or permission setting fails
+pub fn ensure_secure_dir(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).map_err(|e| Error::DirectoryCreate {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+
+    #[cfg(unix)]
+    set_secure_dir_permissions(path)?;
+
+    Ok(())
+}
+
 /// No-op on Windows (permissions managed via ACLs)
 #[cfg(not(unix))]
 pub fn set_secure_file_permissions(_path: &Path) -> Result<()> {

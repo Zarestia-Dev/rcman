@@ -265,14 +265,11 @@ mod tests {
                     .description("Server port number"),
             );
             m.insert("security.api_key".into(), {
-                #[allow(unused_mut)]
-                let mut s = SettingMetadata::text("API Key", "")
+                let s = SettingMetadata::text("API Key", "")
                     .category("security")
                     .advanced();
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                {
-                    s = s.secret();
-                }
+                let s = s.secret();
                 s
             });
             m

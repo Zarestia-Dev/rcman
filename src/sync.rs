@@ -1,15 +1,9 @@
 //! Poison recovery extension traits for `std::sync` locks
 //!
-//! These traits provide poison-recovery methods for Mutex and `RwLock`.
+//! These traits provide poison-recovery methods for `RwLock`.
 
 use crate::error::Result;
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-
-/// Extension trait for Mutex with poison recovery
-pub trait MutexExt<T> {
-    /// Lock the mutex, recovering from poison errors
-    fn lock_recovered(&self) -> Result<MutexGuard<'_, T>>;
-}
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Extension trait for `RwLock` with poison recovery
 pub trait RwLockExt<T> {
@@ -18,18 +12,6 @@ pub trait RwLockExt<T> {
 
     /// Acquire a write lock, recovering from poison errors
     fn write_recovered(&self) -> Result<RwLockWriteGuard<'_, T>>;
-}
-
-impl<T> MutexExt<T> for Mutex<T> {
-    fn lock_recovered(&self) -> Result<MutexGuard<'_, T>> {
-        match self.lock() {
-            Ok(guard) => Ok(guard),
-            Err(poisoned) => {
-                log::warn!("Mutex was poisoned, recovering");
-                Ok(poisoned.into_inner())
-            }
-        }
-    }
 }
 
 impl<T> RwLockExt<T> for RwLock<T> {

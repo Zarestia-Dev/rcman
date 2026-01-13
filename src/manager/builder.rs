@@ -199,7 +199,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
 
     /// Enable profiles for main settings.
     ///
-    /// When enabled, the main settings.json is stored per-profile, allowing
+    /// When enabled, the main settings file is stored per-profile, allowing
     /// completely different app configurations (e.g., "work" vs "personal").
     ///
     /// # Example

@@ -3,7 +3,7 @@
 //! Handles profile lifecycle: create, switch, delete, rename, duplicate.
 
 use crate::error::{Error, Result};
-use crate::profiles::{DEFAULT_PROFILE, MANIFEST_FILE, PROFILES_DIR, validate_profile_name};
+use crate::profiles::{DEFAULT_PROFILE, PROFILES_DIR, validate_profile_name};
 use crate::sync::RwLockExt;
 
 use log::{debug, info};
@@ -137,6 +137,8 @@ pub enum ProfileEvent {
 // Profile Manager
 // =============================================================================
 
+use crate::storage::StorageBackend;
+
 /// Type alias for profile event callback
 pub type ProfileEventCallback = Arc<dyn Fn(ProfileEvent) + Send + Sync>;
 
@@ -147,8 +149,8 @@ pub type ProfileEventCallback = Arc<dyn Fn(ProfileEvent) + Send + Sync>;
 /// - Switching the active profile
 /// - Persisting the profile manifest
 /// - Emitting events on profile changes
-pub struct ProfileManager {
-    /// Path to the manifest file (.profiles.json)
+pub struct ProfileManager<S: StorageBackend = crate::storage::JsonStorage> {
+    /// Path to the manifest file (e.g., .profiles.json or .profiles.toml)
     manifest_path: PathBuf,
 
     /// Path to the profiles directory
@@ -156,6 +158,9 @@ pub struct ProfileManager {
 
     /// Name of this profile target (for logging/errors)
     target_name: String,
+
+    /// Storage backend for reading/writing manifest
+    storage: S,
 
     /// Cached manifest (loaded on first access)
     manifest: RwLock<Option<ProfileManifest>>,
@@ -167,21 +172,76 @@ pub struct ProfileManager {
     on_invalidate: RwLock<Option<InvalidateCallback>>,
 }
 
-impl ProfileManager {
+impl<S: StorageBackend> ProfileManager<S> {
     /// Create a new profile manager for a given base directory
     ///
     /// # Arguments
     ///
     /// * `base_dir` - The directory containing the profiles
     /// * `target_name` - Name of this profile target (e.g., "remotes", "settings")
-    pub fn new(base_dir: &Path, target_name: impl Into<String>) -> Self {
+    /// * `storage` - Storage backend to use for manifest
+    pub fn new(base_dir: &Path, target_name: impl Into<String>, storage: S) -> Self {
+        // Manifest filename depends on storage extension
+        let filename = format!(".profiles.{}", storage.extension());
+
         Self {
-            manifest_path: base_dir.join(MANIFEST_FILE),
+            manifest_path: base_dir.join(filename),
             profiles_dir: base_dir.join(PROFILES_DIR),
             target_name: target_name.into(),
+            storage,
             manifest: RwLock::new(None),
             on_event: RwLock::new(None),
             on_invalidate: RwLock::new(None),
+        }
+    }
+
+    /// Initialize the profile manager, running migrations if enabled
+    ///
+    /// This is a helper to centralize initialization logic that was previously in `SettingsManager`.
+    ///
+    /// # Arguments
+    ///
+    /// * `config_dir` - The root configuration directory
+    /// * `target_name` - The name of the target (e.g. "settings")
+    /// * `storage` - Storage backend
+    /// * `enabled` - Whether profiles are enabled
+    /// * `migrator` - Migration strategy
+    ///
+    /// # Returns
+    ///
+    /// Returns a tuple of `(active_settings_dir, Option<ProfileManager>)`.
+    /// If profiles are disabled, returns `(config_dir, None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Migration fails
+    /// - Profile manager initialization fails
+    /// - Active profile path cannot be resolved
+    pub fn initialize(
+        config_dir: &Path,
+        target_name: &str,
+        storage: S,
+        enabled: bool,
+        migrator: &crate::profiles::ProfileMigrator,
+    ) -> Result<(PathBuf, Option<Self>)> {
+        if enabled {
+            // Run migration if needed
+            // For main settings, we assume multi-file mode (false) and no specific extension (None)
+            // as it manages a directory of settings.
+            crate::profiles::migrate(config_dir, target_name, false, &storage, migrator)?;
+
+            let pm = Self::new(config_dir, target_name, storage);
+            // Use active path from manifest (defaults to "default")
+            let active = pm.active_path()?;
+
+            info!(
+                "Profiles initialized for '{target_name}' (active: {})",
+                active.display()
+            );
+            Ok((active, Some(pm)))
+        } else {
+            Ok((config_dir.to_path_buf(), None))
         }
     }
 
@@ -235,6 +295,18 @@ impl ProfileManager {
         }
     }
 
+    /// Invalidate the internal manifest cache
+    ///
+    /// This forces the manifest to be re-read from disk on the next access.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal lock is poisoned.
+    pub fn invalidate_manifest(&self) {
+        let mut guard = self.manifest.write().expect("Lock poisoned");
+        *guard = None;
+    }
+
     /// Get the path to a specific profile's directory
     pub fn profile_path(&self, name: &str) -> PathBuf {
         self.profiles_dir.join(name)
@@ -269,18 +341,22 @@ impl ProfileManager {
         }
 
         // Try to load existing manifest
-        if self.manifest_path.exists() {
-            let content =
-                std::fs::read_to_string(&self.manifest_path).map_err(|e| Error::FileRead {
-                    path: self.manifest_path.clone(),
-                    source: e,
-                })?;
-            let manifest: ProfileManifest =
-                serde_json::from_str(&content).map_err(|e| Error::Parse(e.to_string()))?;
-            *guard = Some(manifest);
+        let load_result = if self.manifest_path.exists() {
+            // Normal case: load from current manifest path
+            self.storage.read(&self.manifest_path).map(Some)
         } else {
-            // Create default manifest
-            *guard = Some(ProfileManifest::default());
+            Ok(None)
+        };
+
+        match load_result {
+            Ok(Some(manifest)) => {
+                *guard = Some(manifest);
+            }
+            Ok(None) => {
+                // Create default manifest
+                *guard = Some(ProfileManifest::default());
+            }
+            Err(e) => return Err(e),
         }
 
         Ok(())
@@ -291,22 +367,7 @@ impl ProfileManager {
         let guard = self.manifest.read_recovered()?;
         let manifest = guard.as_ref().ok_or(Error::NotInitialized)?;
 
-        // Ensure parent directory exists
-        if let Some(parent) = self.manifest_path.parent() {
-            if !parent.exists() {
-                std::fs::create_dir_all(parent).map_err(|e| Error::DirectoryCreate {
-                    path: parent.to_path_buf(),
-                    source: e,
-                })?;
-            }
-        }
-
-        let content =
-            serde_json::to_string_pretty(manifest).map_err(|e| Error::Parse(e.to_string()))?;
-        std::fs::write(&self.manifest_path, content).map_err(|e| Error::FileWrite {
-            path: self.manifest_path.clone(),
-            source: e,
-        })?;
+        self.storage.write(&self.manifest_path, manifest)?;
 
         debug!(
             "Saved profile manifest for '{}': active={}",
@@ -414,11 +475,7 @@ impl ProfileManager {
 
         // Create profile directory
         let profile_dir = self.profile_path(name);
-        std::fs::create_dir_all(&profile_dir).map_err(|e| Error::DirectoryCreate {
-            path: profile_dir.clone(),
-            source: e,
-        })?;
-        crate::security::set_secure_dir_permissions(&profile_dir)?;
+        crate::security::ensure_secure_dir(&profile_dir)?;
 
         // Update manifest
         {
@@ -840,9 +897,13 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn create_test_manager() -> (tempfile::TempDir, ProfileManager) {
+    fn create_test_manager() -> (
+        tempfile::TempDir,
+        ProfileManager<crate::storage::JsonStorage>,
+    ) {
         let dir = tempdir().unwrap();
-        let manager = ProfileManager::new(dir.path(), "test");
+        let storage = crate::storage::JsonStorage::compact();
+        let manager = ProfileManager::new(dir.path(), "test", storage);
         (dir, manager)
     }
 
@@ -969,13 +1030,15 @@ mod tests {
 
         // Create manager and add profile
         {
-            let manager = ProfileManager::new(dir.path(), "test");
+            let storage = crate::storage::JsonStorage::compact();
+            let manager = ProfileManager::new(dir.path(), "test", storage);
             manager.create("persistent").unwrap();
         }
 
         // Create new manager instance
         {
-            let manager = ProfileManager::new(dir.path(), "test");
+            let storage = crate::storage::JsonStorage::compact();
+            let manager = ProfileManager::new(dir.path(), "test", storage);
             let profiles = manager.list().unwrap();
             assert!(profiles.contains(&"persistent".to_string()));
         }

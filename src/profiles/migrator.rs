@@ -9,7 +9,8 @@
 //! 4. Create .profiles.json manifest pointing to "default"
 
 use crate::error::{Error, Result};
-use crate::profiles::{DEFAULT_PROFILE, MANIFEST_FILE, PROFILES_DIR};
+use crate::profiles::{DEFAULT_PROFILE, PROFILES_DIR};
+use crate::storage::StorageBackend;
 use log::{debug, info, warn};
 use std::path::Path;
 
@@ -64,21 +65,22 @@ impl std::fmt::Debug for ProfileMigrator {
 /// # Errors
 ///
 /// Returns an error if the migration fails.
-pub fn migrate(
+pub fn migrate<S: StorageBackend>(
     root_dir: &Path,
     target_name: &str,
     single_file_mode: bool,
-    extension: Option<&str>,
+    storage: &S,
     strategy: &ProfileMigrator,
 ) -> Result<()> {
-    let manifest_path = root_dir.join(MANIFEST_FILE);
+    let ext = storage.extension();
+    let manifest_filename = format!(".profiles.{ext}");
+    let manifest_path = root_dir.join(&manifest_filename);
 
     // If manifest exists, we are usually already profiled.
     // However, we check for a specific failure case in single-file mode where
     // the manifest exists but the legacy file was not moved (partial migration).
     if manifest_path.exists() {
         if single_file_mode {
-            let ext = extension.unwrap_or("json");
             let legacy_file = root_dir.with_extension(ext);
             if legacy_file.exists() && legacy_file.is_file() {
                 warn!(
@@ -98,7 +100,7 @@ pub fn migrate(
     let needs_migration = if single_file_mode {
         // In single file mode, we check for the existence of the sibling file
         // e.g. "config/backends.json" when root_dir is "config/backends"
-        let ext = extension.unwrap_or("json");
+        let ext = storage.extension();
         let legacy_file = root_dir.with_extension(ext);
         legacy_file.exists() && legacy_file.is_file()
     } else {
@@ -128,28 +130,25 @@ pub fn migrate(
         }
         ProfileMigrator::Custom(func) => func(root_dir),
         ProfileMigrator::Auto => {
-            run_auto_migration(root_dir, target_name, single_file_mode, extension)
+            run_auto_migration(root_dir, target_name, single_file_mode, storage)
         }
     }
 }
 
-fn run_auto_migration(
+fn run_auto_migration<S: StorageBackend>(
     root_dir: &Path,
     target_name: &str,
     single_file_mode: bool,
-    extension: Option<&str>,
+    storage: &S,
 ) -> Result<()> {
     // 1. Create profiles/default directory
     let default_profile_dir = root_dir.join(PROFILES_DIR).join(DEFAULT_PROFILE);
-    std::fs::create_dir_all(&default_profile_dir).map_err(|e| Error::DirectoryCreate {
-        path: default_profile_dir.clone(),
-        source: e,
-    })?;
+    crate::security::ensure_secure_dir(&default_profile_dir)?;
 
     // 2. Move files
     if single_file_mode {
         // Single File Migration: Move sibling file into default profile
-        let ext = extension.unwrap_or("json");
+        let ext = storage.extension();
         let legacy_file = root_dir.with_extension(ext);
         let dest = default_profile_dir.join(format!("{target_name}.{ext}"));
 
@@ -176,7 +175,11 @@ fn run_auto_migration(
                 let path = entry.path();
 
                 // Skip .profiles.json and profiles/ dir
-                if path.ends_with(MANIFEST_FILE) || path.ends_with(PROFILES_DIR) {
+                // Determine manifest filename to skip
+                let ext = storage.extension();
+                let manifest_filename = format!(".profiles.{ext}");
+
+                if path.ends_with(&manifest_filename) || path.ends_with(PROFILES_DIR) {
                     continue;
                 }
 
@@ -193,14 +196,15 @@ fn run_auto_migration(
     }
 
     // 3. Create manifest
+    let ext = storage.extension();
+    let manifest_filename = format!(".profiles.{ext}");
     let manifest = crate::profiles::ProfileManifest::default();
-    let manifest_path = root_dir.join(MANIFEST_FILE);
-    let content = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| Error::Parse(format!("Failed to serialize profile manifest: {e}")))?;
-    std::fs::write(&manifest_path, content).map_err(|e| Error::FileWrite {
-        path: manifest_path.clone(),
-        source: e,
-    })?;
+    let manifest_path = root_dir.join(&manifest_filename);
+
+    // Use storage backend to serialize implementation agnostic manifest
+    // This requires ProfileManifest to be serializable by the backend.
+    // Since ProfileManifest is usually simple struct, it should representable in JSON/YAML/TOML.
+    storage.write(&manifest_path, &manifest)?;
 
     info!("Successfully migrated '{target_name}' to profiles");
     Ok(())

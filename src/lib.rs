@@ -71,7 +71,7 @@
 //! When you save a setting that equals its default value, rcman **removes it from storage**
 //! to keep files minimal. This applies to both regular settings and secrets:
 //!
-//! - **Regular settings**: Removed from JSON file
+//! - **Regular settings**: Removed from settings file
 //! - **Secret settings**: Removed from keychain
 //!
 //! This means:
@@ -133,7 +133,7 @@
 //!
 //! // Sub-settings automatically use the active profile
 //! let remotes = manager.sub_settings("remotes")?;
-//! // This will save to .../remotes/profiles/work/gdrive.json
+//! // This will save to .../remotes/profiles/work/gdrive.<ext>
 //! remotes.set("gdrive", &serde_json::json!({"type": "drive"}))?;
 //! # }
 //! # Ok(())

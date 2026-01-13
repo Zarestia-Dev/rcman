@@ -17,7 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "profiles")]
-use crate::profiles::{MANIFEST_FILE, PROFILES_DIR};
+use crate::profiles::PROFILES_DIR;
 
 /// Helper to collect settings files for backup (handles both profiled and flat)
 /// Returns (`source_path`, `relative_dest_path`) pairs
@@ -30,9 +30,11 @@ fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
     #[cfg(feature = "profiles")]
     if config.profiles_enabled {
         // Collect profile manifest
-        let manifest = config.config_dir.join(MANIFEST_FILE);
+        let ext = config.storage.extension();
+        let manifest_filename = format!(".profiles.{ext}");
+        let manifest = config.config_dir.join(&manifest_filename);
         if manifest.exists() {
-            files.push((manifest, PathBuf::from(MANIFEST_FILE)));
+            files.push((manifest, PathBuf::from(&manifest_filename)));
         }
 
         // Collect profile settings
@@ -119,10 +121,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         // Create temp directory for gathering files
         let temp_dir = tempfile::tempdir().map_err(|e| Error::BackupFailed(e.to_string()))?;
         let export_dir = temp_dir.path().join("export");
-        fs::create_dir_all(&export_dir).map_err(|e| Error::DirectoryCreate {
-            path: export_dir.clone(),
-            source: e,
-        })?;
+        crate::security::ensure_secure_dir(&export_dir)?;
 
         // Gather files to backup
         let (contents, total_size) = self.gather_files(&export_dir, options)?;
@@ -162,6 +161,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             },
         };
 
+        // Serialize manifest using storage backend for format consistency
+        // Note: Manifest is always stored as JSON for universal compatibility
         let manifest_json = serde_json::to_string_pretty(&manifest)
             .map_err(|e| Error::BackupFailed(e.to_string()))?;
 
@@ -221,6 +222,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         create_rcman_container(
             &output_path,
             &manifest_json,
+            "manifest.json",
             &inner_archive_path,
             data_filename,
         )?;
@@ -263,10 +265,12 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     crate::error::create_dir(&sub_export_dir)?;
 
                     let value: serde_json::Value = sub.get_value(name)?;
-                    let dest = sub_export_dir.join(format!("{name}.json"));
-                    let json = serde_json::to_string_pretty(&value)?;
-                    crate::error::write_file(&dest, &json)?;
-                    total_size += json.len() as u64;
+                    // Use storage backend for format-agnostic export
+                    let ext = self.manager.storage().extension();
+                    let dest = sub_export_dir.join(format!("{name}.{ext}"));
+                    let content = self.manager.storage().serialize(&value)?;
+                    crate::error::write_file(&dest, &content)?;
+                    total_size += content.len() as u64;
                     contents.file_count += 1;
                     contents.sub_settings.insert(
                         settings_type.clone(),
@@ -281,8 +285,13 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         // Process each sub-settings type
         for sub_type in sub_settings_to_backup {
             if let Ok(sub) = self.manager.sub_settings(&sub_type) {
-                let (size, count, manifest_entry) =
-                    Self::gather_sub_settings(export_dir, &sub_type, &sub, options)?;
+                let (size, count, manifest_entry) = Self::gather_sub_settings(
+                    export_dir,
+                    &sub_type,
+                    &sub,
+                    self.manager.storage(),
+                    options,
+                )?;
                 total_size += size;
                 contents.file_count += count;
                 if let Some(entry) = manifest_entry {
@@ -330,6 +339,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         export_dir: &Path,
         sub_type: &str,
         sub: &crate::sub_settings::SubSettings<S>,
+        storage: &S,
         #[cfg_attr(not(feature = "profiles"), allow(unused_variables))] options: &BackupOptions,
     ) -> Result<(u64, u32, Option<SubSettingsManifestEntry>)> {
         // Check if profiles are enabled
@@ -340,7 +350,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
         if profiles_enabled {
             #[cfg(feature = "profiles")]
-            return Self::gather_profiled_sub_settings(export_dir, sub_type, sub, options);
+            return Self::gather_profiled_sub_settings(export_dir, sub_type, sub, storage, options);
             #[cfg(not(feature = "profiles"))]
             unreachable!()
         }
@@ -353,7 +363,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             if let Some(path) = sub.file_path() {
                 if path.exists() {
                     crate::error::create_dir(&sub_export_dir)?;
-                    let dest = sub_export_dir.join(format!("{sub_type}.json"));
+                    let ext = sub.extension();
+                    let dest = sub_export_dir.join(format!("{sub_type}.{ext}"));
                     crate::error::copy_file(&path, &dest)?;
                     let size = crate::error::file_size(&dest);
                     debug!("📄 Added single-file sub-settings: {sub_type}");
@@ -361,7 +372,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                         size,
                         1,
                         Some(SubSettingsManifestEntry::SingleFile(format!(
-                            "{sub_type}.json",
+                            "{sub_type}.{ext}",
                         ))),
                     ));
                 }
@@ -375,10 +386,14 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
             for name in sub.list()? {
                 if let Ok(value) = sub.get_value(&name) {
-                    let dest = sub_export_dir.join(format!("{name}.json"));
-                    let json = serde_json::to_string_pretty(&value)?;
-                    crate::error::write_file(&dest, &json)?;
-                    total_size += json.len() as u64;
+                    let ext = sub.extension();
+                    let dest = sub_export_dir.join(format!("{name}.{ext}"));
+
+                    // Use generic storage serialization
+                    // storage.serialize expects &T. value is generic Value which implements Serialize.
+                    let content = storage.serialize(&value)?;
+                    crate::error::write_file(&dest, &content)?;
+                    total_size += content.len() as u64;
                     items.push(name);
                 }
             }
@@ -399,18 +414,21 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         export_dir: &Path,
         sub_type: &str,
         sub: &crate::sub_settings::SubSettings<S>,
+        storage: &S,
         options: &BackupOptions,
     ) -> Result<(u64, u32, Option<SubSettingsManifestEntry>)> {
         let sub_export_dir = export_dir.join(sub_type);
         let mut total_size = 0u64;
         let mut file_count = 0u32;
 
-        // Copy .profiles.json
+        // Copy .profiles.{ext}
         let root_path = sub.root_path();
-        let profiles_manifest = root_path.join(MANIFEST_FILE);
+        let ext = storage.extension();
+        let manifest_filename = format!(".profiles.{ext}");
+        let profiles_manifest = root_path.join(&manifest_filename);
         if profiles_manifest.exists() {
             crate::error::create_dir(&sub_export_dir)?;
-            let dest = sub_export_dir.join(MANIFEST_FILE);
+            let dest = sub_export_dir.join(&manifest_filename);
             crate::error::copy_file(&profiles_manifest, &dest)?;
             total_size += crate::error::file_size(&dest);
             file_count += 1;
@@ -452,7 +470,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             if let Ok(profile_entries) = fs::read_dir(&profile_path) {
                 for item_entry in profile_entries.flatten() {
                     let path = item_entry.path();
-                    if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    // Use storage extension
+                    if path.extension().and_then(|s| s.to_str()) == Some(storage.extension()) {
                         let dest = profile_export_dir.join(item_entry.file_name());
                         crate::error::copy_file(&path, &dest)?;
                         total_size += crate::error::file_size(&dest);
@@ -576,6 +595,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         }
 
         // Read manifest from the .rcman file
+        // Manifest is always JSON format for universal compatibility
         let manifest_bytes = super::archive::read_file_from_zip(path, "manifest.json")?;
         let manifest_str = String::from_utf8(manifest_bytes).map_err(|e| {
             Error::InvalidBackup(format!(

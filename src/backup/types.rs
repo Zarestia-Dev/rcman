@@ -417,6 +417,9 @@ pub enum ExportSource {
     Content(Vec<u8>),
 }
 
+/// Handler function for custom restore logic
+pub type ImportHandler = std::sync::Arc<dyn Fn(&[u8]) -> crate::error::Result<()> + Send + Sync>;
+
 /// How to restore data from a backup
 ///
 /// This defines what happens when restoring the config from a backup.
@@ -427,8 +430,7 @@ pub enum ImportTarget {
     /// Pipe content to a command's stdin
     Command { program: String, args: Vec<String> },
     /// Custom handler function for complex restore logic
-    #[allow(clippy::type_complexity)]
-    Handler(std::sync::Arc<dyn Fn(&[u8]) -> crate::error::Result<()> + Send + Sync>),
+    Handler(ImportHandler),
     /// Read-only export (cannot be restored, e.g., system diagnostics)
     ReadOnly,
 }

@@ -17,13 +17,19 @@ use crate::storage::StorageBackend;
 use crate::sub_settings::{SubSettings, SubSettingsConfig};
 use std::marker::PhantomData;
 
-use crate::sync::{MutexExt, RwLockExt};
+use crate::sync::RwLockExt;
 #[cfg(feature = "profiles")]
 use log::warn;
 use log::{debug, info};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
+
+pub mod cache;
+pub mod env;
+
+use self::cache::{CachedSettings, SettingsCache};
+use self::env::EnvironmentHandler;
 
 /// Main settings manager for loading, saving, and managing application settings.
 ///
@@ -110,14 +116,14 @@ pub struct SettingsManager<
     /// Event manager for change callbacks and validation
     events: Arc<EventManager>,
 
-    /// Unified settings cache with generation counter for race-free invalidation
-    settings_cache: RwLock<Option<CachedSettings>>,
+    /// Unified settings cache
+    settings_cache: SettingsCache,
+
+    /// Environment variable handler
+    env_handler: EnvironmentHandler,
 
     /// Pre-computed schema defaults (shared across cache operations)
     schema_defaults: Arc<HashMap<String, Value>>,
-
-    /// Mutex to serialize save operations (prevents race conditions)
-    save_mutex: Mutex<()>,
 
     /// Credential manager for secret settings (optional, requires keychain or encrypted-file feature)
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -129,22 +135,10 @@ pub struct SettingsManager<
 
     /// Profile manager for main settings (when profiles are enabled)
     #[cfg(feature = "profiles")]
-    profile_manager: Option<crate::profiles::ProfileManager>,
+    profile_manager: Option<crate::profiles::ProfileManager<S>>,
 
     /// Marker for schema type
     _schema: PhantomData<Schema>,
-}
-
-/// Unified cache structure holding all settings data
-struct CachedSettings {
-    /// Stored settings (from disk)
-    stored: Value,
-    /// Merged settings (defaults + stored)
-    merged: std::sync::OnceLock<Value>,
-    /// Default values for quick lookup
-    defaults: Arc<HashMap<String, Value>>,
-    /// Generation counter (incremented on invalidation)
-    generation: u64,
 }
 
 // =============================================================================
@@ -204,11 +198,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     pub fn new(config: SettingsConfig<S, Schema>) -> Result<Self> {
         // Ensure config directory exists with secure permissions
         if !config.config_dir.exists() {
-            std::fs::create_dir_all(&config.config_dir).map_err(|e| Error::DirectoryCreate {
-                path: config.config_dir.clone(),
-                source: e,
-            })?;
-            crate::security::set_secure_dir_permissions(&config.config_dir)?;
+            crate::security::ensure_secure_dir(&config.config_dir)?;
         }
 
         let storage = config.storage.clone();
@@ -224,23 +214,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         // Initialize profile manager if profiles are enabled
         #[cfg(feature = "profiles")]
-        let (settings_dir, profile_manager) = if config.profiles_enabled {
-            // Run migration if needed
-            crate::profiles::migrate(
-                &config.config_dir,
-                "settings",
-                false, // Main settings is always multi-file logic (creates settings.json inside)
-                None,
-                &config.profile_migrator,
-            )?;
-
-            let pm = crate::profiles::ProfileManager::new(&config.config_dir, "settings");
-            let active_path = pm.profile_path(crate::profiles::DEFAULT_PROFILE);
-            info!("Main settings profiles enabled");
-            (active_path, Some(pm))
-        } else {
-            (config.config_dir.clone(), None)
-        };
+        let (settings_dir, profile_manager) = crate::profiles::ProfileManager::initialize(
+            &config.config_dir,
+            "settings",
+            storage.clone(),
+            config.profiles_enabled,
+            &config.profile_migrator,
+        )?;
 
         #[cfg(not(feature = "profiles"))]
         let settings_dir = config.config_dir.clone();
@@ -253,6 +233,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 .map(|(k, m)| (k.clone(), m.default.clone()))
                 .collect(),
         );
+
+        let env_handler =
+            EnvironmentHandler::new(config.env_prefix.clone(), config.env_source.clone());
+
         info!(
             "Initialized rcman SettingsManager at: {:?}",
             config.config_dir.display()
@@ -264,9 +248,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             settings_dir: RwLock::new(settings_dir),
             sub_settings: RwLock::new(HashMap::new()),
             events: Arc::new(EventManager::new()),
-            settings_cache: RwLock::new(None),
+            settings_cache: SettingsCache::new(),
+            env_handler,
             schema_defaults,
-            save_mutex: Mutex::new(()),
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             credentials,
             #[cfg(feature = "backup")]
@@ -282,6 +266,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         &self.config
     }
 
+    /// Get the storage backend
+    pub fn storage(&self) -> &S {
+        &self.storage
+    }
+
     /// Get the current settings file path
     ///
     /// This returns the path where settings.json is stored.
@@ -295,7 +284,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns None if profiles are not enabled for main settings.
     #[cfg(feature = "profiles")]
-    pub fn profiles(&self) -> Option<&crate::profiles::ProfileManager> {
+    pub fn profiles(&self) -> Option<&crate::profiles::ProfileManager<S>> {
         self.profile_manager.as_ref()
     }
 
@@ -482,48 +471,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         pm.active()
     }
 
-    /// Get the environment variable name for a setting key
-    ///
-    /// Returns None if env var overrides are disabled.
-    /// Format: {PREFIX}_{CATEGORY}_{KEY} (all uppercase)
-    ///
-    /// Example: with prefix "MYAPP" and key "ui.theme" -> "`MYAPP_UI_THEME`"
-    #[inline]
-    fn get_env_var_name(&self, key: &str) -> Option<String> {
-        self.config.env_prefix.as_ref().map(|prefix| {
-            let env_key = key.replace('.', "_").to_uppercase();
-            format!("{}_{}", prefix.to_uppercase(), env_key)
-        })
-    }
-
     /// Check if a setting value is overridden by an environment variable
     ///
     /// Returns the parsed value if env var is set and successfully parsed.
     fn get_env_override(&self, key: &str) -> Option<Value> {
-        let env_var_name = self.get_env_var_name(key)?;
-        self.config
-            .env_source
-            .var(&env_var_name)
-            .ok()
-            .map(|env_value| {
-                // Try to parse as JSON first, fallback to string
-                serde_json::from_str(&env_value).unwrap_or_else(|_| {
-                    // If not valid JSON, treat as string
-                    // But also try to parse booleans and numbers
-                    if env_value.eq_ignore_ascii_case("true") {
-                        Value::Bool(true)
-                    } else if env_value.eq_ignore_ascii_case("false") {
-                        Value::Bool(false)
-                    } else if let Ok(n) = env_value.parse::<i64>() {
-                        Value::Number(n.into())
-                    } else if let Ok(n) = env_value.parse::<f64>() {
-                        serde_json::Number::from_f64(n)
-                            .map_or_else(|| Value::String(env_value.clone()), Value::Number)
-                    } else {
-                        Value::String(env_value)
-                    }
-                })
-            })
+        self.env_handler.get_env_override(key)
     }
 
     /// Get the event manager for registering change listeners and validators
@@ -571,12 +523,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Invalidate the settings cache
     ///
     /// Call this if the settings file was modified externally.
+    ///
     /// # Panics
     ///
     /// Panics if the internal lock is poisoned.
     pub fn invalidate_cache(&self) {
-        let mut cache = self.settings_cache.write().expect("Lock poisoned");
-        *cache = None;
+        self.settings_cache.invalidate();
+
+        #[cfg(feature = "profiles")]
+        if let Some(pm) = &self.profile_manager {
+            pm.invalidate_manifest();
+        }
 
         let sub_settings = self.sub_settings.read().expect("Lock poisoned");
         for sub in sub_settings.values() {
@@ -712,23 +669,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // Ensure cache is populated with schema defaults
         self.ensure_cache_populated()?;
 
-        // Now read from cache (guaranteed to be populated)
-        {
-            let cache = self.settings_cache.read_recovered()?;
-            if let Some(cached) = cache.as_ref() {
-                // Check stored settings first
-                if let Some(value) = cached
-                    .stored
-                    .get(category)
-                    .and_then(|cat| cat.get(setting_name))
-                {
-                    return Ok(value.clone());
-                }
-                // Fall back to defaults
-                if let Some(value) = cached.defaults.get(key) {
-                    return Ok(value.clone());
-                }
-            }
+        // Use cache helper
+        if let Some(value) = self.settings_cache.get_value(category, setting_name, key)? {
+            return Ok(value);
         }
 
         Err(Error::SettingNotFound(format!("{category}.{setting_name}")))
@@ -771,23 +714,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // Ensure cache is populated
         self.ensure_cache_populated()?;
 
-        // Get cached data
-        let cache = self.settings_cache.read_recovered()?;
-        let cached = cache.as_ref().ok_or_else(|| {
-            Error::Config("Cache was not populated after ensure_cache_populated".into())
-        })?;
-
-        // Get or compute merged (computed once, then cached in OnceLock)
-        let merged = if let Some(m) = cached.merged.get() {
-            m
-        } else {
-            let m = Self::merge_with_defaults::<Schema>(&cached.stored)?;
-            let _ = cached.merged.set(m);
-            cached.merged.get().expect("Value should be set")
-        };
+        let merged = self
+            .settings_cache
+            .get_or_compute_merged(|stored| Self::merge_with_defaults::<Schema>(stored))?;
 
         // Deserialize to concrete type
-        serde_json::from_value(merged.clone()).map_err(|e| Error::Parse(e.to_string()))
+        serde_json::from_value(merged).map_err(|e| Error::Parse(e.to_string()))
     }
 
     /// Internal helper to merge stored settings with schema defaults.
@@ -813,64 +745,53 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(merged)
     }
 
-    /// Internal helper to ensure cache is populated.
-    /// Uses double-checked locking for thread safety.
-    fn ensure_cache_populated(&self) -> Result<Value> {
-        // 1. Fast path: Check if already cached
-        {
-            let cache = self.settings_cache.read_recovered()?;
-            if let Some(cached) = cache.as_ref() {
-                return Ok(cached.stored.clone());
-            }
-        } // Drop read lock
-
-        // 2. Slow path: Acquire write lock
-        let mut cache = self.settings_cache.write_recovered()?;
-
-        // 3. Double-check: Another thread may have populated it
-        if let Some(cached) = cache.as_ref() {
-            return Ok(cached.stored.clone());
-        }
-
-        // 4. Load from disk
-        let path = self.settings_path();
-        let stored = match self.storage.read(&path) {
+    /// Load settings from disk, applying migrations if needed
+    fn load_from_disk(&self) -> Result<CachedSettings> {
+        // Read from file
+        let settings_path = self.settings_path();
+        let mut value: Value = match self.storage.read(&settings_path) {
             Ok(v) => v,
-            Err(Error::FileRead { source, .. })
-                if source.kind() == std::io::ErrorKind::NotFound =>
-            {
+            Err(Error::FileRead { .. } | Error::PathNotFound(_)) => {
+                // Start empty if not found
                 json!({})
             }
             Err(e) => return Err(e),
         };
 
-        // 5. Apply migration if configured
-        let stored = if let Some(migrator) = &self.config.migrator {
-            let original = stored.clone();
-            let migrated = migrator(stored);
-
-            if migrated != original {
-                debug!("Migrated main settings structure");
-                let _save_guard = self.save_mutex.lock_recovered()?;
-                self.storage.write(&path, &migrated)?;
-                info!("Saved migrated main settings to disk");
+        // Apply migrations
+        if let Some(migrator) = &self.config.migrator {
+            let original = value.clone();
+            value = migrator(value);
+            if value != original {
+                info!("Migrated settings file");
+                self.storage.write(&settings_path, &value)?;
             }
-            migrated
-        } else {
-            stored
-        };
+        }
 
-        // 7. Populate unified cache with pre-computed defaults
-        *cache = Some(CachedSettings {
-            stored: stored.clone(),
+        Ok(CachedSettings {
+            stored: value,
             merged: std::sync::OnceLock::new(),
-            defaults: Arc::clone(&self.schema_defaults),
+            defaults: self.schema_defaults.clone(),
             generation: 0,
-        });
+        })
+    }
 
-        debug!("Settings cache populated from disk");
+    /// Ensure the settings cache is populated
+    ///
+    /// This method is thread-safe and safe to call multiple times.
+    /// It uses double-checked locking to avoid unnecessary locks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the settings cannot be loaded from disk.
+    pub fn ensure_cache_populated(&self) -> Result<()> {
+        if self.settings_cache.is_populated() {
+            return Ok(());
+        }
 
-        Ok(stored)
+        self.settings_cache.populate(|| self.load_from_disk())?;
+
+        Ok(())
     }
 
     /// Get all setting metadata with current values populated.
@@ -891,12 +812,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         self.ensure_cache_populated()?;
 
         // Get stored settings from cache
-        let stored = {
-            let cache = self.settings_cache.read_recovered()?;
-            cache
-                .as_ref()
-                .map_or_else(|| json!({}), |c| c.stored.clone())
-        };
+        let stored = self
+            .settings_cache
+            .get_stored()?
+            .unwrap_or_else(|| json!({}));
 
         // Get metadata and populate values
         let mut metadata = Schema::get_metadata();
@@ -999,9 +918,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Panics if the internal lock is poisoned.
     pub fn save_setting(&self, category: &str, key: &str, value: &Value) -> Result<()> {
-        // Acquire save mutex to prevent race conditions
-        let _save_guard = self.save_mutex.lock_recovered()?;
-
         let path = self.settings_path();
         let full_key = format!("{category}.{key}");
 
@@ -1050,12 +966,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // Load current settings from cache or disk
         self.ensure_cache_populated()?;
 
-        let mut stored: Value = {
-            let cache = self.settings_cache.read_recovered()?;
-            cache
-                .as_ref()
-                .map_or_else(|| json!({}), |c| c.stored.clone())
-        };
+        let mut stored = self
+            .settings_cache
+            .get_stored()?
+            .unwrap_or_else(|| json!({}));
 
         // Get default value from metadata
         let metadata_key = format!("{category}.{key}");
@@ -1122,15 +1036,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // Save to file
         self.storage.write(&path, &stored)?;
 
-        // Update cache (just stored settings, merged will be recomputed when needed)
-        {
-            let mut cache = self.settings_cache.write_recovered()?;
-            if let Some(ref mut cached) = *cache {
-                cached.stored = stored;
-                cached.merged = std::sync::OnceLock::new(); // Clear lazy cache
-                cached.generation += 1;
-            }
-        }
+        // Update cache
+        self.settings_cache.update_stored(stored)?;
 
         info!("Setting {category}.{key} saved");
 

@@ -180,10 +180,7 @@ pub fn extract_zip_archive(
         } else {
             if let Some(parent) = outpath.parent() {
                 if !parent.exists() {
-                    std::fs::create_dir_all(parent).map_err(|e| Error::DirectoryCreate {
-                        path: parent.to_path_buf(),
-                        source: e,
-                    })?;
+                    crate::security::ensure_secure_dir(parent)?;
                 }
             }
 
@@ -282,6 +279,7 @@ pub fn calculate_file_hash(path: &Path) -> Result<(String, u64)> {
 pub fn create_rcman_container(
     output_path: &Path,
     manifest_json: &str,
+    manifest_filename: &str,
     inner_archive_path: &Path,
     inner_archive_filename: &str,
 ) -> Result<()> {
@@ -294,7 +292,7 @@ pub fn create_rcman_container(
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored); // Don't compress the container
 
     // Add manifest
-    zip.start_file("manifest.json", options)
+    zip.start_file(manifest_filename, options)
         .map_err(|e| Error::Archive(e.to_string()))?;
     zip.write_all(manifest_json.as_bytes())
         .map_err(|e| Error::Archive(e.to_string()))?;

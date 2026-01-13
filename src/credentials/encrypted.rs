@@ -226,10 +226,7 @@ impl EncryptedFileBackend {
 
         // Ensure parent directory exists
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|e| Error::DirectoryCreate {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
+            crate::security::ensure_secure_dir(parent)?;
         }
 
         fs::write(&self.path, content).map_err(|e| Error::FileWrite {

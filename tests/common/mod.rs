@@ -143,14 +143,11 @@ impl SettingsSchema for TestSettings {
             .order(2),
 
             "api.key" => {
-                #[allow(unused_mut)]
-                let mut s = SettingMetadata::password("API Key", "")
+                let s = SettingMetadata::password("API Key", "")
                     .category("security")
                     .description("Secret API key for external services");
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                {
-                    s = s.secret();
-                }
+                let s = s.secret();
                 s
             },
 

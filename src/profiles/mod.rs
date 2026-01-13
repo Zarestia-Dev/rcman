@@ -66,9 +66,6 @@ pub use migrator::{ProfileMigrator, migrate};
 /// Default profile name used when migrating or initializing
 pub const DEFAULT_PROFILE: &str = "default";
 
-/// Manifest file name stored in profiled directories
-pub const MANIFEST_FILE: &str = ".profiles.json";
-
 /// Directory name containing profile subdirectories
 pub const PROFILES_DIR: &str = "profiles";
 
