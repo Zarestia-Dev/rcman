@@ -49,11 +49,9 @@ impl EventManager {
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
     {
-        let mut guard = self
-            .global_listeners
-            .write_recovered()
-            .expect("Lock poisoned");
-        guard.push(Arc::new(callback));
+        if let Ok(mut guard) = self.global_listeners.write_recovered() {
+            guard.push(Arc::new(callback));
+        }
     }
 
     /// Register a listener for a specific setting key
@@ -69,11 +67,12 @@ impl EventManager {
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
     {
-        let mut listeners = self.key_listeners.write_recovered().expect("Lock poisoned");
-        listeners
-            .entry(key.to_string())
-            .or_default()
-            .push(Arc::new(callback));
+        if let Ok(mut listeners) = self.key_listeners.write_recovered() {
+            listeners
+                .entry(key.to_string())
+                .or_default()
+                .push(Arc::new(callback));
+        }
     }
 
     /// Register a validator for a specific setting key
@@ -92,11 +91,12 @@ impl EventManager {
     where
         F: Fn(&Value) -> Result<(), String> + Send + Sync + 'static,
     {
-        let mut validators = self.validators.write_recovered().expect("Lock poisoned");
-        validators
-            .entry(key.to_string())
-            .or_default()
-            .push(Arc::new(validator));
+        if let Ok(mut validators) = self.validators.write_recovered() {
+            validators
+                .entry(key.to_string())
+                .or_default()
+                .push(Arc::new(validator));
+        }
     }
 
     /// Validate a value before saving
@@ -111,7 +111,10 @@ impl EventManager {
     ///
     /// Panics if the internal lock is poisoned.
     pub fn validate(&self, key: &str, value: &Value) -> Result<(), String> {
-        let guard = self.validators.read_recovered().expect("Lock poisoned");
+        let guard = self
+            .validators
+            .read_recovered()
+            .map_err(|_| "Internal lock error".to_string())?;
         if let Some(validators) = guard.get(key) {
             for validator in validators {
                 validator(value)?;
@@ -132,19 +135,14 @@ impl EventManager {
     /// Panics if the internal lock is poisoned.
     pub fn notify(&self, key: &str, old_value: &Value, new_value: &Value) {
         // Call global listeners
-        {
-            let guard = self
-                .global_listeners
-                .read_recovered()
-                .expect("Lock poisoned");
+        if let Ok(guard) = self.global_listeners.read_recovered() {
             for callback in guard.iter() {
                 callback(key, old_value, new_value);
             }
         }
 
         // Call key-specific listeners
-        {
-            let guard = self.key_listeners.read_recovered().expect("Lock poisoned");
+        if let Ok(guard) = self.key_listeners.read_recovered() {
             if let Some(listeners) = guard.get(key) {
                 for callback in listeners {
                     callback(key, old_value, new_value);
@@ -159,8 +157,9 @@ impl EventManager {
     ///
     /// Panics if the internal lock is poisoned.
     pub fn unwatch(&self, key: &str) {
-        let mut guard = self.key_listeners.write_recovered().expect("Lock poisoned");
-        guard.remove(key);
+        if let Ok(mut guard) = self.key_listeners.write_recovered() {
+            guard.remove(key);
+        }
     }
 
     /// Clear all listeners
@@ -169,14 +168,12 @@ impl EventManager {
     ///
     /// Panics if the internal lock is poisoned.
     pub fn clear(&self) {
-        self.global_listeners
-            .write_recovered()
-            .expect("Lock poisoned")
-            .clear();
-        self.key_listeners
-            .write_recovered()
-            .expect("Lock poisoned")
-            .clear();
+        if let Ok(mut guard) = self.global_listeners.write_recovered() {
+            guard.clear();
+        }
+        if let Ok(mut guard) = self.key_listeners.write_recovered() {
+            guard.clear();
+        }
     }
 }
 

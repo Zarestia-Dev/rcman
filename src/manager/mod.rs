@@ -276,7 +276,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// This returns the path where settings.json is stored.
     /// If profiles are enabled, this points to the active profile's directory.
     fn settings_path(&self) -> std::path::PathBuf {
-        let dir = self.settings_dir.read().expect("Lock poisoned");
+        let dir = self
+            .settings_dir
+            .read_recovered()
+            .expect("Settings dir lock unrecoverable");
         dir.join(&self.config.settings_file)
     }
 
@@ -535,9 +538,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             pm.invalidate_manifest();
         }
 
-        let sub_settings = self.sub_settings.read().expect("Lock poisoned");
-        for sub in sub_settings.values() {
-            sub.invalidate_cache();
+        if let Ok(sub_settings) = self.sub_settings.read_recovered() {
+            for sub in sub_settings.values() {
+                sub.invalidate_cache();
+            }
         }
 
         debug!("Settings cache invalidated");
@@ -1172,9 +1176,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Panics if the internal lock is poisoned.
     pub fn has_sub_settings(&self, name: &str) -> bool {
         self.sub_settings
-            .read()
-            .expect("Lock poisoned")
-            .contains_key(name)
+            .read_recovered()
+            .map(|guard| guard.contains_key(name))
+            .unwrap_or(false)
     }
 
     /// List all registered sub-settings types
@@ -1184,11 +1188,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Panics if the internal lock is poisoned.
     pub fn sub_settings_types(&self) -> Vec<String> {
         self.sub_settings
-            .read()
-            .expect("Lock poisoned")
-            .keys()
-            .cloned()
-            .collect()
+            .read_recovered()
+            .map(|guard| guard.keys().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// List all entries in a sub-settings type (convenience method)
@@ -1231,8 +1233,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Panics if the internal lock is poisoned.
     #[cfg(feature = "backup")]
     pub fn register_external_provider(&self, provider: Box<dyn ExternalConfigProvider>) {
-        let mut providers = self.external_providers.write().expect("Lock poisoned");
-        providers.push(provider);
+        if let Ok(mut providers) = self.external_providers.write_recovered() {
+            providers.push(provider);
+        }
     }
 
     // =========================================================================

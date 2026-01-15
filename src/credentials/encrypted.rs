@@ -76,7 +76,7 @@ impl EncryptedFileBackend {
     /// ```rust,no_run
     /// use std::path::PathBuf;
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// use rcman::credentials::EncryptedFileBackend;
+    /// use rcman::EncryptedFileBackend;
     ///
     /// let path = PathBuf::from("/tmp/credentials.enc.json");
     /// let backend = EncryptedFileBackend::with_password(path, "user_password")?;

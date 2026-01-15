@@ -32,8 +32,9 @@ impl SettingsCache {
     }
 
     pub fn invalidate(&self) {
-        let mut guard = self.state.write().expect("Lock poisoned");
-        *guard = None;
+        if let Ok(mut guard) = self.state.write_recovered() {
+            *guard = None;
+        }
     }
 
     pub fn get_value(
@@ -83,7 +84,10 @@ impl SettingsCache {
     }
 
     pub fn is_populated(&self) -> bool {
-        self.state.read().unwrap().is_some()
+        self.state
+            .read_recovered()
+            .map(|g| g.is_some())
+            .unwrap_or(false)
     }
 
     pub fn populate<F>(&self, factory: F) -> Result<()>

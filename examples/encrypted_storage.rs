@@ -10,7 +10,7 @@
 //!
 //! Run with: cargo run --example `encrypted_storage` --features encrypted-file
 
-use rcman::credentials::{CredentialBackend, EncryptedFileBackend};
+use rcman::{CredentialBackend, EncryptedFileBackend};
 
 fn main() {
     println!("🔐 Encrypted File Storage Demo (Argon2id)\n");
@@ -145,7 +145,7 @@ fn main() {
     println!("                        USAGE SUMMARY");
     println!("═══════════════════════════════════════════════════════════════════\n");
     println!("For new projects, use the recommended with_password() API:\n");
-    println!("  use rcman::credentials::EncryptedFileBackend;");
+    println!("  use rcman::EncryptedFileBackend;");
     println!();
     println!("  let backend = EncryptedFileBackend::with_password(path, \"password\")?;");
     println!("  backend.store(\"api_key\", \"secret_value\")?;");

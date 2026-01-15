@@ -29,10 +29,8 @@ fn unique_app_name() -> String {
 // Helper to create manager with credentials enabled
 // =============================================================================
 
-fn create_manager_with_credentials() -> (
-    TempDir,
-    SettingsManager<rcman::storage::JsonStorage, TestSettings>,
-) {
+fn create_manager_with_credentials() -> (TempDir, SettingsManager<rcman::JsonStorage, TestSettings>)
+{
     let temp_dir = TempDir::new().unwrap();
     let app_name = unique_app_name();
     let config = SettingsConfig::builder(&app_name, "1.0.0")

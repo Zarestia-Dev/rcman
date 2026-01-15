@@ -331,7 +331,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     ///
     /// # Example
     /// ```rust
-    /// use rcman::{SettingsConfig, ExternalConfig};
+    /// use rcman::SettingsConfig;
+    /// use rcman::backup::ExternalConfig;
     ///
     /// let config = SettingsConfig::builder("my-app", "1.0.0")
     ///     .with_external_config(ExternalConfig::new("rclone", "/path/to/rclone.conf")

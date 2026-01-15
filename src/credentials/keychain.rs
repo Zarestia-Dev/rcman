@@ -28,15 +28,17 @@ impl KeychainBackend {
     }
 
     fn track_key(&self, key: &str) {
-        let mut keys = self.known_keys.write().expect("Lock poisoned");
-        if !keys.contains(&key.to_string()) {
-            keys.push(key.to_string());
+        if let Ok(mut keys) = self.known_keys.write() {
+            if !keys.contains(&key.to_string()) {
+                keys.push(key.to_string());
+            }
         }
     }
 
     fn untrack_key(&self, key: &str) {
-        let mut keys = self.known_keys.write().expect("Lock poisoned");
-        keys.retain(|k| k != key);
+        if let Ok(mut keys) = self.known_keys.write() {
+            keys.retain(|k| k != key);
+        }
     }
 }
 
@@ -94,7 +96,10 @@ impl CredentialBackend for KeychainBackend {
 
     fn list_keys(&self) -> Result<Vec<String>> {
         // Keychain doesn't support listing, return tracked keys
-        Ok(self.known_keys.read().expect("Lock poisoned").clone())
+        self.known_keys
+            .read()
+            .map(|keys| keys.clone())
+            .map_err(|_| Error::LockPoisoned)
     }
 
     fn backend_name(&self) -> &'static str {

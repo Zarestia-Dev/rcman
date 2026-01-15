@@ -258,8 +258,9 @@ impl<S: StorageBackend> ProfileManager<S> {
     where
         F: Fn(ProfileEvent) + Send + Sync + 'static,
     {
-        let mut guard = self.on_event.write().expect("Lock poisoned");
-        *guard = Some(Arc::new(callback));
+        if let Ok(mut guard) = self.on_event.write() {
+            *guard = Some(Arc::new(callback));
+        }
     }
 
     /// Set the cache invalidation callback
@@ -275,23 +276,26 @@ impl<S: StorageBackend> ProfileManager<S> {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        let mut guard = self.on_invalidate.write().expect("Lock poisoned");
-        *guard = Some(Arc::new(callback));
+        if let Ok(mut guard) = self.on_invalidate.write() {
+            *guard = Some(Arc::new(callback));
+        }
     }
 
     /// Emit a profile event
     fn emit_event(&self, event: ProfileEvent) {
-        let guard = self.on_event.read().expect("Lock poisoned");
-        if let Some(callback) = guard.as_ref() {
-            callback(event);
+        if let Ok(guard) = self.on_event.read() {
+            if let Some(callback) = guard.as_ref() {
+                callback(event);
+            }
         }
     }
 
     /// Invalidate caches
     fn invalidate_caches(&self) {
-        let guard = self.on_invalidate.read().expect("Lock poisoned");
-        if let Some(callback) = guard.as_ref() {
-            callback();
+        if let Ok(guard) = self.on_invalidate.read() {
+            if let Some(callback) = guard.as_ref() {
+                callback();
+            }
         }
     }
 
@@ -303,8 +307,9 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Panics if the internal lock is poisoned.
     pub fn invalidate_manifest(&self) {
-        let mut guard = self.manifest.write().expect("Lock poisoned");
-        *guard = None;
+        if let Ok(mut guard) = self.manifest.write() {
+            *guard = None;
+        }
     }
 
     /// Get the path to a specific profile's directory
@@ -798,7 +803,7 @@ impl<S: StorageBackend> ProfileManager<S> {
 
         // Migration will be handled by the caller
         // Just initialize the manifest
-        let mut guard = self.manifest.write().expect("Lock poisoned");
+        let mut guard = self.manifest.write_recovered()?;
         *guard = Some(ProfileManifest::default());
         drop(guard);
 

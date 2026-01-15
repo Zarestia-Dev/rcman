@@ -218,7 +218,7 @@ impl Default for RemotesState {
 // ============================================================================
 
 struct DemoApp {
-    manager: Arc<SettingsManager<rcman::storage::JsonStorage, DemoSettings>>,
+    manager: Arc<SettingsManager<rcman::JsonStorage, DemoSettings>>,
     keychain_enabled: bool,
     encrypted_backend_status: String,
     settings: DemoSettingsState,

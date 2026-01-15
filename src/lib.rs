@@ -192,67 +192,137 @@
 //!     let key = creds.get("api-key").unwrap();
 //! }
 //! ```
+//!
+//! ## Import Patterns
+//!
+//! All public types are re-exported at the crate root for convenience:
+//!
+//! ```rust,ignore
+//! // Recommended: flat imports
+//! use rcman::{SettingsManager, JsonStorage, SettingMetadata};
+//!
+//! // Alternative: prelude for common types
+//! use rcman::prelude::*;
+//! ```
+
+// =============================================================================
+// INTERNAL MODULES (private implementation details)
+// =============================================================================
 
 // Core modules
+mod config;
 mod docs;
 mod error;
 mod events;
 mod manager;
-pub mod security;
-pub mod storage;
+mod security;
+mod storage;
 mod sub_settings;
 mod sync;
 
-// Grouped modules
-pub mod config;
+// Cache module (always available - used by sub_settings)
+mod cache;
 
 // Feature-gated modules
-pub mod backup;
 #[cfg(feature = "backup")]
-pub mod cache;
+pub mod backup;
 
 #[cfg(feature = "profiles")]
-pub mod profiles;
+mod profiles;
 
-pub mod credentials;
+mod credentials;
 
-// Re-exports
+// =============================================================================
+// PUBLIC API RE-EXPORTS
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Core Types (always available)
+// -----------------------------------------------------------------------------
+
+/// Core configuration types and traits for settings management.
+pub use config::{
+    DefaultEnvSource, EnvSource, SettingFlags, SettingMetadata, SettingOption, SettingSystemFlags,
+    SettingType, SettingUiFlags, SettingsConfig, SettingsConfigBuilder, SettingsSchema, opt,
+};
+
+/// Documentation generation utilities.
 pub use docs::{DocsConfig, generate_docs, generate_docs_from_metadata};
-pub use error::{Error, Result};
-pub use events::EventManager;
-pub use manager::{SettingsManager, SettingsManagerBuilder};
-pub use sub_settings::{SubSettings, SubSettingsConfig, SubSettingsMode};
 
-#[cfg(feature = "toml")]
-pub use storage::TomlStorage;
+/// Error types for the library.
+pub use error::{Error, Result};
+
+/// Event system for reactive settings changes.
+pub use events::EventManager;
+
+/// Main settings manager and builder.
+pub use manager::{SettingsManager, SettingsManagerBuilder};
+
+/// Sub-settings for per-entity configuration.
+pub use sub_settings::{SubSettings, SubSettingsAction, SubSettingsConfig, SubSettingsMode};
+
+// -----------------------------------------------------------------------------
+// Storage Backends
+// -----------------------------------------------------------------------------
+
+/// JSON storage backend (default).
 pub use storage::{JsonStorage, StorageBackend};
 
-// Re-exports from config
-pub use cache::CacheStrategy;
-pub use config::{
-    DefaultEnvSource, EnvSource, SettingMetadata, SettingOption, SettingType, SettingsConfig,
-    SettingsConfigBuilder, SettingsSchema, opt,
-};
+/// TOML storage backend (requires `toml` feature).
+#[cfg(feature = "toml")]
+pub use storage::TomlStorage;
 
-// Backup re-exports (feature-gated)
+// -----------------------------------------------------------------------------
+// Cache
+// -----------------------------------------------------------------------------
+
+/// Cache strategy for settings components.
+pub use cache::CacheStrategy;
+
+// -----------------------------------------------------------------------------
+// Backup & Restore (requires backup feature)
+// -----------------------------------------------------------------------------
+
 #[cfg(feature = "backup")]
 pub use backup::{
-    BackupAnalysis, BackupContents, BackupManager, BackupManifest, BackupOptions, ExportCategory,
-    ExportCategoryType, ExportType, ExternalConfig, ExternalConfigProvider, ProfileEntry,
-    RestoreOptions, RestoreResult, SubSettingsManifestEntry,
+    BackupInfo, BackupManager, BackupOptions, ExportType, ProgressCallback, RestoreOptions,
+    RestoreResult,
 };
 
-// Profiles re-exports (feature-gated)
-#[cfg(feature = "profiles")]
-pub use profiles::{ProfileEvent, ProfileManager, ProfileManifest};
+// -----------------------------------------------------------------------------
+// Profiles (requires profiles feature)
+// -----------------------------------------------------------------------------
 
-// Credential re-exports (always available: SecretStorage; feature-gated: CredentialManager)
-/// Credential Manager (requires `keychain` or `encrypted-file` feature)
+#[cfg(feature = "profiles")]
+pub use profiles::{
+    DEFAULT_PROFILE, PROFILES_DIR, ProfileEvent, ProfileManager, ProfileManifest, ProfileMigrator,
+    migrate, validate_profile_name,
+};
+
+// -----------------------------------------------------------------------------
+// Credentials
+// -----------------------------------------------------------------------------
+
+/// Credential storage backend trait and types.
+pub use credentials::{CredentialBackend, MemoryBackend, SecretBackupPolicy, SecretStorage};
+
+/// Keychain backend (requires `keychain` feature).
+#[cfg(feature = "keychain")]
+pub use credentials::KeychainBackend;
+
+/// Encrypted file backend (requires `encrypted-file` feature).
+#[cfg(feature = "encrypted-file")]
+pub use credentials::EncryptedFileBackend;
+
+/// Credential manager for secure secret storage.
+/// Requires `keychain` or `encrypted-file` feature.
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 pub use credentials::CredentialManager;
-pub use credentials::SecretStorage;
 
-// Derive macro re-export (requires `derive` feature)
+// -----------------------------------------------------------------------------
+// Derive Macro (requires derive feature)
+// -----------------------------------------------------------------------------
+
 /// Derive macro for auto-generating `SettingsSchema` implementations.
 ///
 /// Use this to reduce boilerplate when defining settings structs.
@@ -272,3 +342,49 @@ pub use credentials::SecretStorage;
 /// ```
 #[cfg(feature = "derive")]
 pub use rcman_derive::SettingsSchema as DeriveSettingsSchema;
+
+// =============================================================================
+// PRELUDE MODULE (convenient glob import)
+// =============================================================================
+
+/// Prelude module for convenient glob imports.
+///
+/// Import all commonly-used types with a single line:
+///
+/// ```rust
+/// use rcman::prelude::*;
+/// ```
+///
+/// This includes the core types needed for most use cases:
+/// - `SettingsManager`, `SettingsConfig`, `SettingsSchema`
+/// - `SettingMetadata`, `SettingOption`, `opt`
+/// - `SubSettingsConfig`
+/// - `JsonStorage`, `StorageBackend`
+/// - `Error`, `Result`
+///
+/// Feature-gated types are also included when their features are enabled.
+pub mod prelude {
+    // Core types users need for basic usage
+    pub use super::{
+        Error, Result, SettingFlags, SettingMetadata, SettingOption, SettingSystemFlags,
+        SettingType, SettingUiFlags, SettingsConfig, SettingsManager, SettingsSchema,
+        SubSettingsConfig, opt,
+    };
+
+    // Storage
+    pub use super::{JsonStorage, StorageBackend};
+
+    #[cfg(feature = "toml")]
+    pub use super::TomlStorage;
+
+    // Cache
+    pub use super::CacheStrategy;
+
+    // Backup types
+    #[cfg(feature = "backup")]
+    pub use super::{BackupOptions, RestoreOptions};
+
+    // Derive
+    #[cfg(feature = "derive")]
+    pub use super::DeriveSettingsSchema;
+}

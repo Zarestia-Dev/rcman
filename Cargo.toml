@@ -33,10 +33,10 @@ profiles = []
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
 log = "0.4"
-chrono = { version = "0.4", features = ["serde"] }
+time = { version = "0.3", features = ["serde", "serde-well-known", "formatting", "macros"] }
 regex = "1.11"
 dirs = "6.0"
-lru = "0.12"
+lru = "0.16.3"
 
 # JSON (always included for now, required for settings)
 serde_json = "1.0"
@@ -105,3 +105,7 @@ required-features = ["derive"]
 [[test]]
 name = "profiles_test"
 required-features = ["profiles"]
+
+[[test]]
+name = "toml_integration_test"
+required-features = ["toml"]

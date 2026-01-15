@@ -14,7 +14,7 @@ use std::path::Path;
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```ignore
 /// use rcman::security::set_secure_file_permissions;
 /// use std::path::Path;
 ///
@@ -57,7 +57,7 @@ pub fn set_secure_file_permissions(path: &Path) -> Result<()> {
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```ignore
 /// use rcman::security::set_secure_dir_permissions;
 /// use std::path::Path;
 ///

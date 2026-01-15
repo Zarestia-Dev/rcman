@@ -8,5 +8,9 @@
 mod schema;
 mod types;
 
-pub use schema::*;
-pub use types::*;
+pub use schema::{
+    SettingFlags, SettingMetadata, SettingOption, SettingSystemFlags, SettingType, SettingUiFlags,
+    SettingsSchema, opt,
+};
+
+pub use types::{DefaultEnvSource, EnvSource, SettingsConfig, SettingsConfigBuilder};

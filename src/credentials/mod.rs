@@ -17,9 +17,11 @@ pub use encrypted::EncryptedFileBackend;
 #[cfg(feature = "keychain")]
 pub use keychain::KeychainBackend;
 pub use memory::MemoryBackend;
-pub use types::*;
+
+pub use types::{SecretBackupPolicy, SecretStorage};
 
 use crate::error::Result;
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 use std::sync::Arc;
 
 /// Trait for credential storage backends
@@ -66,6 +68,7 @@ pub trait CredentialBackend: Send + Sync {
 }
 
 /// Credential manager with configurable backend and fallback
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 #[derive(Clone)]
 pub struct CredentialManager {
     /// Primary backend (typically keychain)
@@ -82,6 +85,7 @@ pub struct CredentialManager {
     profile_context: Option<String>,
 }
 
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 impl CredentialManager {
     /// Create a new credential manager with keychain backend
     #[cfg(feature = "keychain")]
@@ -358,7 +362,7 @@ impl CredentialManager {
 // Tests
 // =============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "keychain", feature = "encrypted-file")))]
 mod tests {
     use super::*;
 

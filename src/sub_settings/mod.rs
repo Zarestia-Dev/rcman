@@ -6,9 +6,9 @@
 //! - `MultiFile`: One file per entity (e.g., `config/remotes/gdrive.json`)
 //! - `SingleFile`: All entities in one file (e.g., `config/backends.json`)
 
-pub mod multi_file;
-pub mod single_file;
-pub mod store;
+mod multi_file;
+mod single_file;
+mod store;
 
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
@@ -49,7 +49,7 @@ pub struct SubSettingsConfig {
     pub mode: SubSettingsMode,
 
     /// Cache strategy for this sub-settings type
-    pub(crate) cache_strategy: crate::CacheStrategy,
+    pub cache_strategy: crate::CacheStrategy,
 
     /// Whether profiles are enabled for this sub-settings type
     #[cfg(feature = "profiles")]
@@ -57,7 +57,7 @@ pub struct SubSettingsConfig {
 
     /// Profile migration strategy (defaults to Auto)
     #[cfg(feature = "profiles")]
-    pub profile_migrator: crate::profiles::ProfileMigrator,
+    pub profile_migrator: crate::ProfileMigrator,
 }
 
 impl Default for SubSettingsConfig {
@@ -71,7 +71,7 @@ impl Default for SubSettingsConfig {
             #[cfg(feature = "profiles")]
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
-            profile_migrator: crate::profiles::ProfileMigrator::default(),
+            profile_migrator: crate::ProfileMigrator::default(),
         }
     }
 }

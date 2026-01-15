@@ -1,20 +1,21 @@
 //! Backup creation
 
 use super::archive::{calculate_file_hash, create_rcman_container, create_zip_archive};
+use super::types::{
+    BackupAnalysis, BackupContents, BackupManifest, ExternalConfigProvider,
+    SubSettingsManifestEntry,
+};
 use crate::backup::{BackupInfo, BackupIntegrity};
 use crate::config::SettingsSchema;
 use crate::error::{Error, Result};
 use crate::manager::SettingsManager;
 use crate::storage::StorageBackend;
 use crate::sync::RwLockExt;
-use crate::{
-    BackupAnalysis, BackupContents, BackupManifest, BackupOptions, ExportType,
-    ExternalConfigProvider, SubSettingsManifestEntry,
-};
-use chrono::Utc;
+use crate::{BackupOptions, ExportType};
 use log::{debug, info};
 use std::fs;
 use std::path::{Path, PathBuf};
+use time::{OffsetDateTime, macros::format_description};
 
 #[cfg(feature = "profiles")]
 use crate::profiles::PROFILES_DIR;
@@ -147,7 +148,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             backup: BackupInfo {
                 app_name: self.manager.config().app_name.clone(),
                 app_version: self.manager.config().app_version.clone(),
-                created_at: Utc::now(),
+                created_at: OffsetDateTime::now_utc(),
                 export_type: options.export_type.clone(),
                 encrypted: password.is_some(),
                 user_note: options.user_note.clone(),
@@ -167,7 +168,11 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             .map_err(|e| Error::BackupFailed(e.to_string()))?;
 
         // Generate output filename
-        let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+        let now = OffsetDateTime::now_utc();
+        let timestamp_format = format_description!("[year][month][day]_[hour][minute][second]");
+        let timestamp = now
+            .format(&timestamp_format)
+            .unwrap_or_else(|_| "unknown".to_string());
         let filename = if let Some(suffix) = &options.filename_suffix {
             format!(
                 "{}_{}_{}.rcman",
@@ -285,7 +290,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         // Process each sub-settings type
         for sub_type in sub_settings_to_backup {
             if let Ok(sub) = self.manager.sub_settings(&sub_type) {
-                let (size, count, manifest_entry) = Self::gather_sub_settings(
+                let (size, count, manifest_entry) = self.gather_sub_settings(
                     export_dir,
                     &sub_type,
                     &sub,
@@ -325,8 +330,11 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             if let Some(parent) = full_dest.parent() {
                 crate::error::create_dir(parent)?;
             }
-            crate::error::copy_file(&src, &full_dest)?;
-            total_size += crate::error::file_size(&full_dest);
+
+            // Process and save with secret handling (prefix is empty for main settings)
+            let size = self.process_and_save_settings(&src, &full_dest, "", options)?;
+
+            total_size += size;
             file_count += 1;
             debug!("Added settings file: {}", dest.display());
         }
@@ -334,8 +342,92 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         Ok((total_size, file_count))
     }
 
+    // Helper to read, process secrets, and write settings file
+    fn process_and_save_settings(
+        &self,
+        src: &Path,
+        dest: &Path,
+        prefix: &str,
+        options: &BackupOptions,
+    ) -> Result<u64> {
+        let content = std::fs::read(src).map_err(|e| Error::FileRead {
+            path: src.to_path_buf(),
+            source: e,
+        })?;
+
+        let content_str = String::from_utf8(content).map_err(|e| Error::FileRead {
+            path: src.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+        })?;
+
+        // Use generic storage from manager config (assumed consistent)
+        let storage = &self.manager.config().storage;
+        let mut value: serde_json::Value = storage.deserialize(&content_str)?;
+
+        self.traverse_secrets(
+            &mut value,
+            prefix.to_string(),
+            &Schema::get_metadata(),
+            match options.secret_policy {
+                crate::SecretBackupPolicy::Exclude => false,
+                crate::SecretBackupPolicy::Include => true,
+                crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
+            },
+        )?;
+
+        let serialized = storage.serialize(&value)?;
+        crate::error::write_file(dest, &serialized)?;
+
+        Ok(serialized.len() as u64)
+    }
+
+    fn traverse_secrets(
+        &self,
+        value: &mut serde_json::Value,
+        prefix: String,
+        metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
+        should_include: bool,
+    ) -> Result<()> {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (k, v) in map {
+                    let key = if prefix.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{}.{}", prefix, k)
+                    };
+
+                    self.traverse_secrets(v, key, metadata, should_include)?;
+                }
+            }
+            _ => {
+                // Check if this is a secret
+                if let Some(_meta) = metadata.get(&prefix) {
+                    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                    if _meta.flags.system.secret {
+                        if should_include {
+                            // Try to fetch secret if simple value is null or default
+                            // (It might be in keychain)
+                            // Note: credentials() returns Option<&CredentialManager>, not Result
+                            if let Some(creds) = self.manager.credentials() {
+                                if let Ok(Some(secret)) = creds.get(&prefix) {
+                                    *value = serde_json::Value::String(secret);
+                                }
+                            }
+                        } else {
+                            // Redact
+                            *value = serde_json::Value::Null;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Gather sub-settings files (handles both profiled and flat modes)
     fn gather_sub_settings(
+        &self,
         export_dir: &Path,
         sub_type: &str,
         sub: &crate::sub_settings::SubSettings<S>,
@@ -365,8 +457,10 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     crate::error::create_dir(&sub_export_dir)?;
                     let ext = sub.extension();
                     let dest = sub_export_dir.join(format!("{sub_type}.{ext}"));
-                    crate::error::copy_file(&path, &dest)?;
-                    let size = crate::error::file_size(&dest);
+
+                    // Process secrets: single file structure matches sub_type structure
+                    // e.g. "remotes" -> { "gdrive": { ... } }
+                    let size = self.process_and_save_settings(&path, &dest, sub_type, options)?;
                     debug!("📄 Added single-file sub-settings: {sub_type}");
                     return Ok((
                         size,
@@ -385,12 +479,24 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             let mut items = Vec::new();
 
             for name in sub.list()? {
-                if let Ok(value) = sub.get_value(&name) {
+                if let Ok(mut value) = sub.get_value(&name) {
                     let ext = sub.extension();
                     let dest = sub_export_dir.join(format!("{name}.{ext}"));
 
-                    // Use generic storage serialization
-                    // storage.serialize expects &T. value is generic Value which implements Serialize.
+                    // Process secrets for this item
+                    let prefix = format!("{}.{}", sub_type, name);
+
+                    self.traverse_secrets(
+                        &mut value,
+                        prefix,
+                        &Schema::get_metadata(),
+                        match options.secret_policy {
+                            crate::SecretBackupPolicy::Exclude => false,
+                            crate::SecretBackupPolicy::Include => true,
+                            crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
+                        },
+                    )?;
+
                     let content = storage.serialize(&value)?;
                     crate::error::write_file(&dest, &content)?;
                     total_size += content.len() as u64;
@@ -658,6 +764,16 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             is_valid,
             requires_password: data_encrypted,
             warnings,
+            // Display/convenience fields
+            created_at: manifest
+                .backup
+                .created_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            backup_type: format_export_type(&manifest.backup.export_type),
+            is_encrypted: manifest.backup.encrypted,
+            format_version: manifest.version.to_string(),
+            user_note: manifest.backup.user_note.clone(),
             manifest,
         })
     }
@@ -688,6 +804,18 @@ fn sanitize_filename(name: &str) -> String {
             c => c,
         })
         .collect()
+}
+
+/// Format ExportType as a human-readable display string
+fn format_export_type(export_type: &ExportType) -> String {
+    match export_type {
+        ExportType::Full => "Full Backup".into(),
+        ExportType::SettingsOnly => "Settings Only".into(),
+        ExportType::Single {
+            settings_type,
+            name,
+        } => format!("Single {}: {}", settings_type, name),
+    }
 }
 
 // =============================================================================

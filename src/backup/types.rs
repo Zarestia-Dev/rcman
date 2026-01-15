@@ -1,8 +1,8 @@
 //! Backup/restore types
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use time::OffsetDateTime;
 
 /// Category of exportable data
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +91,9 @@ pub struct BackupOptions {
     /// Profiles to include (if empty, defaults to active or all depending on logic)
     #[cfg(feature = "profiles")]
     pub include_profiles: Vec<String>,
+
+    /// Policy for handling secret values (passwords, tokens)
+    pub secret_policy: crate::SecretBackupPolicy,
 }
 
 /// Callback function for progress reporting (`current_bytes`, `total_bytes`)
@@ -125,6 +128,7 @@ impl Default for BackupOptions {
             on_progress: None,
             #[cfg(feature = "profiles")]
             include_profiles: Vec::new(),
+            secret_policy: crate::SecretBackupPolicy::default(),
         }
     }
 }
@@ -138,12 +142,17 @@ impl BackupOptions {
     ///
     /// let options = BackupOptions::new()
     ///     .output_dir("backups/")
-    ///     .password("secret")
-    ///     .include_sub_settings_items("remotes", &["gdrive", "s3"]);
+    ///     .password("secure-password");
     /// ```
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set secret policy
+    #[must_use]
+    pub fn secret_policy(mut self, policy: crate::SecretBackupPolicy) -> Self {
+        self.secret_policy = policy;
+        self
     }
 
     /// Set the output directory for the backup file
@@ -459,7 +468,7 @@ impl std::fmt::Debug for ImportTarget {
 ///
 /// ## File-based config (traditional)
 /// ```rust
-/// use rcman::ExternalConfig;
+/// use rcman::backup::ExternalConfig;
 ///
 /// let config = ExternalConfig::new("rclone_config", "/path/to/rclone.conf")
 ///     .display_name("Rclone Configuration");
@@ -467,7 +476,7 @@ impl std::fmt::Debug for ImportTarget {
 ///
 /// ## Command output
 /// ```rust
-/// use rcman::ExternalConfig;
+/// use rcman::backup::ExternalConfig;
 ///
 /// let config = ExternalConfig::from_command("rclone_dump", "rclone_dump.json")
 ///     .export_command("rclone", &["config", "dump"])
@@ -477,7 +486,7 @@ impl std::fmt::Debug for ImportTarget {
 ///
 /// ## In-memory content
 /// ```rust
-/// use rcman::ExternalConfig;
+/// use rcman::backup::ExternalConfig;
 ///
 /// let api_data = b"{ \"key\": \"value\" }".to_vec();
 /// let config = ExternalConfig::from_content("cloud_config", "cloud.json", api_data)
@@ -740,7 +749,8 @@ pub struct BackupInfo {
     pub app_version: String,
 
     /// When the backup was created
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
 
     /// Export type (full, partial, etc.)
     pub export_type: ExportType,
@@ -757,7 +767,7 @@ impl Default for BackupInfo {
         Self {
             app_name: String::new(),
             app_version: String::new(),
-            created_at: Utc::now(),
+            created_at: OffsetDateTime::now_utc(),
             export_type: ExportType::Full,
             encrypted: false,
             user_note: None,
@@ -848,4 +858,22 @@ pub struct BackupAnalysis {
 
     /// Whether password is required
     pub requires_password: bool,
+
+    // =========================================================================
+    // Display/convenience fields (pre-formatted for direct frontend use)
+    // =========================================================================
+    /// Creation timestamp formatted as RFC3339 string
+    pub created_at: String,
+
+    /// Human-readable backup type (e.g., "Full Backup", "Settings Only")
+    pub backup_type: String,
+
+    /// Whether the backup is encrypted (convenience copy from manifest)
+    pub is_encrypted: bool,
+
+    /// Manifest format version as string
+    pub format_version: String,
+
+    /// User note (convenience copy from manifest)
+    pub user_note: Option<String>,
 }

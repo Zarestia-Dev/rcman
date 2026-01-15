@@ -169,7 +169,7 @@ impl SettingsSchema for TestSettings {
 /// Test fixture that provides a temporary directory and configured `SettingsManager`
 pub struct TestFixture {
     pub temp_dir: TempDir,
-    pub manager: SettingsManager<rcman::storage::JsonStorage, TestSettings>,
+    pub manager: SettingsManager<rcman::JsonStorage, TestSettings>,
     pub env_source: Arc<MockEnvSource>,
 }
 
