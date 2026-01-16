@@ -404,7 +404,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 // Check if this is a secret
                 if let Some(_meta) = metadata.get(&prefix) {
                     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                    if _meta.flags.system.secret {
+                    if _meta.is_secret() {
                         if should_include {
                             // Try to fetch secret if simple value is null or default
                             // (It might be in keychain)

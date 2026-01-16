@@ -156,7 +156,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     /// impl SettingsSchema for AppSettings {
     ///     fn get_metadata() -> HashMap<String, SettingMetadata> {
     ///         settings! {
-    ///             "ui.theme" => SettingMetadata::text("Theme", "dark")
+    ///             "ui.theme" => SettingMetadata::text("dark").meta_str("label", "Theme")
     ///         }
     ///     }
     /// }

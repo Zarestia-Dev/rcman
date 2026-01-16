@@ -14,34 +14,39 @@ struct AppSettings;
 impl SettingsSchema for AppSettings {
     fn get_metadata() -> HashMap<String, SettingMetadata> {
         settings! {
-            "app.name" => SettingMetadata::text("Application Name", "My App")
-                .description("The name of your application")
-                .category("General"),
+            "app.name" => SettingMetadata::text("My App")
+                .meta_str("label", "Application Name")
+                .meta_str("description", "The name of your application")
+                .meta_str("category", "General"),
 
-            "app.theme" => SettingMetadata::select("Theme", "light", vec![
+            "app.theme" => SettingMetadata::select("light", vec![
                 opt("light", "Light"),
                 opt("dark", "Dark"),
                 opt("auto", "Auto"),
             ])
-                .description("UI theme preference")
-                .category("Appearance"),
+            .meta_str("label", "Theme")
+            .meta_str("description", "UI theme preference")
+            .meta_str("category", "Appearance"),
 
-            "network.port" => SettingMetadata::number("Port", 8080)
-                .description("Server port")
+            "network.port" => SettingMetadata::number(8080.0)
+                .meta_str("label", "Port")
+                .meta_str("description", "Server port")
                 .min(1024.0)
                 .max(65535.0)
-                .category("Network"),
+                .meta_str("category", "Network"),
 
-            "network.allowed_origins" => SettingMetadata::list("Allowed Origins", &[
+            "network.allowed_origins" => SettingMetadata::list(&[
                 "http://localhost:3000".to_string(),
             ])
-                .description("CORS allowed origins")
-                .category("Network"),
+            .meta_str("label", "Allowed Origins")
+            .meta_str("description", "CORS allowed origins")
+            .meta_str("category", "Network"),
 
-            "advanced.debug" => SettingMetadata::toggle("Debug Mode", false)
-                .description("Enable debug logging")
-                .category("Advanced")
-                .advanced(),
+            "advanced.debug" => SettingMetadata::toggle(false)
+                .meta_str("label", "Debug Mode")
+                .meta_str("description", "Enable debug logging")
+                .meta_str("category", "Advanced")
+                .meta_bool("advanced", true),
         }
     }
 }

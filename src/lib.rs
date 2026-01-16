@@ -48,18 +48,25 @@
 //! impl SettingsSchema for MySettings {
 //!     fn get_metadata() -> HashMap<String, SettingMetadata> {
 //!         settings! {
-//!             "ui.theme" => SettingMetadata::select("Theme", "dark", vec![
+//!             "ui.theme" => SettingMetadata::select("dark", vec![
 //!                 opt("light", "Light"),
 //!                 opt("dark", "Dark"),
-//!             ]).category("appearance"),
+//!             ])
+//!             .meta_str("label", "Theme")
+//!             .meta_str("category", "appearance"),
 //!
-//!             "ui.font_size" => SettingMetadata::number("Font Size", 14.0)
-//!                 .min(8.0).max(32.0).step(1.0),
+//!             "ui.font_size" => SettingMetadata::number(14.0)
+//!                 .min(8.0).max(32.0).step(1.0)
+//!                 .meta_str("label", "Font Size"),
 //!
-//!             "logging.output" => SettingMetadata::file("Log File", "/var/log/app.log")
-//!                 .description("Path to the log output file"),
+//!             "logging.output" => SettingMetadata::text("/var/log/app.log")
+//!                 .meta_str("label", "Log File")
+//!                 .meta_str("description", "Path to the log output file")
+//!                 .meta_str("input_type", "file"),
 //!
-//!             "api.key" => SettingMetadata::password("API Key", "")
+//!             "api.key" => SettingMetadata::text("")
+//!                 .meta_str("label", "API Key")
+//!                 .meta_str("input_type", "password")
 //!                 .secret(),  // Auto-stored in OS keychain!
 //!         }
 //!     }
@@ -242,8 +249,9 @@ mod credentials;
 
 /// Core configuration types and traits for settings management.
 pub use config::{
-    DefaultEnvSource, EnvSource, SettingFlags, SettingMetadata, SettingOption, SettingSystemFlags,
-    SettingType, SettingUiFlags, SettingsConfig, SettingsConfigBuilder, SettingsSchema, opt,
+    DefaultEnvSource, EnvSource, NumberConstraints, SettingConstraints, SettingMetadata,
+    SettingOption, SettingType, SettingsConfig, SettingsConfigBuilder, SettingsSchema,
+    TextConstraints, meta, opt,
 };
 
 /// Documentation generation utilities.
@@ -285,8 +293,8 @@ pub use cache::CacheStrategy;
 
 #[cfg(feature = "backup")]
 pub use backup::{
-    BackupInfo, BackupManager, BackupOptions, ExportType, ProgressCallback, RestoreOptions,
-    RestoreResult,
+    BackupInfo, BackupManager, BackupOptions, ExportType, ProfileEntry, ProgressCallback,
+    RestoreOptions, RestoreResult, SubSettingsManifestEntry,
 };
 
 // -----------------------------------------------------------------------------
@@ -366,9 +374,9 @@ pub use rcman_derive::SettingsSchema as DeriveSettingsSchema;
 pub mod prelude {
     // Core types users need for basic usage
     pub use super::{
-        Error, Result, SettingFlags, SettingMetadata, SettingOption, SettingSystemFlags,
-        SettingType, SettingUiFlags, SettingsConfig, SettingsManager, SettingsSchema,
-        SubSettingsConfig, opt,
+        Error, NumberConstraints, Result, SettingConstraints, SettingMetadata, SettingOption,
+        SettingType, SettingsConfig, SettingsManager, SettingsSchema, SubSettingsConfig,
+        TextConstraints, opt,
     };
 
     // Storage

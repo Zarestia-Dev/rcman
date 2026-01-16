@@ -397,7 +397,7 @@ fn test_main_settings_profiles() {
             let mut map = HashMap::new();
             map.insert(
                 "general.theme".to_string(),
-                SettingMetadata::text("Theme", "light"),
+                SettingMetadata::text("light").meta_str("label", "Theme"),
             );
             map
         }
@@ -470,7 +470,7 @@ fn test_main_settings_profiles_directory_structure() {
             let mut map = HashMap::new();
             map.insert(
                 "ui.theme".to_string(),
-                SettingMetadata::text("Theme", "light"),
+                SettingMetadata::text("light").meta_str("label", "Theme"),
             );
             map
         }

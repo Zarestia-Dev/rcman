@@ -19,18 +19,25 @@ struct AppSettings;
 impl SettingsSchema for AppSettings {
     fn get_metadata() -> HashMap<String, SettingMetadata> {
         settings! {
-            "app.name" => SettingMetadata::text("App Name", "My App"),
+            "app.name" => SettingMetadata::text("My App")
+                .meta_str("label", "App Name"),
 
-            "secrets.api_key" => SettingMetadata::password("API Key", "")
-                .description("Your API key")
+            "secrets.api_key" => SettingMetadata::text("")
+                .meta_str("label", "API Key")
+                .meta_str("description", "Your API key")
+                .meta_str("input_type", "password")
                 .secret(),
 
-            "secrets.api_token" => SettingMetadata::password("API Token", "")
-                .description("Authentication token")
+            "secrets.api_token" => SettingMetadata::text("")
+                .meta_str("label", "API Token")
+                .meta_str("description", "Authentication token")
+                .meta_str("input_type", "password")
                 .secret(),
 
-            "secrets.db_password" => SettingMetadata::password("DB Password", "")
-                .description("Database password")
+            "secrets.db_password" => SettingMetadata::text("")
+                .meta_str("label", "DB Password")
+                .meta_str("description", "Database password")
+                .meta_str("input_type", "password")
                 .secret(),
         }
     }

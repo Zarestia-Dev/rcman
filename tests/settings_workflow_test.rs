@@ -263,7 +263,7 @@ fn test_env_var_override() {
 
     // Value should be overridden by env var
     assert_eq!(theme_meta.value, Some(json!("system")));
-    assert!(theme_meta.flags.system.env_override);
+    assert!(theme_meta.get_meta_bool("env_override").unwrap_or(false));
 }
 
 #[test]

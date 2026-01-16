@@ -323,7 +323,7 @@ fn test_toml_main_settings_profiles() {
             let mut map = HashMap::new();
             map.insert(
                 "app.mode".to_string(),
-                SettingMetadata::text("Mode", "normal"),
+                SettingMetadata::text("normal").meta_str("label", "Mode"),
             );
             map
         }

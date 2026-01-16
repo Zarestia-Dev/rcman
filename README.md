@@ -91,7 +91,7 @@ struct MySettings { theme: String }
 
 impl SettingsSchema for MySettings {
     fn get_metadata() -> std::collections::HashMap<String, SettingMetadata> {
-        settings! { "ui.theme" => SettingMetadata::text("Theme", "dark") }
+        settings! { "ui.theme" => SettingMetadata::text("dark").label("Theme") }
     }
 }
 
@@ -140,27 +140,32 @@ impl SettingsSchema for AppSettings {
     fn get_metadata() -> HashMap<String, SettingMetadata> {
         settings! {
             // Toggle setting
-            "ui.dark_mode" => SettingMetadata::toggle("Dark Mode", false)
+            "ui.dark_mode" => SettingMetadata::toggle(false)
+                .label("Dark Mode")
                 .category("appearance")
                 .order(1),
 
             // Select with options
-            "ui.language" => SettingMetadata::select("Language", "en", vec![
+            "ui.language" => SettingMetadata::select("en", vec![
                 opt("en", "English"),
                 opt("tr", "Turkish"),
                 opt("de", "German"),
-            ]),
+            ]).label("Language"),
 
             // Number with range
-            "ui.font_size" => SettingMetadata::number("Font Size", 14.0)
+            "ui.font_size" => SettingMetadata::number(14.0)
+                .label("Font Size")
                 .min(8.0).max(32.0).step(1.0),
 
             // Secret (auto-stored in keychain!)
-            "api.key" => SettingMetadata::password("API Key", "")
+            "api.key" => SettingMetadata::text("")
+                .meta_str("label", "API Key")
+                .meta_str("input_type", "password")
                 .secret(),
 
             // List of strings
-            "network.allowed_ips" => SettingMetadata::list("Allowed IPs", vec!["127.0.0.1".to_string()])
+            "network.allowed_ips" => SettingMetadata::list(vec!["127.0.0.1".to_string()])
+                .label("Allowed IPs")
                 .description("IP addresses allowed to connect")
                 .category("network"),
         }
@@ -170,22 +175,30 @@ impl SettingsSchema for AppSettings {
 
 ### Available Constructors
 
-| Constructor                       | Description       |
-| --------------------------------- | ----------------- |
-| `text(label, default)`            | Text input        |
-| `password(label, default)`        | Password input    |
-| `number(label, default)`          | Number input      |
-| `toggle(label, default)`          | Boolean toggle    |
-| `select(label, default, options)` | Dropdown          |
-| `color(label, default)`           | Color picker      |
-| `path(label, default)`            | Directory path    |
-| `file(label, default)`            | File path         |
-| `list(label, default)`            | List of strings   |
-| `info(label, default)`            | Read-only display |
+| Constructor                | Description                    | Validates                      |
+| -------------------------- | ------------------------------ | ------------------------------ |
+| `text(default)`            | Text input                     | Pattern (via `.pattern()`)    |
+| `number(default)`          | Number input                   | Min/max/step                   |
+| `toggle(default)`          | Boolean toggle                 | Type (boolean)                 |
+| `select(default, options)` | Dropdown with options          | Valid option                   |
+| `list(default)`            | List of strings                | Type (array)                   |
+| `info(default)`            | Read-only display (any type)   | -                              |
+
+> **UI-only types** (password, color, path, file, textarea): Use `text()` with `.meta_str("input_type", "password")` for UI hints.
 
 ### Chainable Setters
 
-`.description()` `.min()` `.max()` `.step()` `.placeholder()` `.category()` `.order()` `.requires_restart()` `.advanced()` `.disabled()` `.secret()` `.pattern()` `.pattern_error()`
+**Constraints (validated):**
+- `.min(value)` - Minimum value for numbers
+- `.max(value)` - Maximum value for numbers  
+- `.step(value)` - Step increment for numbers
+- `.pattern(regex)` - Regex pattern for text validation
+- `.secret()` - Mark as secret (keychain storage)
+
+**Metadata (UI hints only):**
+- `.meta_str(key, value)` - Add custom string metadata (e.g., label, description, placeholder)
+- `.meta_bool(key, value)` - Add custom boolean metadata (e.g., advanced, readonly)
+- `.meta_num(key, value)` - Add custom number metadata (e.g., order, priority)
 
 ### Using the Derive Macro (Recommended)
 
@@ -218,7 +231,7 @@ struct GeneralSettings {
 - `label`, `description`, `category`
 - `min`, `max`, `step` (for numbers)
 - `options((...))` (for selects)
-- `secret`, `advanced`, `requires_restart`, `skip`
+- `secret`, `skip`
 
 ---
 
@@ -409,7 +422,9 @@ Settings marked with `.secret()` are automatically stored in the OS keychain:
 
 ```rust
 // In schema
-"api.key" => SettingMetadata::password("API Key", "")
+"api.key" => SettingMetadata::text("")
+    .meta_str("label", "API Key")
+    .meta_str("input_type", "password")
     .secret(),
 
 // Usage - automatically routes to keychain!

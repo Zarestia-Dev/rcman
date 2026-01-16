@@ -41,8 +41,8 @@ lru = "0.16.3"
 # JSON (always included for now, required for settings)
 serde_json = "1.0"
 
-# Derive macro (optional)
-rcman-derive = { version = "0.1.2", optional = true }
+# Derive macro (optional) - use local path for workspace development
+rcman-derive = { path = "rcman-derive", version = "0.1.2", optional = true }
 
 # Backup (optional, default)
 zip = { version = "7.0", default-features = false, features = ["deflate", "time", "aes-crypto"], optional = true }

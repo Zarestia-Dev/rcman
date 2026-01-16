@@ -11,43 +11,76 @@
 //! #[derive(SettingsSchema, Default, Serialize, Deserialize)]
 //! #[schema(category = "general")]
 //! struct GeneralSettings {
-//!     #[setting(label = "Enable Tray")]
 //!     tray_enabled: bool,
 //!
-//!     #[setting(label = "Port", min = 1024, max = 65535)]
+//!     #[setting(min = 1024, max = 65535)]
 //!     port: u16,
+//!
+//!     #[setting(
+//!         pattern = r"^[\w.-]+@[\w.-]+\.\w+$",
+//!         label = "Email Address"
+//!     )]
+//!     email: String,
 //! }
 //! ```
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Attribute, Data, DeriveInput, Expr, Fields, Lit, Meta, Type, parse_macro_input};
+use syn::{Attribute, Data, DeriveInput, Expr, Field, Fields, Lit, Meta, Type, parse_macro_input};
 
 /// Derive macro for generating `SettingsSchema` implementations.
 ///
 /// # Attributes
 ///
 /// ## Container attributes (`#[schema(...)]`)
-/// - `category = "name"` - Default category for all fields
+/// - `category = "name"` - Required. Category for all fields
 ///
 /// ## Field attributes (`#[setting(...)]`)
-/// - `label = "Label"` - Display label (required or auto-generated)
-/// - `description = "..."` - Help text
-/// - `category = "..."` - Category override
+/// - `category = "..."` - Category override (optional)
 /// - `min = 0.0` - Minimum value (for numbers)
 /// - `max = 100.0` - Maximum value (for numbers)  
 /// - `step = 1.0` - Step increment (for numbers)
+/// - `pattern = "regex"` - Regex pattern for text validation
 /// - `options = [("value", "Label"), ...]` - Options for select type
 /// - `secret` - Mark as secret (stored in keychain)
-/// - `advanced` - Mark as advanced/experimental
-/// - `requires_restart` - Mark as requiring app restart
+/// - `nested` - Explicitly mark field as nested struct (optional, auto-detected)
 /// - `skip` - Skip this field from schema
+///
+/// **Dynamic Metadata**: Any other `key = value` pairs are automatically converted to metadata:
+/// - String literals → `.meta_str(key, value)`
+/// - Number literals → `.meta_num(key, value)`
+/// - Boolean literals → `.meta_bool(key, value)`
+///
+/// ```text
+/// #[setting(
+///     min = 1024,
+///     max = 65535,
+///     label = "Server Port",           // -> .meta_str("label", "Server Port")
+///     description = "API port",        // -> .meta_str("description", "API port")
+///     order = 1,                        // -> .meta_num("order", 1)
+///     advanced = false,                 // -> .meta_bool("advanced", false)
+///     my_custom_key = "anything"        // -> .meta_str("my_custom_key", "anything")
+/// )]
+/// port: u16,
+/// ```
+///
+/// Note: For UI metadata like label and description, use `.meta_str()` manually after schema generation.
+///
+/// # Panics
+///
+/// This macro generates compile errors (not runtime panics) if:
+/// - The derive is used on non-struct types or structs without named fields
+/// - Category is missing (not provided in #[schema] or #[setting])
+/// - Attributes have invalid values (e.g., `min` with non-numeric literal)
 #[proc_macro_derive(SettingsSchema, attributes(schema, setting))]
 pub fn derive_settings_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     let name = &input.ident;
-    let container_attrs = parse_container_attrs(&input.attrs);
+    let container_attrs = match parse_container_attrs(&input.attrs) {
+        Ok(attrs) => attrs,
+        Err(e) => return e.to_compile_error().into(),
+    };
 
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
@@ -55,7 +88,7 @@ pub fn derive_settings_schema(input: TokenStream) -> TokenStream {
             _ => {
                 return syn::Error::new_spanned(
                     &input,
-                    "SettingsSchema can only be derived for structs with named fields.\n\nExample:\n  #[derive(SettingsSchema)]\n  struct MySettings {\n      field: Type,\n  }"
+                    "SettingsSchema can only be derived for structs with named fields",
                 )
                 .to_compile_error()
                 .into();
@@ -64,7 +97,7 @@ pub fn derive_settings_schema(input: TokenStream) -> TokenStream {
         _ => {
             return syn::Error::new_spanned(
                 &input,
-                "SettingsSchema can only be derived for structs.\n\nTry: #[derive(SettingsSchema)] on a struct, not an enum or union."
+                "SettingsSchema can only be derived for structs, not enums or unions",
             )
             .to_compile_error()
             .into();
@@ -74,115 +107,16 @@ pub fn derive_settings_schema(input: TokenStream) -> TokenStream {
     let mut metadata_entries = Vec::new();
 
     for field in fields {
-        let field_name = field.ident.as_ref().unwrap();
-        let field_type = &field.ty;
-        let attrs = parse_field_attrs(&field.attrs);
-
-        // Skip fields marked with #[setting(skip)]
+        let attrs = match parse_field_attrs(&field.attrs) {
+            Ok(attrs) => attrs,
+            Err(e) => return e.to_compile_error().into(),
+        };
         if attrs.skip {
             continue;
         }
 
-        // Check if this is a nested struct (not a primitive type)
-        if is_nested_struct(field_type) {
-            // For nested structs, we expect them to also implement SettingsSchema
-            let prefix = field_name.to_string();
-            metadata_entries.push(quote! {
-                // Merge nested struct's metadata with prefix
-                // Keys from nested struct are "category.field_name", we extract just "field_name"
-                for (key, mut meta) in <#field_type as rcman::SettingsSchema>::get_metadata() {
-                    // Extract just the field name (part after last dot)
-                    let field_only = key.rsplit('.').next().unwrap_or(&key);
-                    let prefixed_key = format!("{}.{}", #prefix, field_only);
-                    // Override category with the prefix (parent field name)
-                    meta.category = Some(#prefix.to_string());
-                    map.insert(prefixed_key, meta);
-                }
-            });
-            continue;
-        }
-
-        // Generate the key: "category.field_name"
-        let category = attrs
-            .category
-            .as_ref()
-            .or(container_attrs.category.as_ref())
-            .cloned()
-            .unwrap_or_else(|| "default".to_string());
-        let key = format!("{}.{}", category, field_name);
-
-        // Generate label (use provided or capitalize field name)
-        let label = attrs.label.clone().unwrap_or_else(|| {
-            field_name
-                .to_string()
-                .split('_')
-                .map(|s| {
-                    let mut c = s.chars();
-                    match c.next() {
-                        None => String::new(),
-                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        });
-
-        // Determine setting type from Rust type (or use select if options provided)
-        let setting_constructor = if !attrs.options.is_empty() {
-            // Generate select type with options
-            let options: Vec<_> = attrs
-                .options
-                .iter()
-                .map(|(val, lbl)| {
-                    quote! { rcman::SettingOption::new(#val, #lbl) }
-                })
-                .collect();
-            quote! {
-                rcman::SettingMetadata::select(
-                    #label,
-                    defaults.#field_name.clone(),
-                    vec![#(#options),*]
-                )
-            }
-        } else {
-            let (constructor, _default_expr) =
-                generate_setting_type(field_type, &label, field_name);
-            constructor
-        };
-
-        // Build the metadata with chainable modifiers
-        let mut modifiers = Vec::new();
-
-        modifiers.push(quote! { .category(#category) });
-
-        if let Some(desc) = &attrs.description {
-            modifiers.push(quote! { .description(#desc) });
-        }
-        if let Some(min) = attrs.min {
-            modifiers.push(quote! { .min(#min) });
-        }
-        if let Some(max) = attrs.max {
-            modifiers.push(quote! { .max(#max) });
-        }
-        if let Some(step) = attrs.step {
-            modifiers.push(quote! { .step(#step) });
-        }
-        if attrs.secret {
-            modifiers.push(quote! { .secret() });
-        }
-        if attrs.advanced {
-            modifiers.push(quote! { .advanced() });
-        }
-        if attrs.requires_restart {
-            modifiers.push(quote! { .requires_restart() });
-        }
-
-        metadata_entries.push(quote! {
-            map.insert(
-                #key.to_string(),
-                { #setting_constructor } #(#modifiers)*
-            );
-        });
+        let entry = process_field(field, &attrs, &container_attrs);
+        metadata_entries.push(entry);
     }
 
     let expanded = quote! {
@@ -199,6 +133,117 @@ pub fn derive_settings_schema(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+fn process_field(
+    field: &Field,
+    attrs: &FieldAttrs,
+    container_attrs: &ContainerAttrs,
+) -> proc_macro2::TokenStream {
+    let field_name = match &field.ident {
+        Some(name) => name,
+        None => {
+            return syn::Error::new_spanned(
+                field,
+                "Field must have a name (internal error: expected named field)",
+            )
+            .to_compile_error();
+        }
+    };
+    let field_type = &field.ty;
+
+    // Check if this is a nested struct (not a primitive type)
+    // Can be explicitly marked with #[setting(nested)] or auto-detected
+    if attrs.nested || is_nested_struct(field_type) {
+        let prefix = field_name.to_string();
+        return quote! {
+            // Merge nested struct's metadata with prefix
+            // Keys from nested struct are "category.field_name", we extract just "field_name"
+            for (key, meta) in <#field_type as rcman::SettingsSchema>::get_metadata() {
+                // Extract just the field name (part after last dot)
+                let field_only = key.rsplit('.').next().unwrap_or(&key);
+                let prefixed_key = format!("{}.{}", #prefix, field_only);
+                // Note: Category is structural (in key), not stored in metadata
+                map.insert(prefixed_key, meta);
+            }
+        };
+    }
+
+    // Generate the key: "category.field_name"
+    // Category is REQUIRED - no default fallback
+    let category = match attrs
+        .category
+        .as_ref()
+        .or(container_attrs.category.as_ref())
+    {
+        Some(cat) => cat,
+        None => {
+            return syn::Error::new_spanned(
+                field,
+                "Category is required. Add #[schema(category = \"name\")] to the struct or #[setting(category = \"name\")] to this field"
+            )
+            .to_compile_error();
+        }
+    };
+    let key = format!("{category}.{field_name}");
+
+    // Determine setting type from Rust type (or use select if options provided)
+    let setting_constructor = if attrs.options.is_empty() {
+        generate_setting_type(field_type, field_name)
+    } else {
+        // Generate select type with options
+        let options: Vec<_> = attrs
+            .options
+            .iter()
+            .map(|(val, lbl)| {
+                quote! { rcman::SettingOption::new(#val, #lbl) }
+            })
+            .collect();
+        quote! {
+            rcman::SettingMetadata::select(
+                defaults.#field_name.clone(),
+                vec![#(#options),*]
+            )
+        }
+    };
+
+    // Build constraint modifiers (min, max, step, pattern, secret)
+    // Users can add metadata (label, description, etc.) manually via .meta_str()
+    let mut modifiers = Vec::new();
+
+    if let Some(min) = attrs.min {
+        modifiers.push(quote! { .min(#min) });
+    }
+    if let Some(max) = attrs.max {
+        modifiers.push(quote! { .max(#max) });
+    }
+    if let Some(step) = attrs.step {
+        modifiers.push(quote! { .step(#step) });
+    }
+    if let Some(pattern) = &attrs.pattern {
+        modifiers.push(quote! { .pattern(#pattern) });
+    }
+    if attrs.secret {
+        modifiers.push(quote! { .secret() });
+    }
+
+    // Add dynamic metadata modifiers
+    for (key, value) in &attrs.metadata_str {
+        modifiers.push(quote! { .meta_str(#key, #value) });
+    }
+    for (key, value) in &attrs.metadata_bool {
+        modifiers.push(quote! { .meta_bool(#key, #value) });
+    }
+    for (key, value) in &attrs.metadata_num {
+        modifiers.push(quote! { .meta_num(#key, #value) });
+    }
+
+    quote! {
+        map.insert(
+            #key.to_string(),
+            { #setting_constructor } #(#modifiers)*
+        );
+    }
+}
+
 /// Container-level attributes from #[schema(...)]
 #[derive(Default)]
 struct ContainerAttrs {
@@ -208,35 +253,47 @@ struct ContainerAttrs {
 /// Field-level attributes from #[setting(...)]
 #[derive(Default)]
 struct FieldAttrs {
-    label: Option<String>,
-    description: Option<String>,
     category: Option<String>,
     min: Option<f64>,
     max: Option<f64>,
     step: Option<f64>,
+    pattern: Option<String>,
     options: Vec<(String, String)>, // (value, label) pairs for select type
     secret: bool,
-    advanced: bool,
-    requires_restart: bool,
     skip: bool,
+    nested: bool, // Explicit marker for nested structs
+    // Dynamic metadata: any key=value that isn't a known constraint
+    metadata_str: Vec<(String, String)>,
+    metadata_bool: Vec<(String, bool)>,
+    metadata_num: Vec<(String, f64)>,
 }
 
-fn parse_container_attrs(attrs: &[Attribute]) -> ContainerAttrs {
+fn parse_container_attrs(attrs: &[Attribute]) -> Result<ContainerAttrs, syn::Error> {
     let mut result = ContainerAttrs::default();
 
     for attr in attrs {
         if attr.path().is_ident("schema") {
-            if let Ok(nested) = attr.parse_args_with(
+            let nested = attr.parse_args_with(
                 syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
-            ) {
-                for meta in nested {
-                    if let Meta::NameValue(nv) = meta {
-                        if nv.path.is_ident("category") {
-                            if let Expr::Lit(lit) = &nv.value {
-                                if let Lit::Str(s) = &lit.lit {
-                                    result.category = Some(s.value());
-                                }
+            )?;
+
+            for meta in nested {
+                if let Meta::NameValue(nv) = meta {
+                    if nv.path.is_ident("category") {
+                        if let Expr::Lit(lit) = &nv.value {
+                            if let Lit::Str(s) = &lit.lit {
+                                result.category = Some(s.value());
+                            } else {
+                                return Err(syn::Error::new_spanned(
+                                    lit,
+                                    "#[schema(category)] must be a string literal",
+                                ));
                             }
+                        } else {
+                            return Err(syn::Error::new_spanned(
+                                &nv.value,
+                                "#[schema(category)] must be a string literal, not an expression",
+                            ));
                         }
                     }
                 }
@@ -244,127 +301,204 @@ fn parse_container_attrs(attrs: &[Attribute]) -> ContainerAttrs {
         }
     }
 
-    result
+    Ok(result)
 }
 
-fn parse_field_attrs(attrs: &[Attribute]) -> FieldAttrs {
+fn parse_field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs, syn::Error> {
     let mut result = FieldAttrs::default();
 
     for attr in attrs {
         if attr.path().is_ident("setting") {
-            if let Ok(nested) = attr.parse_args_with(
+            let nested = attr.parse_args_with(
                 syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
-            ) {
-                for meta in nested {
-                    match meta {
-                        Meta::Path(path) => {
-                            if path.is_ident("secret") {
-                                result.secret = true;
-                            } else if path.is_ident("advanced") {
-                                result.advanced = true;
-                            } else if path.is_ident("requires_restart") {
-                                result.requires_restart = true;
-                            } else if path.is_ident("skip") {
-                                result.skip = true;
+            )?;
+
+            for meta in nested {
+                match meta {
+                    Meta::Path(path) => {
+                        if path.is_ident("secret") {
+                            result.secret = true;
+                        } else if path.is_ident("skip") {
+                            result.skip = true;
+                        } else if path.is_ident("nested") {
+                            result.nested = true;
+                        }
+                    }
+                    Meta::NameValue(nv) => {
+                        let value = &nv.value;
+                        if nv.path.is_ident("category") {
+                            if let Expr::Lit(lit) = value {
+                                if let Lit::Str(s) = &lit.lit {
+                                    result.category = Some(s.value());
+                                } else {
+                                    return Err(syn::Error::new_spanned(
+                                        lit,
+                                        "#[setting(category)] must be a string literal",
+                                    ));
+                                }
+                            } else {
+                                return Err(syn::Error::new_spanned(
+                                    value,
+                                    "#[setting(category)] must be a string literal, not an expression",
+                                ));
+                            }
+                        } else if nv.path.is_ident("min") {
+                            if let Expr::Lit(lit) = value {
+                                if let Lit::Float(f) = &lit.lit {
+                                    result.min = f.base10_parse().ok();
+                                } else if let Lit::Int(i) = &lit.lit {
+                                    result.min = i.base10_parse::<i64>().ok().map(|v| v as f64);
+                                } else {
+                                    return Err(syn::Error::new_spanned(
+                                        lit,
+                                        "#[setting(min)] must be a number",
+                                    ));
+                                }
+                            } else {
+                                return Err(syn::Error::new_spanned(
+                                    value,
+                                    "#[setting(min)] must be a number literal",
+                                ));
+                            }
+                        } else if nv.path.is_ident("max") {
+                            if let Expr::Lit(lit) = value {
+                                if let Lit::Float(f) = &lit.lit {
+                                    result.max = f.base10_parse().ok();
+                                } else if let Lit::Int(i) = &lit.lit {
+                                    result.max = i.base10_parse::<i64>().ok().map(|v| v as f64);
+                                } else {
+                                    return Err(syn::Error::new_spanned(
+                                        lit,
+                                        "#[setting(max)] must be a number",
+                                    ));
+                                }
+                            } else {
+                                return Err(syn::Error::new_spanned(
+                                    value,
+                                    "#[setting(max)] must be a number literal",
+                                ));
+                            }
+                        } else if nv.path.is_ident("step") {
+                            if let Expr::Lit(lit) = value {
+                                if let Lit::Float(f) = &lit.lit {
+                                    result.step = f.base10_parse().ok();
+                                } else if let Lit::Int(i) = &lit.lit {
+                                    result.step = i.base10_parse::<i64>().ok().map(|v| v as f64);
+                                } else {
+                                    return Err(syn::Error::new_spanned(
+                                        lit,
+                                        "#[setting(step)] must be a number",
+                                    ));
+                                }
+                            } else {
+                                return Err(syn::Error::new_spanned(
+                                    value,
+                                    "#[setting(step)] must be a number literal",
+                                ));
+                            }
+                        } else if nv.path.is_ident("pattern") {
+                            if let Expr::Lit(lit) = value {
+                                if let Lit::Str(s) = &lit.lit {
+                                    result.pattern = Some(s.value());
+                                } else {
+                                    return Err(syn::Error::new_spanned(
+                                        lit,
+                                        "#[setting(pattern)] must be a string literal",
+                                    ));
+                                }
+                            } else {
+                                return Err(syn::Error::new_spanned(
+                                    value,
+                                    "#[setting(pattern)] must be a string literal",
+                                ));
+                            }
+                        } else {
+                            // Unknown key - treat as custom metadata
+                            let key = nv
+                                .path
+                                .get_ident()
+                                .map(|i| i.to_string())
+                                .unwrap_or_default();
+
+                            // Detect type from literal value
+                            if let Expr::Lit(lit) = value {
+                                match &lit.lit {
+                                    Lit::Str(s) => {
+                                        result.metadata_str.push((key, s.value()));
+                                    }
+                                    Lit::Bool(b) => {
+                                        result.metadata_bool.push((key, b.value()));
+                                    }
+                                    Lit::Int(i) => {
+                                        if let Ok(val) = i.base10_parse::<i64>() {
+                                            result.metadata_num.push((key, val as f64));
+                                        }
+                                    }
+                                    Lit::Float(f) => {
+                                        if let Ok(val) = f.base10_parse::<f64>() {
+                                            result.metadata_num.push((key, val));
+                                        }
+                                    }
+                                    _ => {
+                                        return Err(syn::Error::new_spanned(
+                                            lit,
+                                            "Metadata values must be string, number, or boolean literals",
+                                        ));
+                                    }
+                                }
+                            } else {
+                                return Err(syn::Error::new_spanned(
+                                    value,
+                                    "Metadata values must be literals, not expressions",
+                                ));
                             }
                         }
-                        Meta::NameValue(nv) => {
-                            let value = &nv.value;
-                            if nv.path.is_ident("label") {
-                                if let Expr::Lit(lit) = value {
-                                    if let Lit::Str(s) = &lit.lit {
-                                        result.label = Some(s.value());
-                                    } else {
-                                        panic!(
-                                            "#[setting(label)] must be a string literal.\n\nExample: #[setting(label = \"My Label\")]"
-                                        );
+                    }
+                    Meta::List(list) => {
+                        // Handle options = [("val", "Label"), ...]
+                        if list.path.is_ident("options") {
+                            let items = list.parse_args_with(
+                                syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
+                            )?;
+
+                            for item in items {
+                                if let Expr::Tuple(tuple) = &item {
+                                    if tuple.elems.len() != 2 {
+                                        return Err(syn::Error::new_spanned(
+                                            tuple,
+                                            "#[setting(options)] tuples must have exactly 2 elements: (\"value\", \"Label\")",
+                                        ));
                                     }
-                                } else {
-                                    panic!(
-                                        "#[setting(label)] must be a string literal.\n\nExample: #[setting(label = \"My Label\")]"
-                                    );
-                                }
-                            } else if nv.path.is_ident("description") {
-                                if let Expr::Lit(lit) = value {
-                                    if let Lit::Str(s) = &lit.lit {
-                                        result.description = Some(s.value());
-                                    } else {
-                                        panic!(
-                                            "#[setting(description)] must be a string literal.\n\nExample: #[setting(description = \"Help text\")]"
-                                        );
-                                    }
-                                } else {
-                                    panic!(
-                                        "#[setting(description)] must be a string literal.\n\nExample: #[setting(description = \"Help text\")]"
-                                    );
-                                }
-                            } else if nv.path.is_ident("category") {
-                                if let Expr::Lit(lit) = value {
-                                    if let Lit::Str(s) = &lit.lit {
-                                        result.category = Some(s.value());
-                                    }
-                                }
-                            } else if nv.path.is_ident("min") {
-                                if let Expr::Lit(lit) = value {
-                                    if let Lit::Float(f) = &lit.lit {
-                                        result.min = f.base10_parse().ok();
-                                    } else if let Lit::Int(i) = &lit.lit {
-                                        result.min = i.base10_parse::<i64>().ok().map(|v| v as f64);
-                                    } else {
-                                        panic!(
-                                            "#[setting(min)] must be a number.\n\nExample: #[setting(min = 0)]"
-                                        );
-                                    }
-                                } else {
-                                    panic!(
-                                        "#[setting(min)] must be a number.\n\nExample: #[setting(min = 0)]"
-                                    );
-                                }
-                            } else if nv.path.is_ident("max") {
-                                if let Expr::Lit(lit) = value {
-                                    if let Lit::Float(f) = &lit.lit {
-                                        result.max = f.base10_parse().ok();
-                                    } else if let Lit::Int(i) = &lit.lit {
-                                        result.max = i.base10_parse::<i64>().ok().map(|v| v as f64);
-                                    } else {
-                                        panic!(
-                                            "#[setting(max)] must be a number.\n\nExample: #[setting(max = 100)]"
-                                        );
-                                    }
-                                }
-                            } else if nv.path.is_ident("step") {
-                                if let Expr::Lit(lit) = value {
-                                    if let Lit::Float(f) = &lit.lit {
-                                        result.step = f.base10_parse().ok();
-                                    } else if let Lit::Int(i) = &lit.lit {
-                                        result.step =
-                                            i.base10_parse::<i64>().ok().map(|v| v as f64);
-                                    }
-                                }
-                            }
-                        }
-                        Meta::List(list) => {
-                            // Handle options = [("val", "Label"), ...]
-                            if list.path.is_ident("options") {
-                                if let Ok(items) = list.parse_args_with(
-                                    syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
-                                ) {
-                                    for item in items {
-                                        if let Expr::Tuple(tuple) = item {
-                                            if tuple.elems.len() == 2 {
-                                                let mut vals = tuple.elems.iter();
-                                                if let (Some(Expr::Lit(v)), Some(Expr::Lit(l))) =
-                                                    (vals.next(), vals.next())
-                                                {
-                                                    if let (Lit::Str(val), Lit::Str(label)) =
-                                                        (&v.lit, &l.lit)
-                                                    {
-                                                        result.options.push((val.value(), label.value()));
-                                                    }
+
+                                    let mut vals = tuple.elems.iter();
+                                    match (vals.next(), vals.next()) {
+                                        (Some(Expr::Lit(v)), Some(Expr::Lit(l))) => {
+                                            match (&v.lit, &l.lit) {
+                                                (Lit::Str(val), Lit::Str(label)) => {
+                                                    result
+                                                        .options
+                                                        .push((val.value(), label.value()));
+                                                }
+                                                _ => {
+                                                    return Err(syn::Error::new_spanned(
+                                                        tuple,
+                                                        "#[setting(options)] tuple elements must be string literals",
+                                                    ));
                                                 }
                                             }
                                         }
+                                        _ => {
+                                            return Err(syn::Error::new_spanned(
+                                                tuple,
+                                                "#[setting(options)] tuple elements must be string literals",
+                                            ));
+                                        }
                                     }
+                                } else {
+                                    return Err(syn::Error::new_spanned(
+                                        &item,
+                                        "#[setting(options)] must be an array of tuples: [(\"val\", \"Label\"), ...]",
+                                    ));
                                 }
                             }
                         }
@@ -374,102 +508,93 @@ fn parse_field_attrs(attrs: &[Attribute]) -> FieldAttrs {
         }
     }
 
-    result
+    Ok(result)
 }
 
-/// Check if a type is likely a nested struct (not a primitive)
-fn is_nested_struct(ty: &Type) -> bool {
+/// Classification of Rust types for settings generation
+enum TypeInfo {
+    Toggle,  // bool
+    Text,    // String
+    Number,  // i8, i16, i32, u32, f32, f64, etc.
+    List,    // Vec<T>
+    Unknown, // Everything else (may be nested struct or std type we don't handle)
+}
+
+/// Classify a type for settings schema generation
+///
+/// Uses a whitelist approach: known primitives/std types are classified,
+/// everything else returns Unknown (could be nested struct or unsupported std type).
+fn classify_type(ty: &Type) -> TypeInfo {
     if let Type::Path(path) = ty {
         if let Some(ident) = path.path.get_ident() {
             let name = ident.to_string();
-            // Primitive types are not nested structs
-            !matches!(
-                name.as_str(),
-                "bool"
-                    | "i8"
-                    | "i16"
-                    | "i32"
-                    | "i64"
-                    | "i128"
-                    | "isize"
-                    | "u8"
-                    | "u16"
-                    | "u32"
-                    | "u64"
-                    | "u128"
-                    | "usize"
-                    | "f32"
-                    | "f64"
-                    | "char"
-                    | "str"
-                    | "String"
-            )
+            match name.as_str() {
+                "bool" => return TypeInfo::Toggle,
+                "String" => return TypeInfo::Text,
+                "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
+                | "u128" | "usize" | "f32" | "f64" => return TypeInfo::Number,
+                // Other std types that are NOT nested structs
+                "str" | "char" | "PathBuf" | "OsString" | "CString" | "Duration" | "Instant"
+                | "SystemTime" | "Box" | "Rc" | "Arc" | "Cow" | "Vec" | "VecDeque" | "HashMap"
+                | "HashSet" | "BTreeMap" | "BTreeSet" | "LinkedList" | "Option" | "Result" => {
+                    return TypeInfo::Unknown;
+                }
+                _ => return TypeInfo::Unknown,
+            }
         } else {
-            // Has path segments like Vec<T>, Option<T>, etc.
-            // These are not nested structs for our purposes
+            // Check for Vec<T> specifically
+            if let Some(seg) = path.path.segments.last() {
+                if seg.ident == "Vec" {
+                    return TypeInfo::List;
+                }
+            }
+            // Other complex paths (Option<T>, Result<T>, etc.)
+            return TypeInfo::Unknown;
+        }
+    }
+    TypeInfo::Unknown
+}
+
+/// Check if a type is likely a nested struct (not a primitive)
+///
+/// This uses a conservative whitelist approach: known primitive/std types
+/// return false, everything else is assumed to be a nested struct.
+///
+/// For edge cases (like `Option<MyStruct>`), use explicit `#[setting(nested)]`.
+fn is_nested_struct(ty: &Type) -> bool {
+    // Only simple path types with single ident can be nested
+    if let Type::Path(path) = ty {
+        if path.path.get_ident().is_some() {
+            // Use classify_type: Unknown + simple ident = likely custom struct
+            matches!(classify_type(ty), TypeInfo::Unknown)
+        } else {
+            // Complex paths like Vec<T>, Option<T> - not nested
             false
         }
     } else {
+        // References, tuples, arrays, etc. - not nested
         false
     }
 }
 
 /// Generate the appropriate SettingMetadata constructor based on type
-fn generate_setting_type(
-    ty: &Type,
-    label: &str,
-    field_name: &syn::Ident,
-) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    if let Type::Path(path) = ty {
-        // Handle common primitive types
-        if let Some(ident) = path.path.get_ident() {
-            let name = ident.to_string();
-            match name.as_str() {
-                "bool" => {
-                    return (
-                        quote! { rcman::SettingMetadata::toggle(#label, defaults.#field_name) },
-                        quote! { defaults.#field_name },
-                    );
-                }
-                "String" => {
-                    return (
-                        quote! { rcman::SettingMetadata::text(#label, defaults.#field_name.clone()) },
-                        quote! { defaults.#field_name.clone() },
-                    );
-                }
-                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "usize" | "isize" => {
-                    return (
-                        quote! { rcman::SettingMetadata::number(#label, defaults.#field_name as f64) },
-                        quote! { defaults.#field_name as f64 },
-                    );
-                }
-                "f32" | "f64" => {
-                    return (
-                        quote! { rcman::SettingMetadata::number(#label, defaults.#field_name as f64) },
-                        quote! { defaults.#field_name as f64 },
-                    );
-                }
-                _ => {}
-            }
+fn generate_setting_type(ty: &Type, field_name: &syn::Ident) -> proc_macro2::TokenStream {
+    match classify_type(ty) {
+        TypeInfo::Toggle => {
+            quote! { rcman::SettingMetadata::toggle(defaults.#field_name) }
         }
-
-        // Handle Vec<String> for List type
-        // This is a bit rough but works for standard usage
-        if let Some(seg) = path.path.segments.last() {
-            if seg.ident == "Vec" {
-                // We could inspect generic args here to ensure it's String,
-                // but for now we'll assume Vec<String> maps to list.
-                return (
-                    quote! { rcman::SettingMetadata::list(#label, &defaults.#field_name[..]) },
-                    quote! { defaults.#field_name.clone() },
-                );
-            }
+        TypeInfo::Text => {
+            quote! { rcman::SettingMetadata::text(defaults.#field_name.clone()) }
+        }
+        TypeInfo::Number => {
+            quote! { rcman::SettingMetadata::number(defaults.#field_name as f64) }
+        }
+        TypeInfo::List => {
+            quote! { rcman::SettingMetadata::list(&defaults.#field_name[..]) }
+        }
+        TypeInfo::Unknown => {
+            // Fallback for unknown types - format as debug string
+            quote! { rcman::SettingMetadata::text(format!("{:?}", defaults.#field_name)) }
         }
     }
-
-    // Default to text for unknown types
-    (
-        quote! { rcman::SettingMetadata::text(#label, format!("{:?}", defaults.#field_name)) },
-        quote! { format!("{:?}", defaults.#field_name) },
-    )
 }

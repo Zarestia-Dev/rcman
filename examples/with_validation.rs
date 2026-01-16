@@ -13,24 +13,26 @@ struct AppSettings;
 impl SettingsSchema for AppSettings {
     fn get_metadata() -> HashMap<String, SettingMetadata> {
         settings! {
-            "user.email" => SettingMetadata::text("Email", "user@example.com")
-                .description("User email address")
-                .pattern(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
-                .pattern_error("Please enter a valid email address")
-                .placeholder("user@example.com"),
+            "user.email" => SettingMetadata::text("user@example.com")
+                .meta_str("label", "Email")
+                .meta_str("description", "User email address")
+                .meta_str("placeholder", "user@example.com")
+                .pattern(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"),
 
-            "user.username" => SettingMetadata::text("Username", "")
-                .description("Username (3-20 alphanumeric characters)")
-                .pattern(r"^[a-zA-Z0-9_]{3,20}$")
-                .pattern_error("Username must be 3-20 alphanumeric characters"),
+            "user.username" => SettingMetadata::text("")
+                .meta_str("label", "Username")
+                .meta_str("description", "Username (3-20 alphanumeric characters)")
+                .pattern(r"^[a-zA-Z0-9_]{3,20}$"),
 
-            "network.port" => SettingMetadata::number("Port", 3000)
-                .description("Server port (1024-65535)")
+            "network.port" => SettingMetadata::number(3000.0)
+                .meta_str("label", "Port")
+                .meta_str("description", "Server port (1024-65535)")
                 .min(1024.0)
                 .max(65535.0),
 
-            "network.max_connections" => SettingMetadata::number("Max Connections", 100)
-                .description("Maximum concurrent connections")
+            "network.max_connections" => SettingMetadata::number(100.0)
+                .meta_str("label", "Max Connections")
+                .meta_str("description", "Maximum concurrent connections")
                 .min(1.0)
                 .max(10000.0)
                 .step(10.0),

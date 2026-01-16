@@ -34,92 +34,103 @@ impl SettingsSchema for DemoSettings {
     fn get_metadata() -> HashMap<String, SettingMetadata> {
         settings! {
             // App settings
-            "app.name" => SettingMetadata::text("App Name", "My App")
-                .description("Application name")
-                .category("General")
-                .order(1),
+            "app.name" => SettingMetadata::text("My App")
+                .meta_str("label", "App Name")
+                .meta_str("description", "Application name")
+                .meta_str("category", "General")
+                .meta_num("order", 1),
 
-            "app.theme" => SettingMetadata::select("Theme", "light", vec![
+            "app.theme" => SettingMetadata::select("light", vec![
                 opt("light", "☀️ Light"),
                 opt("dark", "🌙 Dark"),
                 opt("auto", "🔄 Auto"),
             ])
-                .description("Application color theme")
-                .category("Appearance")
-                .order(2),
+            .meta_str("label", "Theme")
+            .meta_str("description", "Application color theme")
+            .meta_str("category", "Appearance")
+            .meta_num("order", 2),
 
-            "app.font_size" => SettingMetadata::number("Font Size", 14.0)
-                .description("Base font size in pixels")
+            "app.font_size" => SettingMetadata::number(14.0)
+                .meta_str("label", "Font Size")
+                .meta_str("description", "Base font size in pixels")
                 .min(8.0)
                 .max(32.0)
                 .step(1.0)
-                .category("Appearance")
-                .order(3),
+                .meta_str("category", "Appearance")
+                .meta_num("order", 3),
 
-            "app.animations" => SettingMetadata::toggle("Enable Animations", true)
-                .description("Show smooth animations and transitions")
-                .category("Appearance")
-                .order(4),
+            "app.animations" => SettingMetadata::toggle(true)
+                .meta_str("label", "Enable Animations")
+                .meta_str("description", "Show smooth animations and transitions")
+                .meta_str("category", "Appearance")
+                .meta_num("order", 4),
 
             // Network settings
-            "network.timeout" => SettingMetadata::number("Timeout (seconds)", 30.0)
-                .description("Network request timeout")
+            "network.timeout" => SettingMetadata::number(30.0)
+                .meta_str("label", "Timeout (seconds)")
+                .meta_str("description", "Network request timeout")
                 .min(5.0)
                 .max(300.0)
                 .step(5.0)
-                .category("Network")
-                .order(1),
+                .meta_str("category", "Network")
+                .meta_num("order", 1),
 
-            "network.retries" => SettingMetadata::number("Max Retries", 3.0)
-                .description("Number of retry attempts on failure")
+            "network.retries" => SettingMetadata::number(3.0)
+                .meta_str("label", "Max Retries")
+                .meta_str("description", "Number of retry attempts on failure")
                 .min(0.0)
                 .max(10.0)
                 .step(1.0)
-                .category("Network")
-                .order(2),
+                .meta_str("category", "Network")
+                .meta_num("order", 2),
 
             // User settings (with validation)
-            "user.email" => SettingMetadata::text("Email", "")
-                .description("Your email address")
+            "user.email" => SettingMetadata::text("")
+                .meta_str("label", "Email")
+                .meta_str("description", "Your email address")
+                .meta_str("placeholder", "user@example.com")
                 .pattern(r"^$|^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
-                .pattern_error("Please enter a valid email address")
-                .placeholder("user@example.com")
-                .category("User")
-                .order(1),
+                .meta_str("category", "User")
+                .meta_num("order", 1),
 
-            "user.username" => SettingMetadata::text("Username", "")
-                .description("3-20 alphanumeric characters")
+            "user.username" => SettingMetadata::text("")
+                .meta_str("label", "Username")
+                .meta_str("description", "3-20 alphanumeric characters")
                 .pattern(r"^$|^[a-zA-Z0-9_]{3,20}$")
-                .pattern_error("Username must be 3-20 alphanumeric characters")
-                .category("User")
-                .order(2),
+                .meta_str("category", "User")
+                .meta_num("order", 2),
 
             // Secret settings (stored in keychain when feature enabled)
             "secrets.api_key" => {
-                let s = SettingMetadata::password("API Key", "")
-                    .description("Your API key (stored in keychain)")
-                    .category("Secrets")
-                    .order(1);
+                let s = SettingMetadata::text("")
+                    .meta_str("label", "API Key")
+                    .meta_str("description", "Your API key (stored in keychain)")
+                    .meta_str("input_type", "password")
+                    .meta_str("category", "Secrets")
+                    .meta_num("order", 1);
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
                 let s = s.secret();
                 s
             },
 
             "secrets.db_password" => {
-                let s = SettingMetadata::password("Database Password", "")
-                    .description("Database password (stored in keychain)")
-                    .category("Secrets")
-                    .order(2);
+                let s = SettingMetadata::text("")
+                    .meta_str("label", "Database Password")
+                    .meta_str("description", "Database password (stored in keychain)")
+                    .meta_str("input_type", "password")
+                    .meta_str("category", "Secrets")
+                    .meta_num("order", 2);
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
                 let s = s.secret();
                 s
             },
 
             // Advanced settings
-            "advanced.debug" => SettingMetadata::toggle("Debug Mode", false)
-                .description("Enable verbose logging")
-                .category("Advanced")
-                .advanced(),
+            "advanced.debug" => SettingMetadata::toggle(false)
+                .meta_str("label", "Debug Mode")
+                .meta_str("description", "Enable verbose logging")
+                .meta_str("category", "Advanced")
+                .meta_bool("advanced", true),
         }
     }
 }

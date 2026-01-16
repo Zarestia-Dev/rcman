@@ -4,59 +4,85 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Pattern Constraint Support in Derive Macro**
+  - `#[setting(pattern = "regex")]` attribute for compile-time regex validation
+  - Automatic pattern constraint generation from derive macro
+  - Full parity with manual schema builder (min, max, step, pattern, options, secret)
+- Encrypted settings export support. Default is disabled.
+
+### Changed
+
+- **API Simplification - Removed Non-Validating Constructors**
+  - REMOVED: `password()`, `color()`, `path()`, `file()`, `textarea()` constructors from `SettingMetadata`
+  - These constructors provided no backend validation - use `text()` with `.meta_str("input_type", ...)` for UI hints
+  - Updated constructor documentation to clarify validation behavior
+- **SettingType Enum Cleanup**
+  - REMOVED: `Password`, `Color`, `Path`, `File`, `Textarea` variants from `SettingType` enum
+  - Simplified validation logic - removed dead pattern matches
+  - Only kept types with actual backend validation: `Toggle`, `Text`, `Number`, `Select`, `Info`, `List`
+- Some imports were changed to make the code more readable.
+
+### Fixed
+
+- Multiple Storage backends support fixed.
+
 ## [v0.1.2] - 2026-01-11
 
 ### Added
 
-  - Toml support for settings files
-  - New `TomlStorage` backend alongside existing `JsonStorage`
+- Toml support for settings files
+- New `TomlStorage` backend alongside existing `JsonStorage`
 
 - **Lock Poisoning Recovery System**
-  - sync.rs module with `RwLockExt` and `MutexExt` traits
-  - Graceful handling of poisoned locks with `read_recovered()`, `write_recovered()`, `lock_recovered()`
-  - Comprehensive tests for poison recovery scenarios
+    - sync.rs module with `RwLockExt` and `MutexExt` traits
+    - Graceful handling of poisoned locks with `read_recovered()`, `write_recovered()`, `lock_recovered()`
+    - Comprehensive tests for poison recovery scenarios
 
 - **Atomic Cache Generation Counters**
-  - `AtomicU64` generation counters in `SettingsManager` for race-free cache invalidation
-  - Lock-free concurrent cache invalidation detection
+    - `AtomicU64` generation counters in `SettingsManager` for race-free cache invalidation
+    - Lock-free concurrent cache invalidation detection
 
 - **Secure File Permissions (Unix)**
-  - security.rs module with permission enforcement
-  - `set_secure_file_permissions()` - 0o600 (owner read/write only)
-  - `set_secure_dir_permissions()` - 0o700 (owner rwx only)
-  - Applied in storage.rs, sub_settings.rs, and profile managers
+    - security.rs module with permission enforcement
+    - `set_secure_file_permissions()` - 0o600 (owner read/write only)
+    - `set_secure_dir_permissions()` - 0o700 (owner rwx only)
+    - Applied in storage.rs, sub_settings.rs, and profile managers
 
 - **Profile Support** (new `profiles` feature)
-  - profiles module with `ProfileManager`, `ProfileMigrator`
-  - Profile CRUD operations (create, switch, delete, rename, duplicate)
-  - Auto-migration from flat structure to `profiles/default/`
-  - Profile-scoped sub-settings and main settings
-  - Profile event system with callbacks
-  - profiles_usage.rs demonstrating profile workflows
+    - profiles module with `ProfileManager`, `ProfileMigrator`
+    - Profile CRUD operations (create, switch, delete, rename, duplicate)
+    - Auto-migration from flat structure to `profiles/default/`
+    - Profile-scoped sub-settings and main settings
+    - Profile event system with callbacks
+    - profiles_usage.rs demonstrating profile workflows
 
 - **Tests**
-  - profile_backup_restore.rs - Profile backup/restore integration tests
-  - profiles_test.rs - Comprehensive profile CRUD and switching tests
-  - sync.rs unit tests for poison recovery
+    - profile_backup_restore.rs - Profile backup/restore integration tests
+    - profiles_test.rs - Comprehensive profile CRUD and switching tests
+    - sync.rs unit tests for poison recovery
 
 ### Changed
 
 - **Deadlock Prevention in Profile Switching**
-  - Refactored `SettingsManager::switch_profile()` to release locks before next acquisition
-  - No nested lock holdings across manager, settings_dir, and sub_settings
+    - Refactored `SettingsManager::switch_profile()` to release locks before next acquisition
+    - No nested lock holdings across manager, settings_dir, and sub_settings
 
 - **Performance Optimization in SubSettings**
-  - Optimized `single_file_path()` and `entry_path()` with inline path construction
-  - Eliminated intermediate `get_base_dir()` allocations
-  - Direct lock access + path join in single operation
+    - Optimized `single_file_path()` and `entry_path()` with inline path construction
+    - Eliminated intermediate `get_base_dir()` allocations
+    - Direct lock access + path join in single operation
 
 - **Enhanced Error Handling**
-  - `SubSettings::new()` fails fast on migration errors with clear messages
-  - Profile migrator properly propagates serialization errors (removed `unwrap()`)
-  - Added `MigrationFn` type alias for cleaner signatures
+    - `SubSettings::new()` fails fast on migration errors with clear messages
+    - Profile migrator properly propagates serialization errors (removed `unwrap()`)
+    - Added `MigrationFn` type alias for cleaner signatures
 
 - **Other Improvements**
-  - Minimum Rust version updated to 1.85 and clippy.toml adjusted
+    - Minimum Rust version updated to 1.85 and clippy.toml adjusted
 
 ### Fixed
 

@@ -18,47 +18,41 @@ impl SettingsSchema for AppSettings {
         settings! {
             // List of allowed email domains
             "security.allowed_domains" => SettingMetadata::list(
-                "Allowed Domains",
                 &["example.com".to_string(), "mycompany.com".to_string()]
             )
-                .description("Email domains allowed to register")
-                .category("Security"),
+            .meta_str("label", "Allowed Domains")
+            .meta_str("description", "Email domains allowed to register")
+            .meta_str("category", "Security"),
 
             // List of blocked IPs
-            "security.blocked_ips" => SettingMetadata::list(
-                "Blocked IPs",
-                &[]
-            )
-                .description("IP addresses that are blocked from accessing the service")
-                .category("Security"),
+            "security.blocked_ips" => SettingMetadata::list(&[])
+                .meta_str("label", "Blocked IPs")
+                .meta_str("description", "IP addresses that are blocked from accessing the service")
+                .meta_str("category", "Security"),
 
             // List of enabled features (feature flags)
             "features.enabled" => SettingMetadata::list(
-                "Enabled Features",
                 &["notifications".to_string(), "analytics".to_string()]
             )
-                .description("List of enabled feature flags")
-                .category("Features")
-                .advanced(),
+            .meta_str("label", "Enabled Features")
+            .meta_str("description", "List of enabled feature flags")
+            .meta_str("category", "Features")
+            .meta_bool("advanced", true),
 
             // List of API endpoints
-            "network.endpoints" => SettingMetadata::list(
-                "API Endpoints",
-                &[
-                    "https://api.example.com/v1".to_string(),
-                    "https://api.example.com/v2".to_string(),
-                ]
-            )
-                .description("Available API endpoints")
-                .category("Network"),
+            "network.endpoints" => SettingMetadata::list(&[
+                "https://api.example.com/v1".to_string(),
+                "https://api.example.com/v2".to_string(),
+            ])
+            .meta_str("label", "API Endpoints")
+            .meta_str("description", "Available API endpoints")
+            .meta_str("category", "Network"),
 
             // List of tags or labels
-            "app.tags" => SettingMetadata::list(
-                "Application Tags",
-                &["production".to_string()]
-            )
-                .description("Tags for categorizing this application instance")
-                .category("General"),
+            "app.tags" => SettingMetadata::list(&["production".to_string()])
+                .meta_str("label", "Application Tags")
+                .meta_str("description", "Tags for categorizing this application instance")
+                .meta_str("category", "General"),
         }
     }
 }

@@ -9,8 +9,8 @@ mod schema;
 mod types;
 
 pub use schema::{
-    SettingFlags, SettingMetadata, SettingOption, SettingSystemFlags, SettingType, SettingUiFlags,
-    SettingsSchema, opt,
+    NumberConstraints, SettingConstraints, SettingMetadata, SettingOption, SettingType,
+    SettingsSchema, TextConstraints, meta, opt,
 };
 
 pub use types::{DefaultEnvSource, EnvSource, SettingsConfig, SettingsConfigBuilder};

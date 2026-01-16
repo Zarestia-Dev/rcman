@@ -159,7 +159,7 @@ impl SettingsConfig {
 ///
 /// impl SettingsSchema for MySettings {
 ///     fn get_metadata() -> HashMap<String, SettingMetadata> {
-///         settings! { "ui.theme" => SettingMetadata::text("Theme", "dark") }
+///         settings! { "ui.theme" => SettingMetadata::text("dark").meta_str("label", "Theme") }
 ///     }
 /// }
 ///
@@ -478,8 +478,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// impl SettingsSchema for AppSettings {
     ///     fn get_metadata() -> HashMap<String, SettingMetadata> {
     ///         settings! {
-    ///             "ui.theme" => SettingMetadata::text("Theme", "dark"),
-    ///             "ui.font_size" => SettingMetadata::number("Font Size", 14.0)
+    ///             "ui.theme" => SettingMetadata::text("dark").meta_str("label", "Theme"),
+    ///             "ui.font_size" => SettingMetadata::number(14.0).meta_str("label", "Font Size")
     ///         }
     ///     }
     /// }

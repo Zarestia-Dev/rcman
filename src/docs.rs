@@ -78,15 +78,15 @@ pub fn generate_docs_from_metadata<S: std::hash::BuildHasher>(
     // Filter and sort settings
     let mut settings: Vec<_> = metadata
         .iter()
-        .filter(|(_, m)| config.show_advanced || !m.flags.ui.advanced)
+        .filter(|(_, m)| config.show_advanced || !m.get_meta_bool("advanced").unwrap_or(false))
         .collect();
 
     settings.sort_by(|(k1, m1), (k2, m2)| {
         // Sort by category, then by order, then by key
-        let cat1 = m1.category.as_deref().unwrap_or("General");
-        let cat2 = m2.category.as_deref().unwrap_or("General");
-        let ord1 = m1.order.unwrap_or(999);
-        let ord2 = m2.order.unwrap_or(999);
+        let cat1 = m1.get_meta_str("category").unwrap_or("General");
+        let cat2 = m2.get_meta_str("category").unwrap_or("General");
+        let ord1 = m1.get_meta_num("order").map(|n| n as i32).unwrap_or(999);
+        let ord2 = m2.get_meta_num("order").map(|n| n as i32).unwrap_or(999);
         (cat1, ord1, k1).cmp(&(cat2, ord2, k2))
     });
 
@@ -95,7 +95,7 @@ pub fn generate_docs_from_metadata<S: std::hash::BuildHasher>(
         let mut current_category: Option<&str> = None;
 
         for (key, meta) in &settings {
-            let category = meta.category.as_deref().unwrap_or("General");
+            let category = meta.get_meta_str("category").unwrap_or("General");
 
             // New category header
             if current_category != Some(category) {
@@ -122,26 +122,26 @@ fn format_setting(out: &mut String, key: &str, meta: &SettingMetadata) {
     // Setting name with badges
     writeln!(out, "### `{key}`\n").unwrap();
 
-    // Badges
+    // Badges (from dynamic metadata)
     let mut badges = Vec::new();
-    if meta.flags.ui.advanced {
+    if meta.get_meta_bool("advanced").unwrap_or(false) {
         badges.push("Advanced");
     }
-    if meta.flags.system.requires_restart {
+    if meta.get_meta_bool("requires_restart").unwrap_or(false) {
         badges.push("Requires Restart");
     }
-    if meta.flags.system.secret {
+    if meta.get_meta_bool("secret").unwrap_or(false) {
         badges.push("Secret");
     }
-    if meta.flags.ui.disabled {
+    if meta.get_meta_bool("disabled").unwrap_or(false) {
         badges.push("Disabled");
     }
     if !badges.is_empty() {
         writeln!(out, "{}\n", badges.join(" • ")).unwrap();
     }
 
-    // Description
-    if let Some(ref desc) = meta.description {
+    // Description (from dynamic metadata)
+    if let Some(desc) = meta.get_meta_str("description") {
         writeln!(out, "{desc}\n").unwrap();
     }
 
@@ -153,23 +153,23 @@ fn format_setting(out: &mut String, key: &str, meta: &SettingMetadata) {
 
     // Range for numbers
     if meta.setting_type == SettingType::Number {
-        if let (Some(min), Some(max)) = (meta.min, meta.max) {
+        if let (Some(min), Some(max)) = (meta.constraints.number.min, meta.constraints.number.max) {
             writeln!(out, "| **Range** | {min} - {max} |").unwrap();
         }
-        if let Some(step) = meta.step {
+        if let Some(step) = meta.constraints.number.step {
             writeln!(out, "| **Step** | {step} |").unwrap();
         }
     }
 
     // Pattern for text
-    if let Some(ref pattern) = meta.pattern {
+    if let Some(ref pattern) = meta.constraints.text.pattern {
         writeln!(out, "| **Pattern** | `{pattern}` |").unwrap();
     }
 
     out.push('\n');
 
     // Options for select
-    if let Some(ref options) = meta.options {
+    if let Some(ref options) = meta.constraints.options {
         out.push_str("**Options:**\n\n");
         for opt in options {
             if let Some(ref desc) = opt.description {
@@ -197,11 +197,6 @@ fn format_type(t: &SettingType) -> &'static str {
         SettingType::Text => "String",
         SettingType::Number => "Number",
         SettingType::Select => "Select",
-        SettingType::Color => "Color",
-        SettingType::Path => "Directory Path",
-        SettingType::File => "File Path",
-        SettingType::Textarea => "Multi-line Text",
-        SettingType::Password => "Password",
         SettingType::Info => "Info (Read-only)",
         SettingType::List => "List (Strings)",
     }
@@ -244,7 +239,6 @@ mod tests {
             m.insert(
                 "appearance.theme".into(),
                 SettingMetadata::select(
-                    "Theme",
                     "system",
                     vec![
                         SettingOption::new("light", "Light"),
@@ -252,22 +246,25 @@ mod tests {
                         SettingOption::new("system", "System Default"),
                     ],
                 )
-                .category("appearance")
-                .description("Choose your preferred color theme")
-                .order(1),
+                .meta_str("label", "Theme")
+                .meta_str("category", "appearance")
+                .meta_str("description", "Choose your preferred color theme")
+                .meta_num("order", 1.0),
             );
             m.insert(
                 "network.port".into(),
-                SettingMetadata::number("Port", 8080.0)
-                    .category("network")
+                SettingMetadata::number(8080.0)
+                    .meta_str("label", "Port")
+                    .meta_str("category", "network")
                     .min(1.0)
                     .max(65535.0)
-                    .description("Server port number"),
+                    .meta_str("description", "Server port number"),
             );
             m.insert("security.api_key".into(), {
-                let s = SettingMetadata::text("API Key", "")
-                    .category("security")
-                    .advanced();
+                let s = SettingMetadata::text("")
+                    .meta_str("label", "API Key")
+                    .meta_str("category", "security")
+                    .meta_bool("advanced", true);
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
                 let s = s.secret();
                 s

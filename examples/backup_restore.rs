@@ -21,14 +21,19 @@ struct AppSettings;
 impl SettingsSchema for AppSettings {
     fn get_metadata() -> HashMap<String, SettingMetadata> {
         settings! {
-            "app.name" => SettingMetadata::text("App Name", "My App"),
-            "app.version" => SettingMetadata::text("Version", "1.0.0"),
-            "app.theme" => SettingMetadata::select("Theme", "light", vec![
+            "app.name" => SettingMetadata::text("My App")
+                .meta_str("label", "App Name"),
+            "app.version" => SettingMetadata::text("1.0.0")
+                .meta_str("label", "Version"),
+            "app.theme" => SettingMetadata::select("light", vec![
                 rcman::opt("light", "Light"),
                 rcman::opt("dark", "Dark"),
-            ]),
-            "user.name" => SettingMetadata::text("User Name", "John Doe"),
-            "user.email" => SettingMetadata::text("Email", "user@example.com"),
+            ])
+            .meta_str("label", "Theme"),
+            "user.name" => SettingMetadata::text("John Doe")
+                .meta_str("label", "User Name"),
+            "user.email" => SettingMetadata::text("user@example.com")
+                .meta_str("label", "Email"),
         }
     }
 }

@@ -112,52 +112,62 @@ pub struct PathsSettings {
 impl SettingsSchema for TestSettings {
     fn get_metadata() -> HashMap<String, SettingMetadata> {
         settings! {
-            "ui.theme" => SettingMetadata::select("Theme", "dark", vec![
+            "ui.theme" => SettingMetadata::select("dark", vec![
                 opt("light", "Light"),
                 opt("dark", "Dark"),
                 opt("system", "System"),
             ])
-            .category("appearance")
-            .description("Application color theme")
-            .order(1),
+            .meta_str("label", "Theme")
+            .meta_str("category", "appearance")
+            .meta_str("description", "Application color theme")
+            .meta_num("order", 1),
 
-            "ui.font_size" => SettingMetadata::number("Font Size", 14.0)
-                .category("appearance")
-                .description("Base font size in pixels")
+            "ui.font_size" => SettingMetadata::number(14.0)
+                .meta_str("label", "Font Size")
+                .meta_str("category", "appearance")
+                .meta_str("description", "Base font size in pixels")
                 .min(8.0)
                 .max(32.0)
                 .step(1.0)
-                .order(2),
+                .meta_num("order", 2),
 
-            "general.tray_enabled" => SettingMetadata::toggle("Enable Tray", true)
-                .category("general")
-                .description("Show system tray icon")
-                .order(1),
+            "general.tray_enabled" => SettingMetadata::toggle(true)
+                .meta_str("label", "Enable Tray")
+                .meta_str("category", "general")
+                .meta_str("description", "Show system tray icon")
+                .meta_num("order", 1),
 
-            "general.language" => SettingMetadata::select("Language", "en", vec![
+            "general.language" => SettingMetadata::select("en", vec![
                 opt("en", "English"),
                 opt("tr", "Turkish"),
                 opt("de", "German"),
             ])
-            .category("general")
-            .order(2),
+            .meta_str("label", "Language")
+            .meta_str("category", "general")
+            .meta_num("order", 2),
 
             "api.key" => {
-                let s = SettingMetadata::password("API Key", "")
-                    .category("security")
-                    .description("Secret API key for external services");
+                let s = SettingMetadata::text("")
+                    .meta_str("label", "API Key")
+                    .meta_str("category", "security")
+                    .meta_str("description", "Secret API key for external services")
+                    .meta_str("input_type", "password");
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
                 let s = s.secret();
                 s
             },
 
-            "paths.config_dir" => SettingMetadata::path("Config Directory", "")
-                .category("paths")
-                .description("Directory for configuration files"),
+            "paths.config_dir" => SettingMetadata::text("")
+                .meta_str("label", "Config Directory")
+                .meta_str("category", "paths")
+                .meta_str("description", "Directory for configuration files")
+                .meta_str("input_type", "path"),
 
-            "paths.log_file" => SettingMetadata::file("Log File", "")
-                .category("paths")
-                .description("Path to the log file"),
+            "paths.log_file" => SettingMetadata::text("")
+                .meta_str("label", "Log File")
+                .meta_str("category", "paths")
+                .meta_str("description", "Path to the log file")
+                .meta_str("input_type", "file"),
         }
     }
 }

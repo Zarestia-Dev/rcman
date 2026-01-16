@@ -72,7 +72,7 @@ use self::env::EnvironmentHandler;
 /// impl SettingsSchema for AppSettings {
 ///     fn get_metadata() -> HashMap<String, SettingMetadata> {
 ///         settings! {
-///             "ui.theme" => SettingMetadata::text("Theme", "dark")
+///             "ui.theme" => SettingMetadata::text("dark").meta_str("label", "Theme")
 ///         }
 ///     }
 /// }
@@ -578,8 +578,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # impl SettingsSchema for MySettings {
     /// #     fn get_metadata() -> HashMap<String, SettingMetadata> {
     /// #         let mut m = HashMap::new();
-    /// #         m.insert("ui.theme".into(), SettingMetadata::text("Theme", "dark"));
-    /// #         m.insert("general.restrict".into(), SettingMetadata::toggle("Restrict", false));
+    /// #         m.insert("ui.theme".into(), SettingMetadata::text("dark").meta_str("label", "Theme"));
+    /// #         m.insert("general.restrict".into(), SettingMetadata::toggle(false).meta_str("label", "Restrict"));
     /// #         m
     /// #     }
     /// # }
@@ -639,7 +639,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # impl SettingsSchema for MySettings {
     /// #     fn get_metadata() -> HashMap<String, SettingMetadata> {
     /// #         let mut m = HashMap::new();
-    /// #         m.insert("core.rclone_path".into(), SettingMetadata::text("Path", "/usr/bin/rclone"));
+    /// #         m.insert("core.rclone_path".into(), SettingMetadata::text("/usr/bin/rclone").meta_str("label", "Path"));
     /// #         m
     /// #     }
     /// # }
@@ -696,7 +696,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # impl SettingsSchema for MySettings {
     /// #     fn get_metadata() -> HashMap<String, SettingMetadata> {
     /// #         let mut m = HashMap::new();
-    /// #         m.insert("ui.theme".into(), SettingMetadata::text("Theme", "dark"));
+    /// #         m.insert("ui.theme".into(), SettingMetadata::text("dark").meta_str("label", "Theme"));
     /// #         m
     /// #     }
     /// # }
@@ -832,12 +832,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
                 // Handle secret settings - fetch from credential manager
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                if option.flags.system.secret {
+                if option.is_secret() {
                     // Check env var override for secrets if enabled
                     if self.config.env_overrides_secrets {
                         if let Some(env_value) = self.get_env_override(key) {
                             option.value = Some(env_value);
-                            option.flags.system.env_override = true;
+                            option
+                                .metadata
+                                .insert("env_override".to_string(), Value::Bool(true));
                             debug!("Secret {key} overridden by env var");
                             continue;
                         }
@@ -856,7 +858,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 // Check for environment variable override first
                 if let Some(env_value) = self.get_env_override(key) {
                     option.value = Some(env_value);
-                    option.flags.system.env_override = true; // Mark as env-overridden for UI
+                    option
+                        .metadata
+                        .insert("env_override".to_string(), Value::Bool(true)); // Mark as env-overridden for UI
                     debug!("Setting {key} overridden by env var");
                     continue;
                 }
@@ -902,7 +906,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # #[derive(Default, Serialize, Deserialize)]
     /// # struct MySettings { ui: UiSettings }
     /// # impl SettingsSchema for MySettings {
-    /// #     fn get_metadata() -> HashMap<String, SettingMetadata> { let mut m = HashMap::new(); m.insert("ui.theme".into(), SettingMetadata::text("T", "d")); m }
+    /// #     fn get_metadata() -> HashMap<String, SettingMetadata> { let mut m = HashMap::new(); m.insert("ui.theme".into(), SettingMetadata::text("d").meta_str("label", "T")); m }
     /// # }
     /// # fn main() {
     /// # let temp = tempfile::tempdir().unwrap();
@@ -940,10 +944,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         // Handle secret settings separately
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        if metadata
-            .get(&full_key)
-            .is_some_and(|m| m.flags.system.secret)
-        {
+        if metadata.get(&full_key).is_some_and(|m| m.is_secret()) {
             // Get default value from metadata
             let default_value = metadata
                 .get(&full_key)
@@ -1325,9 +1326,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 mod tests {
     use super::*;
     use crate::config::SettingsConfig;
-    use crate::config::{
-        DefaultEnvSource, EnvSource, SettingMetadata, SettingType, SettingsSchema,
-    };
+    use crate::config::{DefaultEnvSource, EnvSource, SettingMetadata, SettingsSchema};
     use crate::storage::JsonStorage;
     use serde::{Deserialize, Serialize};
     use std::sync::{Arc, Mutex};
@@ -1388,21 +1387,20 @@ mod tests {
             let mut map = HashMap::new();
             map.insert(
                 "general.language".into(),
-                SettingMetadata {
-                    setting_type: SettingType::Select,
-                    default: json!("en"),
-                    label: "Language".into(),
-                    ..Default::default()
-                },
+                SettingMetadata::select(
+                    "en",
+                    vec![
+                        crate::opt("en", "English"),
+                        crate::opt("de", "German"),
+                        crate::opt("fr", "French"),
+                        crate::opt("es", "Spanish"),
+                    ],
+                )
+                .meta_str("label", "Language"),
             );
             map.insert(
                 "general.dark_mode".into(),
-                SettingMetadata {
-                    setting_type: SettingType::Toggle,
-                    default: json!(false),
-                    label: "Dark Mode".into(),
-                    ..Default::default()
-                },
+                SettingMetadata::toggle(false).meta_str("label", "Dark Mode"),
             );
             map
         }
@@ -1623,7 +1621,7 @@ mod tests {
         assert_eq!(lang.value, Some(json!("fr")));
         // Should be marked as env override
         assert!(
-            lang.flags.system.env_override,
+            lang.get_meta_bool("env_override").unwrap_or(false),
             "Setting should be marked as env-overridden"
         );
     }
@@ -1675,7 +1673,7 @@ mod tests {
 
         // Env var should win over stored value
         assert_eq!(lang.value, Some(json!("es")));
-        assert!(lang.flags.system.env_override);
+        assert!(lang.get_meta_bool("env_override").unwrap_or(false));
     }
 
     #[test]

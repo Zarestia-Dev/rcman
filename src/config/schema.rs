@@ -1,9 +1,185 @@
 //! Settings schema trait and metadata types
+//!
+//! # Overview
+//!
+//! This module provides a **flexible, type-safe metadata system** for settings management:
+//!
+//! - **Dynamic Metadata**: Store any custom key-value metadata on settings using `.meta_*()` methods
+//! - **Type-Specific Constraints**: Separate structures for Number, Text constraints that are enforced
+//! - **Framework-Agnostic**: No opinionated UI bindings - pure data structures
+//! - **Type Safety at Construction**: Select type requires options at creation time
+//!
+//! # Architecture
+//!
+//! ## Static vs Dynamic Metadata
+//!
+//! `SettingMetadata` has two kinds of metadata:
+//!
+//! 1. **Type-Specific Constraints** (static fields):
+//!    - `constraints.number` - min, max, step for Number type
+//!    - `constraints.text` - pattern for Text type
+//!    - `constraints.options` - Select options (REQUIRED for Select type)
+//!
+//! 2. **Custom Metadata** (`HashMap<String, Value>`):
+//!    - Any developer-defined key-value pairs
+//!    - Use string literals for your metadata keys (e.g., `"label"`, `"category"`, `"advanced"`)
+//!    - **No predefined keys** - add whatever your framework/app needs!
+//!
+//! ```rust,no_run
+//! use rcman::{SettingMetadata, opt};
+//!
+//! // Type-safe constraints at construction
+//! let port = SettingMetadata::number(8080.0)
+//!     .min(1024.0)                                    // <- constraint
+//!     .max(65535.0)                                   // <- constraint
+//!     .meta_str("label", "Server Port")              // <- custom metadata
+//!     .meta_str("category", "network")               // <- custom metadata
+//!     .meta_bool("requires_restart", true);          // <- custom metadata
+//!
+//! // Select requires options at construction
+//! let theme = SettingMetadata::select("dark", vec![
+//!     opt("light", "Light Theme"),
+//!     opt("dark", "Dark Theme"),
+//! ])
+//! .meta_str("label", "Theme")
+//! .meta_num("order", 1);
+//! ```
+//!
+//! # Dynamic Metadata API
+//!
+//! Add any custom metadata to settings:
+//!
+//! ```rust,no_run
+//! use rcman::SettingMetadata;
+//! use serde_json::json;
+//!
+//! let setting = SettingMetadata::text("default")
+//!     .meta_str("label", "My Label")              // String metadata
+//!     .meta_str("description", "Help text")       // String metadata
+//!     .meta_str("category", "general")            // String metadata
+//!     .meta_bool("advanced", true)                // Boolean metadata
+//!     .meta_bool("requires_restart", false)       // Boolean metadata
+//!     .meta_num("order", 10.0)                    // Numeric metadata
+//!     .meta_num("priority", 5.0)                  // Numeric metadata
+//!     .meta("custom_obj", json!({"key": "value"})); // Any JSON value
+//!
+//! // Retrieve metadata
+//! assert_eq!(setting.get_meta_str("label"), Some("My Label"));
+//! assert_eq!(setting.get_meta_bool("advanced"), Some(true));
+//! assert_eq!(setting.get_meta_num("order"), Some(10.0));
+//! ```
+//!
+//! # Internal Metadata Keys
+//!
+//! The library only defines two metadata keys that it uses internally:
+//!
+//! - `meta::SECRET` - Mark as secret (triggers credential storage)
+//! - `meta::ENV_OVERRIDE` - Populated at runtime when env var overrides value
+//!
+//! Everything else (label, category, description, advanced, order, etc.) is custom metadata
+//! that you define based on your application's needs.
+//!
+//! # Type Safety for Required Metadata
+//!
+//! ## Select Type Enforces Options
+//!
+//! ```rust,no_run
+//! use rcman::{SettingMetadata, opt};
+//!
+//! // ✅ Correct - options required at construction
+//! let setting = SettingMetadata::select("default", vec![
+//!     opt("opt1", "Option 1"),
+//!     opt("opt2", "Option 2"),
+//! ]);
+//!
+//! // Options are in constraints.options
+//! assert!(setting.constraints.options.is_some());
+//! ```
+//!
+//! ## Schema Validation
+//!
+//! Call `validate_schema()` to ensure metadata is properly configured:
+//!
+//! ```rust,no_run
+//! use rcman::SettingMetadata;
+//!
+//! let setting = SettingMetadata::number(50.0)
+//!     .min(0.0)
+//!     .max(100.0);
+//!
+//! // ✅ Valid: min <= max
+//! assert!(setting.validate_schema().is_ok());
+//!
+//! // ❌ Invalid: min > max
+//! let invalid = SettingMetadata::number(50.0)
+//!     .min(100.0)
+//!     .max(0.0);
+//! assert!(invalid.validate_schema().is_err());
+//! ```
+//!
+//! # Integration with Derive Macro
+//!
+//! The derive macro generates metadata using the dynamic API:
+//!
+//! ```rust,no_run
+//! use rcman::{DeriveSettingsSchema, SettingsSchema};
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(DeriveSettingsSchema, Serialize, Deserialize, Default)]
+//! #[schema(category = "appearance")]
+//! struct UiSettings {
+//!     // Constraints handled by derive
+//!     #[setting(min = 8, max = 32)]
+//!     font_size: u32,
+//!     
+//!     // Simple toggle
+//!     dark_mode: bool,
+//! }
+//!
+//! // Add UI metadata manually after generation if needed:
+//! let mut metadata = UiSettings::get_metadata();
+//! if let Some(setting) = metadata.get_mut("appearance.dark_mode") {
+//!     *setting = setting.clone()
+//!         .meta_str("label", "Dark Mode")
+//!         .meta_str("description", "Enable dark theme");
+//! }
+//! ```
 
-use crate::credentials::SecretStorage;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+
+// =============================================================================
+// Well-known Metadata Keys
+// =============================================================================
+
+/// Internal metadata keys used by the library itself.
+///
+/// These constants are for metadata that the library actually uses internally.
+/// For custom metadata (like "advanced", "order", "requires_restart", etc.),
+/// just use string literals directly with `.meta_str()`, `.meta_bool()`, etc.
+///
+/// # Example
+///
+/// ```
+/// use rcman::{SettingMetadata, meta};
+///
+/// let setting = SettingMetadata::text("default")
+///     .meta_str("label", "My Label")           // Custom metadata
+///     .meta_str("category", "general")         // Custom metadata
+///     .meta_bool("advanced", true)             // Custom metadata
+///     .meta_num("order", 1);                   // Custom metadata
+/// ```
+pub mod meta {
+    /// Mark as secret (stored in credential manager) - used by credential system
+    pub const SECRET: &str = "secret";
+    /// Environment variable override indicator - populated at runtime by manager
+    pub const ENV_OVERRIDE: &str = "env_override";
+}
+
+// =============================================================================
+// Setting Types
+// =============================================================================
 
 /// Type of setting for UI rendering
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -18,21 +194,54 @@ pub enum SettingType {
     Number,
     /// Dropdown/select with predefined options
     Select,
-    /// Color picker
-    Color,
-    /// Directory path selector
-    Path,
-    /// File path selector
-    File,
-    /// Multi-line text
-    Textarea,
-    /// Password/sensitive input
-    Password,
     /// Read-only display
     Info,
     /// List of strings
     List,
 }
+
+// =============================================================================
+// Type-Specific Constraints
+// =============================================================================
+
+/// Constraints for Number type settings
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct NumberConstraints {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<f64>,
+}
+
+/// Constraints for Text type settings
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TextConstraints {
+    /// Regex pattern for validation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+}
+
+/// Type-specific constraints
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct SettingConstraints {
+    /// Options for Select type (REQUIRED for Select)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<SettingOption>>,
+
+    /// Number constraints
+    #[serde(flatten)]
+    pub number: NumberConstraints,
+
+    /// Text constraints
+    #[serde(flatten)]
+    pub text: TextConstraints,
+}
+
+// =============================================================================
+// Setting Metadata
+// =============================================================================
 
 /// Metadata for a single setting
 ///
@@ -41,57 +250,25 @@ pub enum SettingType {
 /// ```
 /// use rcman::{SettingMetadata, opt};
 ///
-/// // Toggle setting
-/// let dark_mode = SettingMetadata::toggle("Dark Mode", false)
-///     .description("Enable dark theme")
-///     .category("appearance");
+/// // Toggle setting with dynamic metadata
+/// let dark_mode = SettingMetadata::toggle(false)
+///     .meta_str("label", "Dark Mode")
+///     .meta_str("description", "Enable dark theme")
+///     .meta_str("category", "appearance");
 ///
 /// // Number with range
-/// let font_size = SettingMetadata::number("Font Size", 14.0)
-///     .min(8.0).max(32.0).step(1.0);
+/// let font_size = SettingMetadata::number(14.0)
+///     .min(8.0).max(32.0).step(1.0)
+///     .meta_str("label", "Font Size");
 ///
-/// // Select with options
-/// let theme = SettingMetadata::select("Theme", "dark", vec![
+/// // Select with options (options required at construction)
+/// let theme = SettingMetadata::select("dark", vec![
 ///     opt("light", "Light"),
 ///     opt("dark", "Dark"),
-/// ]);
+/// ])
+/// .meta_str("label", "Theme");
 /// ```
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct SettingUiFlags {
-    /// Whether this setting is experimental/advanced
-    #[serde(default)]
-    pub advanced: bool,
-
-    /// Whether this setting should be disabled
-    #[serde(default)]
-    pub disabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct SettingSystemFlags {
-    /// Whether this setting requires app restart
-    #[serde(default)]
-    pub requires_restart: bool,
-
-    /// Whether this is a secret/sensitive value (stored in credential manager)
-    #[serde(default)]
-    pub secret: bool,
-
-    /// Whether the value is overridden by an environment variable
-    /// (populated at runtime for UI display)
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub env_override: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct SettingFlags {
-    #[serde(flatten)]
-    pub ui: SettingUiFlags,
-    #[serde(flatten)]
-    pub system: SettingSystemFlags,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingMetadata {
     /// Type of setting (for UI rendering)
     #[serde(rename = "type")]
@@ -104,55 +281,13 @@ pub struct SettingMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
 
-    /// Human-readable label
-    pub label: String,
-
-    /// Description/help text
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-
-    /// Available options (for Select type)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<Vec<SettingOption>>,
-
-    /// Minimum value (for Number type)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min: Option<f64>,
-
-    /// Maximum value (for Number type)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max: Option<f64>,
-
-    /// Step increment (for Number type)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub step: Option<f64>,
-
-    /// Placeholder text
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub placeholder: Option<String>,
-
-    /// Category for grouping in UI
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub category: Option<String>,
-
-    /// Order within category (lower = higher priority)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub order: Option<i32>,
-
-    /// Where to store secret values (only used if secret=true)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secret_storage: Option<SecretStorage>,
-
-    /// Regex pattern for validation (for Text type)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pattern: Option<String>,
-
-    /// Error message for pattern validation failure
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pattern_error: Option<String>,
-
+    /// Type-specific constraints
     #[serde(flatten)]
-    pub flags: SettingFlags,
+    pub constraints: SettingConstraints,
+
+    /// Developer-defined custom metadata (fully dynamic)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, Value>,
 }
 
 impl Default for SettingMetadata {
@@ -161,335 +296,187 @@ impl Default for SettingMetadata {
             setting_type: SettingType::Text,
             default: Value::Null,
             value: None,
-            label: String::new(),
-            description: None,
-            options: None,
-            min: None,
-            max: None,
-            step: None,
-            placeholder: None,
-            category: None,
-            order: None,
-            secret_storage: None,
-            pattern: None,
-            pattern_error: None,
-            flags: SettingFlags::default(),
+            constraints: SettingConstraints::default(),
+            metadata: HashMap::new(),
         }
     }
 }
 
 impl SettingMetadata {
     // =========================================================================
-    // Type-specific constructors (for easier creation)
+    // Type-specific constructors
     // =========================================================================
 
     /// Create a text input setting
-    pub fn text(label: impl Into<String>, default: impl Into<String>) -> Self {
+    pub fn text(default: impl Into<String>) -> Self {
         Self {
             setting_type: SettingType::Text,
-            label: label.into(),
-            default: Value::String(default.into()),
-            ..Default::default()
-        }
-    }
-
-    /// Create a password/secret input setting
-    pub fn password(label: impl Into<String>, default: impl Into<String>) -> Self {
-        Self {
-            setting_type: SettingType::Password,
-            label: label.into(),
             default: Value::String(default.into()),
             ..Default::default()
         }
     }
 
     /// Create a number input setting
-    pub fn number(label: impl Into<String>, default: impl Into<f64>) -> Self {
+    pub fn number(default: impl Into<f64>) -> Self {
         Self {
             setting_type: SettingType::Number,
-            label: label.into(),
             default: json!(default.into()),
             ..Default::default()
         }
     }
 
     /// Create a toggle/boolean setting
-    pub fn toggle(label: impl Into<String>, default: bool) -> Self {
+    pub fn toggle(default: bool) -> Self {
         Self {
             setting_type: SettingType::Toggle,
-            label: label.into(),
             default: Value::Bool(default),
             ..Default::default()
         }
     }
 
     /// Create a select/dropdown setting
-    pub fn select(
-        label: impl Into<String>,
-        default: impl Into<String>,
-        options: Vec<SettingOption>,
-    ) -> Self {
+    ///
+    /// **Options are required** - you must provide them at construction time.
+    pub fn select(default: impl Into<String>, options: Vec<SettingOption>) -> Self {
         Self {
             setting_type: SettingType::Select,
-            label: label.into(),
             default: Value::String(default.into()),
-            options: Some(options),
-            ..Default::default()
-        }
-    }
-
-    /// Create a color picker setting
-    pub fn color(label: impl Into<String>, default: impl Into<String>) -> Self {
-        Self {
-            setting_type: SettingType::Color,
-            label: label.into(),
-            default: Value::String(default.into()),
-            ..Default::default()
-        }
-    }
-
-    /// Create a directory path selector setting
-    pub fn path(label: impl Into<String>, default: impl Into<String>) -> Self {
-        Self {
-            setting_type: SettingType::Path,
-            label: label.into(),
-            default: Value::String(default.into()),
-            ..Default::default()
-        }
-    }
-
-    /// Create a file path selector setting
-    pub fn file(label: impl Into<String>, default: impl Into<String>) -> Self {
-        Self {
-            setting_type: SettingType::File,
-            label: label.into(),
-            default: Value::String(default.into()),
+            constraints: SettingConstraints {
+                options: Some(options),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
 
     /// Create an info/read-only setting
-    pub fn info(label: impl Into<String>, default: Value) -> Self {
+    pub fn info(default: Value) -> Self {
         Self {
             setting_type: SettingType::Info,
-            label: label.into(),
             default,
             ..Default::default()
         }
     }
 
     /// Create a list setting (`Vec<String>`)
-    pub fn list(label: impl Into<String>, default: &[String]) -> Self {
+    pub fn list(default: &[String]) -> Self {
         Self {
             setting_type: SettingType::List,
-            label: label.into(),
             default: json!(default),
             ..Default::default()
         }
     }
 
     // =========================================================================
-    // Chainable setters (builder pattern)
+    // Dynamic metadata methods
     // =========================================================================
 
-    /// Set description
+    /// Add custom string metadata
     #[must_use]
-    pub fn description(mut self, desc: impl Into<String>) -> Self {
-        self.description = Some(desc.into());
+    pub fn meta_str(mut self, key: &str, value: impl Into<String>) -> Self {
+        self.metadata
+            .insert(key.to_string(), Value::String(value.into()));
         self
     }
 
-    /// Set options for Select type
+    /// Add custom boolean metadata
     #[must_use]
-    pub fn options(mut self, opts: Vec<SettingOption>) -> Self {
-        self.options = Some(opts);
+    pub fn meta_bool(mut self, key: &str, value: bool) -> Self {
+        self.metadata.insert(key.to_string(), Value::Bool(value));
         self
     }
+
+    /// Add custom number metadata
+    #[must_use]
+    pub fn meta_num(mut self, key: &str, value: impl Into<f64>) -> Self {
+        self.metadata.insert(key.to_string(), json!(value.into()));
+        self
+    }
+
+    /// Add custom JSON metadata
+    #[must_use]
+    pub fn meta(mut self, key: &str, value: Value) -> Self {
+        self.metadata.insert(key.to_string(), value);
+        self
+    }
+
+    /// Get metadata value by key
+    pub fn get_meta(&self, key: &str) -> Option<&Value> {
+        self.metadata.get(key)
+    }
+
+    /// Get metadata value as string
+    pub fn get_meta_str(&self, key: &str) -> Option<&str> {
+        self.metadata.get(key).and_then(|v| v.as_str())
+    }
+
+    /// Get metadata value as bool
+    pub fn get_meta_bool(&self, key: &str) -> Option<bool> {
+        self.metadata.get(key).and_then(|v| v.as_bool())
+    }
+
+    /// Get metadata value as number
+    pub fn get_meta_num(&self, key: &str) -> Option<f64> {
+        self.metadata.get(key).and_then(|v| v.as_f64())
+    }
+
+    // =========================================================================
+    // Number constraint setters (builder pattern)
+    // =========================================================================
 
     /// Set minimum value for Number type
     #[must_use]
     pub fn min(mut self, val: f64) -> Self {
-        self.min = Some(val);
+        self.constraints.number.min = Some(val);
         self
     }
 
     /// Set maximum value for Number type
     #[must_use]
     pub fn max(mut self, val: f64) -> Self {
-        self.max = Some(val);
+        self.constraints.number.max = Some(val);
         self
     }
 
     /// Set step for Number type
     #[must_use]
     pub fn step(mut self, val: f64) -> Self {
-        self.step = Some(val);
+        self.constraints.number.step = Some(val);
         self
     }
 
-    /// Set placeholder text
-    #[must_use]
-    pub fn placeholder(mut self, text: impl Into<String>) -> Self {
-        self.placeholder = Some(text.into());
-        self
-    }
-
-    /// Mark setting as requiring restart
-    #[must_use]
-    pub fn requires_restart(mut self) -> Self {
-        self.flags.system.requires_restart = true;
-        self
-    }
-
-    /// Set category for grouping
-    #[must_use]
-    pub fn category(mut self, cat: impl Into<String>) -> Self {
-        self.category = Some(cat.into());
-        self
-    }
-
-    /// Set display order
-    #[must_use]
-    pub fn order(mut self, ord: i32) -> Self {
-        self.order = Some(ord);
-        self
-    }
-
-    /// Mark setting as advanced
-    #[must_use]
-    pub fn advanced(mut self) -> Self {
-        self.flags.ui.advanced = true;
-        self
-    }
-
-    /// Mark setting as disabled
-    #[must_use]
-    pub fn disabled(mut self) -> Self {
-        self.flags.ui.disabled = true;
-        self
-    }
-
-    /// **⚠️ IMPORTANT:** This method requires enabling one of the following features:
-    /// - `keychain` - Store secrets in OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)
-    /// - `encrypted-file` - Store secrets in an encrypted file using Argon2id
-    ///
-    /// Without these features, secrets will be stored in **plaintext JSON**, which is a security risk!
-    ///
-    /// # Feature Setup
-    ///
-    /// Add to your `Cargo.toml`:
-    /// ```toml
-    /// [dependencies]
-    /// rcman = { version = "0.2", features = ["keychain"] }
-    /// # Or for encrypted file storage:
-    /// rcman = { version = "0.2", features = ["encrypted-file"] }
-    /// ```
-    ///
-    /// # Compile-Time Safety
-    ///
-    /// If you call `.secret()` without enabling the required features, you'll get a
-    /// **compile error** with instructions on how to fix it. This prevents accidentally
-    /// storing secrets in plaintext.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use rcman::{settings, SettingMetadata};
-    /// use std::collections::HashMap;
-    ///
-    /// settings! {
-    ///     "api.key" => SettingMetadata::password("API Key", "")
-    ///         .secret(),  // ✅ Safe: stored in keychain or encrypted file
-    /// }
-    /// ```
-    #[must_use]
-    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    pub fn secret(mut self) -> Self {
-        self.flags.system.secret = true;
-        self
-    }
-
-    // /// Mark this setting as a secret - **REQUIRES FEATURE!**
-    // ///
-    // /// # ⚠️ Compile Error: Missing Required Feature
-    // ///
-    // /// You called `.secret()` but haven't enabled the `keychain` or `encrypted-file` feature.
-    // /// Without these features, secrets would be stored in **plaintext JSON** files, which
-    // /// is a serious security vulnerability!
-    // ///
-    // /// ## How to Fix
-    // ///
-    // /// Add one of these features to your `Cargo.toml`:
-    // ///
-    // /// ```toml
-    // /// [dependencies]
-    // /// # Option 1: Use OS keychain (recommended)
-    // /// rcman = { version = "0.2", features = ["keychain"] }
-    // ///
-    // /// # Option 2: Use encrypted file storage
-    // /// rcman = { version = "0.2", features = ["encrypted-file"] }
-    // /// ```
-    // ///
-    // /// ## Why This Matters
-    // ///
-    // /// - **keychain**: Stores secrets in OS-provided secure storage (macOS Keychain, Windows Credential Manager, Linux Secret Service)
-    // /// - **encrypted-file**: Stores secrets in an encrypted JSON file using Argon2id
-    // /// - **Without features**: Secrets stored in plaintext `settings.json` ❌
-    // ///
-    // /// ## Alternative
-    // ///
-    // /// If you don't need secret storage, simply **remove** the `.secret()` call:
-    // ///
-    // /// ```rust
-    // /// // Before (causes compile error):
-    // /// SettingMetadata::password("API Key", "").secret()
-    // ///
-    // /// // After (compiles, but stored in plaintext):
-    // /// SettingMetadata::password("API Key", "")
-    // /// ```
-    // #[must_use]
-    // #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
-    // pub fn secret(self) -> Self {
-    //     compile_error!(
-    //         "\n\n\
-    //         ╔══════════════════════════════════════════════════════════════════════╗\n\
-    //         ║  ERROR: .secret() requires 'keychain' or 'encrypted-file' feature    ║\n\
-    //         ╠══════════════════════════════════════════════════════════════════════╣\n\
-    //         ║                                                                      ║\n\
-    //         ║  You called .secret() but haven't enabled secret storage!            ║\n\
-    //         ║                                                                      ║\n\
-    //         ║  QUICK FIX (choose one):                                             ║\n\
-    //         ║                                                                      ║\n\
-    //         ║    1. Enable keychain (recommended):                                 ║\n\
-    //         ║       cargo add rcman --features keychain                            ║\n\
-    //         ║                                                                      ║\n\
-    //         ║    2. OR enable encrypted-file:                                      ║\n\
-    //         ║       cargo add rcman --features encrypted-file                      ║\n\
-    //         ║                                                                      ║\n\
-    //         ║    3. OR remove .secret() if plaintext is okay:                      ║\n\
-    //         ║       SettingMetadata::password(\"Key\", \"\")  // without .secret()     ║\n\
-    //         ║                                                                      ║\n\
-    //         ║  Why: Without features, secrets would be stored in PLAINTEXT!        ║\n\
-    //         ║  Learn more: https://docs.rs/rcman/latest/rcman/#secret-settings     ║\n\
-    //         ║                                                                      ║\n\
-    //         ╚══════════════════════════════════════════════════════════════════════╝\n\
-    //         "
-    //     );
-    //     self
-    // }
+    // =========================================================================
+    // Text constraint setters (builder pattern)
+    // =========================================================================
 
     /// Set regex pattern for validation
     #[must_use]
     pub fn pattern(mut self, pattern: impl Into<String>) -> Self {
-        self.pattern = Some(pattern.into());
+        self.constraints.text.pattern = Some(pattern.into());
         self
     }
 
-    /// Set pattern validation error message
+    // =========================================================================
+    // Secret storage (special handling)
+    // =========================================================================
+
+    /// Mark setting as secret (stored in credential manager)
+    ///
+    /// Mark setting as secret (stored in credential manager)
+    ///
+    /// Note: Setting this flag requires credential features to be enabled
+    /// (`keychain` or `encrypted-file`) for actual secret storage to work.
+    /// Without these features, the flag is set but secrets won't be stored securely.
     #[must_use]
-    pub fn pattern_error(mut self, msg: impl Into<String>) -> Self {
-        self.pattern_error = Some(msg.into());
+    pub fn secret(mut self) -> Self {
+        self.metadata
+            .insert(meta::SECRET.to_string(), Value::Bool(true));
         self
+    }
+
+    /// Check if this setting is marked as secret
+    pub fn is_secret(&self) -> bool {
+        self.get_meta_bool(meta::SECRET).unwrap_or(false)
     }
 
     // =========================================================================
@@ -502,65 +489,111 @@ impl SettingMetadata {
     /// - Number range (min/max)
     /// - Regex pattern for text
     /// - Valid option for select type
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - The value to validate
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(())` if validation passes, or `Err(String)` if validation fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error string if validation fails.
+    /// - Type compatibility
     pub fn validate(&self, value: &Value) -> Result<(), String> {
         match self.setting_type {
+            SettingType::Toggle => {
+                if !value.is_boolean() {
+                    return Err("Value must be a boolean".to_string());
+                }
+            }
             SettingType::Number => {
                 let num = value
                     .as_f64()
                     .ok_or_else(|| "Value must be a number".to_string())?;
 
-                if let Some(min) = self.min {
+                if let Some(min) = self.constraints.number.min {
                     if num < min {
                         return Err(format!("Value must be at least {min}"));
                     }
                 }
-                if let Some(max) = self.max {
+                if let Some(max) = self.constraints.number.max {
                     if num > max {
                         return Err(format!("Value must be at most {max}"));
                     }
                 }
             }
-            SettingType::Text | SettingType::Password | SettingType::Textarea => {
-                if let Some(ref pattern) = self.pattern {
+            SettingType::Text => {
+                if let Some(ref pattern) = self.constraints.text.pattern {
                     let text = value.as_str().unwrap_or_default();
                     let re = regex::Regex::new(pattern)
                         .map_err(|e| format!("Invalid regex pattern: {e}"))?;
 
                     if !re.is_match(text) {
-                        return Err(self.pattern_error.clone().unwrap_or_else(|| {
-                            format!("Value does not match pattern: {pattern}")
-                        }));
+                        return Err(format!("Value does not match pattern: {pattern}"));
                     }
                 }
             }
             SettingType::Select => {
-                if let Some(ref options) = self.options {
+                if let Some(ref options) = self.constraints.options {
                     let is_valid = options.iter().any(|opt| opt.value == *value);
                     if !is_valid {
                         return Err("Value must be one of the available options".to_string());
                     }
                 }
             }
-            _ => {} // Toggle, Color, Path, File, Info don't need special validation
+            SettingType::List => {
+                if !value.is_array() {
+                    return Err("Value must be an array".to_string());
+                }
+            }
+            SettingType::Info => {} // Read-only, no validation needed
         }
+        Ok(())
+    }
+
+    /// Validate the schema definition itself
+    ///
+    /// Checks that the metadata is properly configured:
+    /// - Select type has options
+    /// - Number range has min <= max
+    /// - Step is positive
+    /// - Pattern is valid regex
+    /// - Default value satisfies constraints
+    pub fn validate_schema(&self) -> Result<(), String> {
+        // Check select has options
+        if self.setting_type == SettingType::Select && self.constraints.options.is_none() {
+            return Err("Select type must have options defined".to_string());
+        }
+
+        // Check number range validity
+        if let (Some(min), Some(max)) = (self.constraints.number.min, self.constraints.number.max) {
+            if min > max {
+                return Err(format!("min ({min}) cannot be greater than max ({max})"));
+            }
+        }
+
+        // Check step is positive
+        if let Some(step) = self.constraints.number.step {
+            if step <= 0.0 {
+                return Err(format!("step must be positive, got {step}"));
+            }
+        }
+
+        // Check pattern is valid regex
+        if let Some(ref pattern) = self.constraints.text.pattern {
+            regex::Regex::new(pattern).map_err(|e| format!("Invalid regex pattern: {e}"))?;
+
+            // Pattern should not be empty
+            if pattern.is_empty() {
+                return Err("Pattern cannot be empty string".to_string());
+            }
+        }
+
+        // Validate default value against constraints
+        self.validate(&self.default)
+            .map_err(|e| format!("Default value is invalid: {e}"))?;
+
         Ok(())
     }
 }
 
+// =============================================================================
+// Setting Option
+// =============================================================================
+
 /// Option for Select type settings
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SettingOption {
     /// Value to store
     pub value: Value,
@@ -597,6 +630,10 @@ impl SettingOption {
     }
 }
 
+// =============================================================================
+// Settings Schema Trait
+// =============================================================================
+
 /// Trait for types that define a settings schema
 ///
 /// Implement this trait for your application's settings struct to provide
@@ -613,7 +650,7 @@ pub trait SettingsSchema: Default + Serialize + for<'de> Deserialize<'de> {
         let metadata = Self::get_metadata();
         let mut categories: Vec<String> = metadata
             .values()
-            .filter_map(|m| m.category.clone())
+            .filter_map(|m| m.get_meta_str("category").map(String::from))
             .collect();
         categories.sort();
         categories.dedup();
@@ -653,13 +690,19 @@ pub fn opt(value: impl Into<String>, label: impl Into<String>) -> SettingOption 
 /// impl SettingsSchema for MySettings {
 ///     fn get_metadata() -> HashMap<String, SettingMetadata> {
 ///         settings! {
-///             "ui.theme" => SettingMetadata::select("Theme", "dark", vec![
+///             "ui.theme" => SettingMetadata::select("dark", vec![
 ///                 opt("light", "Light"),
 ///                 opt("dark", "Dark"),
-///             ]),
-///             "ui.font_size" => SettingMetadata::number("Font Size", 14.0)
-///                 .min(8.0).max(32.0),
-///             "api.key" => SettingMetadata::password("API Key", "")
+///             ])
+///             .meta_str("label", "Theme"),
+///
+///             "ui.font_size" => SettingMetadata::number(14.0)
+///                 .min(8.0).max(32.0)
+///                 .meta_str("label", "Font Size"),
+///
+///             "api.key" => SettingMetadata::text("")
+///                 .meta_str("label", "API Key")
+///                 .meta_str("input_type", "password")
 ///                 .secret(),
 ///         }
 ///     }
@@ -686,17 +729,21 @@ mod tests {
 
     #[test]
     fn test_setting_metadata_builder() {
-        let setting = SettingMetadata::toggle("Dark Mode", true)
-            .description("Enable dark theme")
-            .category("appearance")
-            .order(1);
+        let setting = SettingMetadata::toggle(true)
+            .meta_str("label", "Dark Mode")
+            .meta_str("description", "Enable dark theme")
+            .meta_str("category", "appearance")
+            .meta_num("order", 1.0);
 
         assert_eq!(setting.setting_type, SettingType::Toggle);
         assert_eq!(setting.default, Value::Bool(true));
-        assert_eq!(setting.label, "Dark Mode");
-        assert_eq!(setting.description, Some("Enable dark theme".into()));
-        assert_eq!(setting.category, Some("appearance".into()));
-        assert_eq!(setting.order, Some(1));
+        assert_eq!(setting.get_meta_str("label"), Some("Dark Mode"));
+        assert_eq!(
+            setting.get_meta_str("description"),
+            Some("Enable dark theme")
+        );
+        assert_eq!(setting.get_meta_str("category"), Some("appearance"));
+        assert_eq!(setting.get_meta_num("order"), Some(1.0));
     }
 
     #[test]
@@ -707,29 +754,24 @@ mod tests {
             SettingOption::new("de", "German"),
         ];
 
-        let setting = SettingMetadata::select("Language", "en", options);
+        let setting = SettingMetadata::select("en", options);
 
         assert_eq!(setting.setting_type, SettingType::Select);
-        assert_eq!(setting.options.as_ref().unwrap().len(), 3);
+        assert_eq!(setting.constraints.options.as_ref().unwrap().len(), 3);
     }
 
     #[test]
     fn test_number_setting_with_range() {
-        let setting = SettingMetadata::number("Volume", 50.0)
-            .min(0.0)
-            .max(100.0)
-            .step(5.0);
+        let setting = SettingMetadata::number(50.0).min(0.0).max(100.0).step(5.0);
 
-        assert_eq!(setting.min, Some(0.0));
-        assert_eq!(setting.max, Some(100.0));
-        assert_eq!(setting.step, Some(5.0));
+        assert_eq!(setting.constraints.number.min, Some(0.0));
+        assert_eq!(setting.constraints.number.max, Some(100.0));
+        assert_eq!(setting.constraints.number.step, Some(5.0));
     }
 
     #[test]
     fn test_number_validation() {
-        let setting = SettingMetadata::number("Port", 8080.0)
-            .min(1.0)
-            .max(65535.0);
+        let setting = SettingMetadata::number(8080.0).min(1.0).max(65535.0);
 
         // Valid values
         assert!(setting.validate(&Value::from(8080)).is_ok());
@@ -744,9 +786,7 @@ mod tests {
 
     #[test]
     fn test_text_pattern_validation() {
-        let setting = SettingMetadata::text("Email", "")
-            .pattern(r"^[\w.-]+@[\w.-]+\.\w+$")
-            .pattern_error("Invalid email format");
+        let setting = SettingMetadata::text("").pattern(r"^[\w.-]+@[\w.-]+\.\w+$");
 
         // Valid emails
         assert!(setting.validate(&Value::from("user@example.com")).is_ok());
@@ -759,7 +799,10 @@ mod tests {
         // Invalid emails
         let result = setting.validate(&Value::from("not-an-email"));
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Invalid email format");
+        assert_eq!(
+            result.unwrap_err(),
+            r"Value does not match pattern: ^[\w.-]+@[\w.-]+\.\w+$"
+        );
     }
 
     #[test]
@@ -768,7 +811,7 @@ mod tests {
             SettingOption::new("en", "English"),
             SettingOption::new("tr", "Turkish"),
         ];
-        let setting = SettingMetadata::select("Language", "en", options);
+        let setting = SettingMetadata::select("en", options);
 
         // Valid options
         assert!(setting.validate(&Value::from("en")).is_ok());
@@ -779,76 +822,120 @@ mod tests {
     }
 
     #[test]
-    fn test_path_setting() {
-        let setting = SettingMetadata::path("Config Directory", "/home/user/.config")
-            .description("Directory for configuration files");
+    fn test_toggle_validation() {
+        let setting = SettingMetadata::toggle(false);
 
-        assert_eq!(setting.setting_type, SettingType::Path);
+        assert!(setting.validate(&Value::Bool(true)).is_ok());
+        assert!(setting.validate(&Value::Bool(false)).is_ok());
+        assert!(setting.validate(&Value::from("true")).is_err());
+    }
+
+    #[test]
+    fn test_list_validation() {
+        let setting = SettingMetadata::list(&["default".to_string()]);
+
+        assert!(setting.validate(&json!(["one", "two"])).is_ok());
+        assert!(setting.validate(&json!([])).is_ok());
+        assert!(setting.validate(&Value::from("not an array")).is_err());
+    }
+
+    #[test]
+    fn test_path_setting() {
+        let setting = SettingMetadata::text("/home/user/.config")
+            .meta_str("label", "Config Directory")
+            .meta_str("description", "Directory for configuration files")
+            .meta_str("input_type", "path");
+
+        assert_eq!(setting.setting_type, SettingType::Text);
         assert_eq!(setting.default, Value::String("/home/user/.config".into()));
-        assert_eq!(setting.label, "Config Directory");
-        assert_eq!(
-            setting.description,
-            Some("Directory for configuration files".into())
-        );
-        // Path type doesn't need special validation
-        assert!(setting.validate(&Value::from("/any/path")).is_ok());
+        assert_eq!(setting.get_meta_str("label"), Some("Config Directory"));
+        assert_eq!(setting.get_meta_str("input_type"), Some("path"));
     }
 
     #[test]
     fn test_file_setting() {
-        let setting = SettingMetadata::file("Config File", "/etc/app/config.json")
-            .description("Path to the configuration file");
+        let setting = SettingMetadata::text("/etc/app/config.json")
+            .meta_str("label", "Config File")
+            .meta_str("input_type", "file");
 
-        assert_eq!(setting.setting_type, SettingType::File);
+        assert_eq!(setting.setting_type, SettingType::Text);
         assert_eq!(
             setting.default,
             Value::String("/etc/app/config.json".into())
         );
-        assert_eq!(setting.label, "Config File");
-        assert_eq!(
-            setting.description,
-            Some("Path to the configuration file".into())
-        );
-        // File type doesn't need special validation
-        assert!(setting.validate(&Value::from("/any/file.txt")).is_ok());
+        assert_eq!(setting.get_meta_str("input_type"), Some("file"));
     }
 
     #[test]
     fn test_list_setting() {
         let default_items = vec!["item1".to_string(), "item2".to_string()];
-        let setting = SettingMetadata::list("Tags", &default_items)
-            .description("List of tags")
-            .category("metadata");
+        let setting = SettingMetadata::list(&default_items)
+            .meta_str("label", "Tags")
+            .meta_str("description", "List of tags")
+            .meta_str("category", "metadata");
 
         assert_eq!(setting.setting_type, SettingType::List);
         assert_eq!(setting.default, json!(default_items));
-        assert_eq!(setting.label, "Tags");
-        assert_eq!(setting.description, Some("List of tags".into()));
-        assert_eq!(setting.category, Some("metadata".into()));
+        assert_eq!(setting.get_meta_str("label"), Some("Tags"));
     }
 
     #[test]
-    fn test_list_setting_empty() {
-        let setting = SettingMetadata::list("Empty List", &[]);
+    fn test_custom_metadata() {
+        let setting = SettingMetadata::text("default")
+            .meta_str("label", "My Setting")
+            .meta_bool("requires_restart", true)
+            .meta_bool("advanced", true)
+            .meta_str("deprecated_since", "2.0")
+            .meta_num("priority", 10.0)
+            .meta("custom_obj", json!({"key": "value"}));
 
-        assert_eq!(setting.setting_type, SettingType::List);
-        assert_eq!(setting.default, json!(Vec::<String>::new()));
-    }
-
-    #[test]
-    fn test_list_validation() {
-        let setting = SettingMetadata::list("Items", &["default".to_string()]);
-
-        // Valid list values
-        assert!(
-            setting
-                .validate(&json!(vec!["one".to_string(), "two".to_string()]))
-                .is_ok()
+        assert_eq!(setting.get_meta_str("label"), Some("My Setting"));
+        assert_eq!(setting.get_meta_bool("requires_restart"), Some(true));
+        assert_eq!(setting.get_meta_bool("advanced"), Some(true));
+        assert_eq!(setting.get_meta_str("deprecated_since"), Some("2.0"));
+        assert_eq!(setting.get_meta_num("priority"), Some(10.0));
+        assert_eq!(
+            setting.get_meta("custom_obj"),
+            Some(&json!({"key": "value"}))
         );
-        assert!(setting.validate(&json!(Vec::<String>::new())).is_ok());
-        assert!(setting.validate(&json!(vec!["single"])).is_ok());
+    }
 
-        // List type doesn't enforce specific validation beyond JSON structure
-        // (arrays of strings are the expected format)
+    #[test]
+    fn test_schema_validation() {
+        // Valid schema
+        let valid = SettingMetadata::number(50.0).min(0.0).max(100.0);
+        assert!(valid.validate_schema().is_ok());
+
+        // Invalid: min > max
+        let invalid_range = SettingMetadata::number(50.0).min(100.0).max(0.0);
+        assert!(invalid_range.validate_schema().is_err());
+
+        // Invalid: select without options
+        let mut invalid_select = SettingMetadata::text("test");
+        invalid_select.setting_type = SettingType::Select;
+        assert!(invalid_select.validate_schema().is_err());
+    }
+
+    #[test]
+    fn test_serialization() {
+        let setting = SettingMetadata::number(14.0)
+            .min(8.0)
+            .max(32.0)
+            .meta_str("label", "Font Size")
+            .meta_str("category", "ui");
+
+        let json = serde_json::to_string(&setting).unwrap();
+        let deserialized: SettingMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(setting.setting_type, deserialized.setting_type);
+        assert_eq!(setting.default, deserialized.default);
+        assert_eq!(
+            setting.constraints.number.min,
+            deserialized.constraints.number.min
+        );
+        assert_eq!(
+            setting.get_meta_str("label"),
+            deserialized.get_meta_str("label")
+        );
     }
 }
