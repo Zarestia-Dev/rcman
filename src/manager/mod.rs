@@ -944,7 +944,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         // Handle secret settings separately
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        if metadata.get(&full_key).is_some_and(|m| m.is_secret()) {
+        if metadata
+            .get(&full_key)
+            .is_some_and(SettingMetadata::is_secret)
+        {
             // Get default value from metadata
             let default_value = metadata
                 .get(&full_key)

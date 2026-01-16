@@ -144,6 +144,7 @@ impl BackupOptions {
     ///     .output_dir("backups/")
     ///     .password("secure-password");
     /// ```
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

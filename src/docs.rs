@@ -85,9 +85,20 @@ pub fn generate_docs_from_metadata<S: std::hash::BuildHasher>(
         // Sort by category, then by order, then by key
         let cat1 = m1.get_meta_str("category").unwrap_or("General");
         let cat2 = m2.get_meta_str("category").unwrap_or("General");
-        let ord1 = m1.get_meta_num("order").map(|n| n as i32).unwrap_or(999);
-        let ord2 = m2.get_meta_num("order").map(|n| n as i32).unwrap_or(999);
-        (cat1, ord1, k1).cmp(&(cat2, ord2, k2))
+
+        // Compare category first
+        match cat1.cmp(cat2) {
+            std::cmp::Ordering::Equal => {
+                // Then compare by order (as f64)
+                let ord1 = m1.get_meta_num("order").unwrap_or(999.0);
+                let ord2 = m2.get_meta_num("order").unwrap_or(999.0);
+                match ord1.partial_cmp(&ord2).unwrap_or(std::cmp::Ordering::Equal) {
+                    std::cmp::Ordering::Equal => k1.cmp(k2),
+                    other => other,
+                }
+            }
+            other => other,
+        }
     });
 
     if config.group_by_category {

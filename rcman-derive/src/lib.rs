@@ -138,15 +138,12 @@ fn process_field(
     attrs: &FieldAttrs,
     container_attrs: &ContainerAttrs,
 ) -> proc_macro2::TokenStream {
-    let field_name = match &field.ident {
-        Some(name) => name,
-        None => {
-            return syn::Error::new_spanned(
-                field,
-                "Field must have a name (internal error: expected named field)",
-            )
-            .to_compile_error();
-        }
+    let Some(field_name) = &field.ident else {
+        return syn::Error::new_spanned(
+            field,
+            "Field must have a name (internal error: expected named field)",
+        )
+        .to_compile_error();
     };
     let field_type = &field.ty;
 
@@ -169,19 +166,16 @@ fn process_field(
 
     // Generate the key: "category.field_name"
     // Category is REQUIRED - no default fallback
-    let category = match attrs
+    let Some(category) = attrs
         .category
         .as_ref()
         .or(container_attrs.category.as_ref())
-    {
-        Some(cat) => cat,
-        None => {
-            return syn::Error::new_spanned(
-                field,
-                "Category is required. Add #[schema(category = \"name\")] to the struct or #[setting(category = \"name\")] to this field"
-            )
-            .to_compile_error();
-        }
+    else {
+        return syn::Error::new_spanned(
+            field,
+            "Category is required. Add #[schema(category = \"name\")] to the struct or #[setting(category = \"name\")] to this field"
+        )
+        .to_compile_error();
     };
     let key = format!("{category}.{field_name}");
 
@@ -304,6 +298,100 @@ fn parse_container_attrs(attrs: &[Attribute]) -> Result<ContainerAttrs, syn::Err
     Ok(result)
 }
 
+/// Parse a numeric constraint (min, max, or step)
+fn parse_number_constraint(
+    lit: &syn::ExprLit,
+    constraint_name: &str,
+) -> Result<Option<f64>, syn::Error> {
+    match &lit.lit {
+        Lit::Float(f) => Ok(f.base10_parse().ok()),
+        Lit::Int(i) => Ok(i.base10_parse().ok()),
+        _ => Err(syn::Error::new_spanned(
+            lit,
+            format!("#[setting({constraint_name})] must be a number"),
+        )),
+    }
+}
+
+/// Parse custom metadata value from literal
+fn parse_metadata_value(
+    key: String,
+    lit: &syn::ExprLit,
+    result: &mut FieldAttrs,
+) -> Result<(), syn::Error> {
+    match &lit.lit {
+        Lit::Str(s) => {
+            result.metadata_str.push((key, s.value()));
+            Ok(())
+        }
+        Lit::Bool(b) => {
+            result.metadata_bool.push((key, b.value()));
+            Ok(())
+        }
+        Lit::Int(i) => {
+            if let Ok(val) = i.base10_parse::<i64>() {
+                #[allow(clippy::cast_precision_loss)]
+                result.metadata_num.push((key, val as f64));
+            }
+            Ok(())
+        }
+        Lit::Float(f) => {
+            if let Ok(val) = f.base10_parse::<f64>() {
+                result.metadata_num.push((key, val));
+            }
+            Ok(())
+        }
+        _ => Err(syn::Error::new_spanned(
+            lit,
+            "Metadata values must be string, number, or boolean literals",
+        )),
+    }
+}
+
+/// Parse options list from #[setting(options = [...])]
+fn parse_options_list(list: &syn::MetaList, result: &mut FieldAttrs) -> Result<(), syn::Error> {
+    let items = list
+        .parse_args_with(syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated)?;
+
+    for item in items {
+        let Expr::Tuple(tuple) = &item else {
+            return Err(syn::Error::new_spanned(
+                &item,
+                "#[setting(options)] must be an array of tuples: [(\"val\", \"Label\"), ...]",
+            ));
+        };
+
+        if tuple.elems.len() != 2 {
+            return Err(syn::Error::new_spanned(
+                tuple,
+                "#[setting(options)] tuples must have exactly 2 elements: (\"value\", \"Label\")",
+            ));
+        }
+
+        let mut vals = tuple.elems.iter();
+        match (vals.next(), vals.next()) {
+            (Some(Expr::Lit(v)), Some(Expr::Lit(l))) => match (&v.lit, &l.lit) {
+                (Lit::Str(val), Lit::Str(label)) => {
+                    result.options.push((val.value(), label.value()));
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        tuple,
+                        "#[setting(options)] tuple elements must be string literals",
+                    ));
+                }
+            },
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    tuple,
+                    "#[setting(options)] tuple elements must be string literals",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn parse_field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs, syn::Error> {
     let mut result = FieldAttrs::default();
 
@@ -327,180 +415,77 @@ fn parse_field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs, syn::Error> {
                     Meta::NameValue(nv) => {
                         let value = &nv.value;
                         if nv.path.is_ident("category") {
-                            if let Expr::Lit(lit) = value {
-                                if let Lit::Str(s) = &lit.lit {
-                                    result.category = Some(s.value());
-                                } else {
-                                    return Err(syn::Error::new_spanned(
-                                        lit,
-                                        "#[setting(category)] must be a string literal",
-                                    ));
-                                }
-                            } else {
+                            let Expr::Lit(lit) = value else {
                                 return Err(syn::Error::new_spanned(
                                     value,
                                     "#[setting(category)] must be a string literal, not an expression",
                                 ));
-                            }
+                            };
+                            let Lit::Str(s) = &lit.lit else {
+                                return Err(syn::Error::new_spanned(
+                                    lit,
+                                    "#[setting(category)] must be a string literal",
+                                ));
+                            };
+                            result.category = Some(s.value());
                         } else if nv.path.is_ident("min") {
-                            if let Expr::Lit(lit) = value {
-                                if let Lit::Float(f) = &lit.lit {
-                                    result.min = f.base10_parse().ok();
-                                } else if let Lit::Int(i) = &lit.lit {
-                                    result.min = i.base10_parse::<i64>().ok().map(|v| v as f64);
-                                } else {
-                                    return Err(syn::Error::new_spanned(
-                                        lit,
-                                        "#[setting(min)] must be a number",
-                                    ));
-                                }
-                            } else {
+                            let Expr::Lit(lit) = value else {
                                 return Err(syn::Error::new_spanned(
                                     value,
                                     "#[setting(min)] must be a number literal",
                                 ));
-                            }
+                            };
+                            result.min = parse_number_constraint(lit, "min")?;
                         } else if nv.path.is_ident("max") {
-                            if let Expr::Lit(lit) = value {
-                                if let Lit::Float(f) = &lit.lit {
-                                    result.max = f.base10_parse().ok();
-                                } else if let Lit::Int(i) = &lit.lit {
-                                    result.max = i.base10_parse::<i64>().ok().map(|v| v as f64);
-                                } else {
-                                    return Err(syn::Error::new_spanned(
-                                        lit,
-                                        "#[setting(max)] must be a number",
-                                    ));
-                                }
-                            } else {
+                            let Expr::Lit(lit) = value else {
                                 return Err(syn::Error::new_spanned(
                                     value,
                                     "#[setting(max)] must be a number literal",
                                 ));
-                            }
+                            };
+                            result.max = parse_number_constraint(lit, "max")?;
                         } else if nv.path.is_ident("step") {
-                            if let Expr::Lit(lit) = value {
-                                if let Lit::Float(f) = &lit.lit {
-                                    result.step = f.base10_parse().ok();
-                                } else if let Lit::Int(i) = &lit.lit {
-                                    result.step = i.base10_parse::<i64>().ok().map(|v| v as f64);
-                                } else {
-                                    return Err(syn::Error::new_spanned(
-                                        lit,
-                                        "#[setting(step)] must be a number",
-                                    ));
-                                }
-                            } else {
+                            let Expr::Lit(lit) = value else {
                                 return Err(syn::Error::new_spanned(
                                     value,
                                     "#[setting(step)] must be a number literal",
                                 ));
-                            }
+                            };
+                            result.step = parse_number_constraint(lit, "step")?;
                         } else if nv.path.is_ident("pattern") {
-                            if let Expr::Lit(lit) = value {
-                                if let Lit::Str(s) = &lit.lit {
-                                    result.pattern = Some(s.value());
-                                } else {
-                                    return Err(syn::Error::new_spanned(
-                                        lit,
-                                        "#[setting(pattern)] must be a string literal",
-                                    ));
-                                }
-                            } else {
+                            let Expr::Lit(lit) = value else {
                                 return Err(syn::Error::new_spanned(
                                     value,
                                     "#[setting(pattern)] must be a string literal",
                                 ));
-                            }
+                            };
+                            let Lit::Str(s) = &lit.lit else {
+                                return Err(syn::Error::new_spanned(
+                                    lit,
+                                    "#[setting(pattern)] must be a string literal",
+                                ));
+                            };
+                            result.pattern = Some(s.value());
                         } else {
                             // Unknown key - treat as custom metadata
                             let key = nv
                                 .path
                                 .get_ident()
-                                .map(|i| i.to_string())
+                                .map(std::string::ToString::to_string)
                                 .unwrap_or_default();
 
-                            // Detect type from literal value
-                            if let Expr::Lit(lit) = value {
-                                match &lit.lit {
-                                    Lit::Str(s) => {
-                                        result.metadata_str.push((key, s.value()));
-                                    }
-                                    Lit::Bool(b) => {
-                                        result.metadata_bool.push((key, b.value()));
-                                    }
-                                    Lit::Int(i) => {
-                                        if let Ok(val) = i.base10_parse::<i64>() {
-                                            result.metadata_num.push((key, val as f64));
-                                        }
-                                    }
-                                    Lit::Float(f) => {
-                                        if let Ok(val) = f.base10_parse::<f64>() {
-                                            result.metadata_num.push((key, val));
-                                        }
-                                    }
-                                    _ => {
-                                        return Err(syn::Error::new_spanned(
-                                            lit,
-                                            "Metadata values must be string, number, or boolean literals",
-                                        ));
-                                    }
-                                }
-                            } else {
+                            let Expr::Lit(lit) = value else {
                                 return Err(syn::Error::new_spanned(
                                     value,
                                     "Metadata values must be literals, not expressions",
                                 ));
-                            }
+                            };
+                            parse_metadata_value(key, lit, &mut result)?;
                         }
                     }
                     Meta::List(list) => {
-                        // Handle options = [("val", "Label"), ...]
                         if list.path.is_ident("options") {
-                            let items = list.parse_args_with(
-                                syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
-                            )?;
-
-                            for item in items {
-                                if let Expr::Tuple(tuple) = &item {
-                                    if tuple.elems.len() != 2 {
-                                        return Err(syn::Error::new_spanned(
-                                            tuple,
-                                            "#[setting(options)] tuples must have exactly 2 elements: (\"value\", \"Label\")",
-                                        ));
-                                    }
-
-                                    let mut vals = tuple.elems.iter();
-                                    match (vals.next(), vals.next()) {
-                                        (Some(Expr::Lit(v)), Some(Expr::Lit(l))) => {
-                                            match (&v.lit, &l.lit) {
-                                                (Lit::Str(val), Lit::Str(label)) => {
-                                                    result
-                                                        .options
-                                                        .push((val.value(), label.value()));
-                                                }
-                                                _ => {
-                                                    return Err(syn::Error::new_spanned(
-                                                        tuple,
-                                                        "#[setting(options)] tuple elements must be string literals",
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                        _ => {
-                                            return Err(syn::Error::new_spanned(
-                                                tuple,
-                                                "#[setting(options)] tuple elements must be string literals",
-                                            ));
-                                        }
-                                    }
-                                } else {
-                                    return Err(syn::Error::new_spanned(
-                                        &item,
-                                        "#[setting(options)] must be an array of tuples: [(\"val\", \"Label\"), ...]",
-                                    ));
-                                }
-                            }
+                            parse_options_list(&list, &mut result)?;
                         }
                     }
                 }
@@ -541,16 +526,15 @@ fn classify_type(ty: &Type) -> TypeInfo {
                 }
                 _ => return TypeInfo::Unknown,
             }
-        } else {
-            // Check for Vec<T> specifically
-            if let Some(seg) = path.path.segments.last() {
-                if seg.ident == "Vec" {
-                    return TypeInfo::List;
-                }
-            }
-            // Other complex paths (Option<T>, Result<T>, etc.)
-            return TypeInfo::Unknown;
         }
+        // Check for Vec<T> specifically
+        if let Some(seg) = path.path.segments.last() {
+            if seg.ident == "Vec" {
+                return TypeInfo::List;
+            }
+        }
+        // Other complex paths (Option<T>, Result<T>, etc.)
+        return TypeInfo::Unknown;
     }
     TypeInfo::Unknown
 }
@@ -577,7 +561,7 @@ fn is_nested_struct(ty: &Type) -> bool {
     }
 }
 
-/// Generate the appropriate SettingMetadata constructor based on type
+/// Generate the appropriate `SettingMetadata` constructor based on type
 fn generate_setting_type(ty: &Type, field_name: &syn::Ident) -> proc_macro2::TokenStream {
     match classify_type(ty) {
         TypeInfo::Toggle => {

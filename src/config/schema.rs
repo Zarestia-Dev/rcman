@@ -156,7 +156,7 @@ use std::collections::HashMap;
 /// Internal metadata keys used by the library itself.
 ///
 /// These constants are for metadata that the library actually uses internally.
-/// For custom metadata (like "advanced", "order", "requires_restart", etc.),
+/// For custom metadata (like "advanced", "order", "`requires_restart`", etc.),
 /// just use string literals directly with `.meta_str()`, `.meta_bool()`, etc.
 ///
 /// # Example
@@ -326,6 +326,7 @@ impl SettingMetadata {
     }
 
     /// Create a toggle/boolean setting
+    #[must_use]
     pub fn toggle(default: bool) -> Self {
         Self {
             setting_type: SettingType::Toggle,
@@ -350,6 +351,7 @@ impl SettingMetadata {
     }
 
     /// Create an info/read-only setting
+    #[must_use]
     pub fn info(default: Value) -> Self {
         Self {
             setting_type: SettingType::Info,
@@ -359,6 +361,7 @@ impl SettingMetadata {
     }
 
     /// Create a list setting (`Vec<String>`)
+    #[must_use]
     pub fn list(default: &[String]) -> Self {
         Self {
             setting_type: SettingType::List,
@@ -400,24 +403,28 @@ impl SettingMetadata {
         self
     }
 
-    /// Get metadata value by key
+    /// Get custom metadata by key
+    #[must_use]
     pub fn get_meta(&self, key: &str) -> Option<&Value> {
         self.metadata.get(key)
     }
 
-    /// Get metadata value as string
+    /// Get custom string metadata
+    #[must_use]
     pub fn get_meta_str(&self, key: &str) -> Option<&str> {
         self.metadata.get(key).and_then(|v| v.as_str())
     }
 
-    /// Get metadata value as bool
+    /// Get custom boolean metadata
+    #[must_use]
     pub fn get_meta_bool(&self, key: &str) -> Option<bool> {
-        self.metadata.get(key).and_then(|v| v.as_bool())
+        self.metadata.get(key).and_then(Value::as_bool)
     }
 
-    /// Get metadata value as number
+    /// Get custom numeric metadata
+    #[must_use]
     pub fn get_meta_num(&self, key: &str) -> Option<f64> {
-        self.metadata.get(key).and_then(|v| v.as_f64())
+        self.metadata.get(key).and_then(Value::as_f64)
     }
 
     // =========================================================================
@@ -475,6 +482,7 @@ impl SettingMetadata {
     }
 
     /// Check if this setting is marked as secret
+    #[must_use]
     pub fn is_secret(&self) -> bool {
         self.get_meta_bool(meta::SECRET).unwrap_or(false)
     }
@@ -490,6 +498,9 @@ impl SettingMetadata {
     /// - Regex pattern for text
     /// - Valid option for select type
     /// - Type compatibility
+    ///
+    /// # Errors
+    /// Returns an error message if validation fails (type mismatch, out of range, invalid pattern, etc.)
     pub fn validate(&self, value: &Value) -> Result<(), String> {
         match self.setting_type {
             SettingType::Toggle => {
@@ -550,6 +561,9 @@ impl SettingMetadata {
     /// - Step is positive
     /// - Pattern is valid regex
     /// - Default value satisfies constraints
+    ///
+    /// # Errors
+    /// Returns an error if schema is inconsistent (min > max, invalid regex, empty pattern, etc.)
     pub fn validate_schema(&self) -> Result<(), String> {
         // Check select has options
         if self.setting_type == SettingType::Select && self.constraints.options.is_none() {

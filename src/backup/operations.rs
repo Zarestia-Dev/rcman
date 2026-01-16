@@ -366,7 +366,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
         self.traverse_secrets(
             &mut value,
-            prefix.to_string(),
+            prefix,
             &Schema::get_metadata(),
             match options.secret_policy {
                 crate::SecretBackupPolicy::Exclude => false,
@@ -384,7 +384,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
     fn traverse_secrets(
         &self,
         value: &mut serde_json::Value,
-        prefix: String,
+        prefix: &str,
         metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
         should_include: bool,
     ) -> Result<()> {
@@ -394,23 +394,23 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     let key = if prefix.is_empty() {
                         k.clone()
                     } else {
-                        format!("{}.{}", prefix, k)
+                        format!("{prefix}.{k}")
                     };
 
-                    self.traverse_secrets(v, key, metadata, should_include)?;
+                    self.traverse_secrets(v, &key, metadata, should_include)?;
                 }
             }
             _ => {
                 // Check if this is a secret
-                if let Some(_meta) = metadata.get(&prefix) {
+                if let Some(meta) = metadata.get(prefix) {
                     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                    if _meta.is_secret() {
+                    if meta.is_secret() {
                         if should_include {
                             // Try to fetch secret if simple value is null or default
                             // (It might be in keychain)
                             // Note: credentials() returns Option<&CredentialManager>, not Result
                             if let Some(creds) = self.manager.credentials() {
-                                if let Ok(Some(secret)) = creds.get(&prefix) {
+                                if let Ok(Some(secret)) = creds.get(prefix) {
                                     *value = serde_json::Value::String(secret);
                                 }
                             }
@@ -484,11 +484,11 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     let dest = sub_export_dir.join(format!("{name}.{ext}"));
 
                     // Process secrets for this item
-                    let prefix = format!("{}.{}", sub_type, name);
+                    let prefix = format!("{sub_type}.{name}");
 
                     self.traverse_secrets(
                         &mut value,
-                        prefix,
+                        &prefix,
                         &Schema::get_metadata(),
                         match options.secret_policy {
                             crate::SecretBackupPolicy::Exclude => false,
@@ -806,7 +806,7 @@ fn sanitize_filename(name: &str) -> String {
         .collect()
 }
 
-/// Format ExportType as a human-readable display string
+/// Format `ExportType` as a human-readable display string
 fn format_export_type(export_type: &ExportType) -> String {
     match export_type {
         ExportType::Full => "Full Backup".into(),
@@ -814,7 +814,7 @@ fn format_export_type(export_type: &ExportType) -> String {
         ExportType::Single {
             settings_type,
             name,
-        } => format!("Single {}: {}", settings_type, name),
+        } => format!("Single {settings_type}: {name}"),
     }
 }
 
