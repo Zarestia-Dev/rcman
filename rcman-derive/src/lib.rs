@@ -306,9 +306,17 @@ fn parse_number_constraint(
     match &lit.lit {
         Lit::Float(f) => Ok(f.base10_parse().ok()),
         Lit::Int(i) => Ok(i.base10_parse().ok()),
+        Lit::Str(_) => Err(syn::Error::new_spanned(
+            lit,
+            format!("#[setting({constraint_name})] expects a number, found string literal (hint: remove quotes, use `{constraint_name} = 10`)"),
+        )),
+        Lit::Bool(_) => Err(syn::Error::new_spanned(
+            lit,
+            format!("#[setting({constraint_name})] expects a number, found boolean (hint: use `{constraint_name} = 10`)"),
+        )),
         _ => Err(syn::Error::new_spanned(
             lit,
-            format!("#[setting({constraint_name})] must be a number"),
+            format!("#[setting({constraint_name})] must be a number literal (e.g., `{constraint_name} = 10` or `{constraint_name} = 10.5`)"),
         )),
     }
 }
@@ -343,7 +351,9 @@ fn parse_metadata_value(
         }
         _ => Err(syn::Error::new_spanned(
             lit,
-            "Metadata values must be string, number, or boolean literals",
+            format!(
+                "Metadata value for '{key}' must be a string, number, or boolean literal (hint: use \\\"text\\\", 123, or true/false)"
+            ),
         )),
     }
 }

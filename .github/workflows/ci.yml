@@ -8,7 +8,13 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,27 +37,37 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      # Format check - Fast, run on Ubuntu only
       - name: Format check
+        if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
 
+      # Clippy - Run on all platforms to catch platform-specific issues
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # Test - Run on all platforms to verify behavior
       - name: Test
         run: cargo test --all --all-features --quiet
 
+      # Checks below this line are run only on Ubuntu to save resources
+      
       - name: Install cargo-deny
+        if: matrix.os == 'ubuntu-latest'
         run: cargo install cargo-deny --locked
 
       - name: Cargo deny (licenses and bans)
+        if: matrix.os == 'ubuntu-latest'
         # Note: advisories check disabled until cargo-deny supports CVSS 4.0
         # https://github.com/EmbarkStudios/cargo-deny/issues/635
         run: cargo deny check licenses bans
 
       - name: Build docs (docsrs cfg)
+        if: matrix.os == 'ubuntu-latest'
         env:
           RUSTDOCFLAGS: "--cfg docsrs"
         run: cargo doc --all-features --no-deps
 
       - name: Check clippy pedantic (all targets)
+        if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --features full -- -W clippy::pedantic

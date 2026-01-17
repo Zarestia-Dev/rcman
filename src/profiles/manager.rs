@@ -754,6 +754,59 @@ impl<S: StorageBackend> ProfileManager<S> {
         Ok(())
     }
 
+    /// Rollback to flat structure (removes all profiles except active)
+    ///
+    /// # ⚠️ Warning
+    ///
+    /// This operation is **irreversible** and will:
+    /// - Keep only the **active profile's** data
+    /// - **Permanently delete** all other profiles
+    /// - Remove the profile structure entirely
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use rcman::{SettingsManager, SubSettingsConfig};
+    ///
+    /// let manager = SettingsManager::builder("my-app", "1.0.0")
+    ///     .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
+    ///     .build()?;
+    ///
+    /// let remotes = manager.sub_settings("remotes")?;
+    ///
+    /// // Remove profile support, keeping only active profile data
+    /// remotes.profiles()?.rollback_to_flat()?;
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the rollback fails
+    pub fn rollback_to_flat(&self) -> Result<()> {
+        use crate::profiles::rollback_migration;
+
+        // Need to construct the root_dir from profiles_dir parent
+        let root_dir = self.profiles_dir.parent().ok_or_else(|| {
+            Error::Config("Invalid profiles directory structure".to_string())
+        })?;
+
+        // Determine single_file_mode by checking if root_dir is a file path
+        // In single file mode, root_dir is like "config/backends" (no extension)
+        // In multi file mode, root_dir is like "config/remotes" (directory)
+        let single_file_mode = root_dir.with_extension(self.storage.extension()).is_file();
+
+        rollback_migration(
+            root_dir,
+            &self.target_name,
+            single_file_mode,
+            &self.storage,
+        )?;
+
+        // Invalidate caches
+        self.invalidate_caches();
+
+        Ok(())
+    }
+
     /// Initialize profiles with auto-migration from flat structure
     ///
     /// If files exist in the base directory but no manifest exists,

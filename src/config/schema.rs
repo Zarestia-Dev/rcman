@@ -146,8 +146,17 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
+// =============================================================================
+// Regex Cache for Pattern Validation
+// =============================================================================
+
+/// Global cache for compiled regex patterns to avoid re-compilation on every validation
+static REGEX_CACHE: LazyLock<Mutex<HashMap<String, regex::Regex>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // =============================================================================
 // Well-known Metadata Keys
@@ -527,8 +536,20 @@ impl SettingMetadata {
             SettingType::Text => {
                 if let Some(ref pattern) = self.constraints.text.pattern {
                     let text = value.as_str().unwrap_or_default();
-                    let re = regex::Regex::new(pattern)
-                        .map_err(|e| format!("Invalid regex pattern: {e}"))?;
+
+                    // Use cached compiled regex for performance
+                    let re = {
+                        let mut cache =
+                            REGEX_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if let Some(cached) = cache.get(pattern) {
+                            cached.clone()
+                        } else {
+                            let compiled = regex::Regex::new(pattern)
+                                .map_err(|e| format!("Invalid regex pattern: {e}"))?;
+                            cache.insert(pattern.clone(), compiled.clone());
+                            compiled
+                        }
+                    };
 
                     if !re.is_match(text) {
                         return Err(format!("Value does not match pattern: {pattern}"));

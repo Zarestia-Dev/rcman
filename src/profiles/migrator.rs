@@ -209,3 +209,143 @@ fn run_auto_migration<S: StorageBackend>(
     info!("Successfully migrated '{target_name}' to profiles");
     Ok(())
 }
+
+/// Rollback profile structure to flat configuration
+///
+/// Reverts the profile migration by:
+/// 1. Moving all files from the active profile back to the root directory
+/// 2. Removing the profiles/ directory
+/// 3. Deleting the .profiles.json manifest
+///
+/// # Warnings
+///
+/// - Only the **active profile** data is preserved
+/// - All other profiles are **permanently deleted**
+/// - This operation is **irreversible**
+///
+/// # Arguments
+///
+/// * `root_dir` - Root directory containing the profiled structure
+/// * `target_name` - Name of the target (for logging)
+/// * `single_file_mode` - Whether using single file mode
+/// * `storage` - Storage backend for manifest operations
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - No profile manifest exists (not profiled)
+/// - Active profile directory doesn't exist
+/// - File operations fail
+///
+/// # Example
+///
+/// ```ignore
+/// use rcman::profiles::rollback_migration;
+///
+/// // Rollback remotes to flat structure
+/// rollback_migration(
+///     &config_dir.join("remotes"),
+///     "remotes",
+///     false, // multi-file mode
+///     &storage
+/// )?;
+/// ```
+pub fn rollback_migration<S: StorageBackend>(
+    root_dir: &Path,
+    target_name: &str,
+    single_file_mode: bool,
+    storage: &S,
+) -> Result<()> {
+    let ext = storage.extension();
+    let manifest_filename = format!(".profiles.{ext}");
+    let manifest_path = root_dir.join(&manifest_filename);
+
+    // Check if profiles are enabled
+    if !manifest_path.exists() {
+        return Err(Error::Config(format!(
+            "Cannot rollback '{target_name}': not using profiles (no manifest found)"
+        )));
+    }
+
+    // Read manifest to get active profile
+    let manifest: crate::profiles::ProfileManifest = storage.read(&manifest_path)?;
+    let active_profile = &manifest.active;
+
+    info!(
+        "Rolling back '{target_name}' from profiles to flat structure (preserving '{active_profile}' profile)"
+    );
+
+    let active_profile_dir = root_dir.join(PROFILES_DIR).join(active_profile);
+
+    if !active_profile_dir.exists() {
+        return Err(Error::Config(format!(
+            "Active profile directory not found: {}",
+            active_profile_dir.display()
+        )));
+    }
+
+    // Move files from active profile back to root
+    if single_file_mode {
+        // Single file: Move profiles/active/target_name.ext -> root_dir.ext
+        let source = active_profile_dir.join(format!("{target_name}.{ext}"));
+        let dest = root_dir.with_extension(ext);
+
+        if source.exists() {
+            debug!(
+                "Moving single file {} -> {}",
+                source.display(),
+                dest.display()
+            );
+            std::fs::rename(&source, &dest).map_err(|e| Error::FileWrite {
+                path: dest.clone(),
+                source: e,
+            })?;
+        }
+    } else {
+        // Multi-file: Move all items from profiles/active/ back to root_dir/
+        if active_profile_dir.is_dir() {
+            for entry in std::fs::read_dir(&active_profile_dir).map_err(|e| {
+                Error::DirectoryRead {
+                    path: active_profile_dir.clone(),
+                    source: e,
+                }
+            })? {
+                let entry = entry.map_err(|e| Error::DirectoryRead {
+                    path: active_profile_dir.clone(),
+                    source: e,
+                })?;
+                let source = entry.path();
+
+                if let Some(name) = source.file_name() {
+                    let dest = root_dir.join(name);
+                    debug!("Moving {:?} -> {:?}", source.display(), dest.display());
+                    std::fs::rename(&source, &dest).map_err(|e| Error::FileWrite {
+                        path: dest.clone(),
+                        source: e,
+                    })?;
+                }
+            }
+        }
+    }
+
+    // Remove profiles directory
+    let profiles_dir = root_dir.join(PROFILES_DIR);
+    if profiles_dir.exists() {
+        std::fs::remove_dir_all(&profiles_dir).map_err(|e| Error::DirectoryRead {
+            path: profiles_dir.clone(),
+            source: e,
+        })?;
+    }
+
+    // Remove manifest
+    std::fs::remove_file(&manifest_path).map_err(|e| Error::FileDelete {
+        path: manifest_path.clone(),
+        source: e,
+    })?;
+
+    info!(
+        "Successfully rolled back '{target_name}' to flat structure (preserved '{active_profile}' profile data, other profiles deleted)"
+    );
+
+    Ok(())
+}

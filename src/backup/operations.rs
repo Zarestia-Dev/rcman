@@ -24,7 +24,7 @@ use crate::profiles::PROFILES_DIR;
 /// Returns (`source_path`, `relative_dest_path`) pairs
 fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
     config: &crate::config::SettingsConfig<S, Schema>,
-    #[cfg_attr(not(feature = "profiles"), allow(unused_variables))] options: &BackupOptions,
+    _options: &BackupOptions,
 ) -> Vec<(PathBuf, PathBuf)> {
     let mut files = Vec::new();
 
@@ -45,8 +45,8 @@ fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
                 let profile_name = entry.file_name().to_string_lossy().to_string();
 
                 // Filter profiles if specified
-                if !options.include_profiles.is_empty()
-                    && !options.include_profiles.contains(&profile_name)
+                if !_options.include_profiles.is_empty()
+                    && !_options.include_profiles.contains(&profile_name)
                 {
                     continue;
                 }
@@ -388,6 +388,24 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
         should_include: bool,
     ) -> Result<()> {
+        self.traverse_secrets_impl(value, prefix, metadata, should_include, 0)
+    }
+
+    fn traverse_secrets_impl(
+        &self,
+        value: &mut serde_json::Value,
+        prefix: &str,
+        metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
+        should_include: bool,
+        depth: usize,
+    ) -> Result<()> {
+        const MAX_DEPTH: usize = 32;
+        if depth > MAX_DEPTH {
+            return Err(Error::BackupFailed(format!(
+                "JSON nesting exceeds maximum depth of {MAX_DEPTH}"
+            )));
+        }
+
         match value {
             serde_json::Value::Object(map) => {
                 for (k, v) in map {
@@ -397,13 +415,13 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                         format!("{prefix}.{k}")
                     };
 
-                    self.traverse_secrets(v, &key, metadata, should_include)?;
+                    self.traverse_secrets_impl(v, &key, metadata, should_include, depth + 1)?;
                 }
             }
             _ => {
-                // Check if this is a secret
+                // Check if this is a secret - only relevant when keychain/encrypted-file features are enabled
+                #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
                 if let Some(meta) = metadata.get(prefix) {
-                    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
                     if meta.is_secret() {
                         if should_include {
                             // Try to fetch secret if simple value is null or default
@@ -432,7 +450,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         sub_type: &str,
         sub: &crate::sub_settings::SubSettings<S>,
         storage: &S,
-        #[cfg_attr(not(feature = "profiles"), allow(unused_variables))] options: &BackupOptions,
+        options: &BackupOptions,
     ) -> Result<(u64, u32, Option<SubSettingsManifestEntry>)> {
         // Check if profiles are enabled
         #[cfg(feature = "profiles")]
