@@ -146,7 +146,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -539,8 +539,9 @@ impl SettingMetadata {
 
                     // Use cached compiled regex for performance
                     let re = {
-                        let mut cache =
-                            REGEX_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let mut cache = REGEX_CACHE
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         if let Some(cached) = cache.get(pattern) {
                             cached.clone()
                         } else {

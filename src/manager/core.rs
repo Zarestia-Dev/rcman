@@ -1,14 +1,14 @@
+#[cfg(feature = "backup")]
+use crate::backup::ExternalConfigProvider;
 use crate::config::{SettingsConfig, SettingsSchema};
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+use crate::credentials::CredentialManager;
 use crate::error::Result;
 use crate::events::EventManager;
 use crate::manager::cache::SettingsCache;
 use crate::manager::env::EnvironmentHandler;
 use crate::storage::StorageBackend;
 use crate::sub_settings::SubSettings;
-#[cfg(feature = "backup")]
-use crate::backup::ExternalConfigProvider;
-#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-use crate::credentials::CredentialManager;
 
 use log::info;
 use serde_json::Value;

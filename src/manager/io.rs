@@ -1,6 +1,6 @@
-use crate::config::SettingsSchema;
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 use crate::config::SettingMetadata;
+use crate::config::SettingsSchema;
 use crate::error::{Error, Result};
 use crate::manager::cache::CachedSettings;
 use crate::manager::core::SettingsManager;
@@ -8,7 +8,7 @@ use crate::storage::StorageBackend;
 use crate::sync::RwLockExt;
 
 use log::{debug, info};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Schema> {
     /// Get the current settings file path

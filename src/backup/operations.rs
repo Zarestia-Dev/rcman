@@ -24,7 +24,7 @@ use crate::profiles::PROFILES_DIR;
 /// Returns (`source_path`, `relative_dest_path`) pairs
 fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
     config: &crate::config::SettingsConfig<S, Schema>,
-    _options: &BackupOptions,
+    options: &BackupOptions,
 ) -> Vec<(PathBuf, PathBuf)> {
     let mut files = Vec::new();
 
@@ -45,8 +45,8 @@ fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
                 let profile_name = entry.file_name().to_string_lossy().to_string();
 
                 // Filter profiles if specified
-                if !_options.include_profiles.is_empty()
-                    && !_options.include_profiles.contains(&profile_name)
+                if !options.include_profiles.is_empty()
+                    && !options.include_profiles.contains(&profile_name)
                 {
                     continue;
                 }

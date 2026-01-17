@@ -9,21 +9,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **Pattern Constraint Support in Derive Macro**
-  - `#[setting(pattern = "regex")]` attribute for compile-time regex validation
-  - Automatic pattern constraint generation from derive macro
-  - Full parity with manual schema builder (min, max, step, pattern, options, secret)
+    - `#[setting(pattern = "regex")]` attribute for compile-time regex validation
+    - Automatic pattern constraint generation from derive macro
+    - Full parity with manual schema builder (min, max, step, pattern, options, secret)
 - Encrypted settings export support. Default is disabled.
+- Windows file and directory security support (With ACL).
 
 ### Changed
 
 - **API Simplification - Removed Non-Validating Constructors**
-  - REMOVED: `password()`, `color()`, `path()`, `file()`, `textarea()` constructors from `SettingMetadata`
-  - These constructors provided no backend validation - use `text()` with `.meta_str("input_type", ...)` for UI hints
-  - Updated constructor documentation to clarify validation behavior
+    - REMOVED: `password()`, `color()`, `path()`, `file()`, `textarea()` constructors from `SettingMetadata`
+    - These constructors provided no backend validation - use `text()` with `.meta_str("input_type", ...)` for UI hints
+    - Updated constructor documentation to clarify validation behavior
 - **SettingType Enum Cleanup**
-  - REMOVED: `Password`, `Color`, `Path`, `File`, `Textarea` variants from `SettingType` enum
-  - Simplified validation logic - removed dead pattern matches
-  - Only kept types with actual backend validation: `Toggle`, `Text`, `Number`, `Select`, `Info`, `List`
+    - REMOVED: `Password`, `Color`, `Path`, `File`, `Textarea` variants from `SettingType` enum
+    - Simplified validation logic - removed dead pattern matches
+    - Only kept types with actual backend validation: `Toggle`, `Text`, `Number`, `Select`, `Info`, `List`
 - Some imports were changed to make the code more readable.
 
 ### Fixed

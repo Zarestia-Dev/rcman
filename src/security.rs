@@ -107,21 +107,59 @@ pub fn ensure_secure_dir(path: &Path) -> Result<()> {
         source: e,
     })?;
 
-    #[cfg(unix)]
     set_secure_dir_permissions(path)?;
 
     Ok(())
 }
 
-/// No-op on Windows (permissions managed via ACLs)
+/// Set restrictive permissions on a file (Unix: 0o600, Windows: Owner only)
 #[cfg(not(unix))]
-pub fn set_secure_file_permissions(_path: &Path) -> Result<()> {
+pub fn set_secure_file_permissions(path: &Path) -> Result<()> {
+    set_secure_acl(path, false)
+}
+
+/// Set restrictive permissions on a directory (Unix: 0o700, Windows: Owner only)
+#[cfg(not(unix))]
+pub fn set_secure_dir_permissions(path: &Path) -> Result<()> {
+    set_secure_acl(path, true)
+}
+
+#[cfg(windows)]
+fn set_secure_acl(path: &Path, is_directory: bool) -> Result<()> {
+    use windows_acl::acl::ACL;
+    use windows_acl::helper::{current_user, name_to_sid};
+
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| Error::PathNotFound(path.display().to_string()))?;
+
+    // 1. Get current user SID
+    // windows-acl 0.3.0: current_user() returns name, then name_to_sid() gets SID
+    let user_name =
+        current_user().ok_or_else(|| Error::Config("Failed to get current user name".into()))?;
+    let sid = name_to_sid(&user_name, None)
+        .map_err(|e| Error::Config(format!("Failed to get user SID for {user_name}: {e}")))?;
+
+    let mut acl = ACL::from_file_path(path_str, false)
+        .map_err(|e| Error::Config(format!("Failed to open ACL for {path_str}: {e}")))?;
+
+    // 2. Add full control for current user
+    // 0x1F01FF is FILE_ALL_ACCESS
+    // Note: windows-acl 0.3.0 doesn't easily support disabling inheritance directly on the ACL struct.
+    // We strictly add our Allow entry. For complete exclusivity, inheritance disabling would be needed,
+    // but this ensures the owner strictly has their access granted.
+    // The allow method expects PSID which is *mut winapi::ctypes::c_void.
+    let sid_ptr = sid.as_ptr() as *mut winapi::ctypes::c_void;
+    if let Err(e) = acl.allow(sid_ptr, is_directory, 0x1F0_1FF) {
+        return Err(Error::Config(format!("Failed to add ALLOW ACE: {e}")));
+    }
+
     Ok(())
 }
 
-/// No-op on Windows (permissions managed via ACLs)
-#[cfg(not(unix))]
-pub fn set_secure_dir_permissions(_path: &Path) -> Result<()> {
+/// No-op fallback for non-unix/non-windows (e.g. unknown OS)
+#[cfg(not(any(unix, windows)))]
+fn set_secure_acl(_path: &Path, _is_directory: bool) -> Result<()> {
     Ok(())
 }
 

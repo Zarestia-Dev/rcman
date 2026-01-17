@@ -304,12 +304,12 @@ pub fn rollback_migration<S: StorageBackend>(
     } else {
         // Multi-file: Move all items from profiles/active/ back to root_dir/
         if active_profile_dir.is_dir() {
-            for entry in std::fs::read_dir(&active_profile_dir).map_err(|e| {
-                Error::DirectoryRead {
+            for entry in
+                std::fs::read_dir(&active_profile_dir).map_err(|e| Error::DirectoryRead {
                     path: active_profile_dir.clone(),
                     source: e,
-                }
-            })? {
+                })?
+            {
                 let entry = entry.map_err(|e| Error::DirectoryRead {
                     path: active_profile_dir.clone(),
                     source: e,

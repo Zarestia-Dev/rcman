@@ -308,15 +308,21 @@ fn parse_number_constraint(
         Lit::Int(i) => Ok(i.base10_parse().ok()),
         Lit::Str(_) => Err(syn::Error::new_spanned(
             lit,
-            format!("#[setting({constraint_name})] expects a number, found string literal (hint: remove quotes, use `{constraint_name} = 10`)"),
+            format!(
+                "#[setting({constraint_name})] expects a number, found string literal (hint: remove quotes, use `{constraint_name} = 10`)"
+            ),
         )),
         Lit::Bool(_) => Err(syn::Error::new_spanned(
             lit,
-            format!("#[setting({constraint_name})] expects a number, found boolean (hint: use `{constraint_name} = 10`)"),
+            format!(
+                "#[setting({constraint_name})] expects a number, found boolean (hint: use `{constraint_name} = 10`)"
+            ),
         )),
         _ => Err(syn::Error::new_spanned(
             lit,
-            format!("#[setting({constraint_name})] must be a number literal (e.g., `{constraint_name} = 10` or `{constraint_name} = 10.5`)"),
+            format!(
+                "#[setting({constraint_name})] must be a number literal (e.g., `{constraint_name} = 10` or `{constraint_name} = 10.5`)"
+            ),
         )),
     }
 }
