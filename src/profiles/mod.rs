@@ -71,7 +71,7 @@ pub const PROFILES_DIR: &str = "profiles";
 
 /// Validate a profile name
 ///
-/// Valid names contain only alphanumeric characters, underscores, and hyphens.
+/// Valid names can contain spaces and most printable characters.
 /// Names cannot be empty, start with a dot, or contain path separators.
 ///
 /// # Errors
@@ -98,13 +98,11 @@ pub fn validate_profile_name(name: &str) -> crate::Result<()> {
         )));
     }
 
-    // Allow only alphanumeric, underscore, hyphen
-    if !name
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-    {
+    // Only reject control characters and path-unsafe chars
+    // Allows: letters, numbers, spaces, punctuation, unicode, etc.
+    if name.chars().any(|c| c.is_control()) {
         return Err(Error::InvalidProfileName(format!(
-            "{name}: Profile name can only contain alphanumeric characters, underscores, and hyphens"
+            "{name}: Profile name cannot contain control characters"
         )));
     }
 
@@ -123,15 +121,23 @@ mod tests {
         assert!(validate_profile_name("profile_123").is_ok());
         assert!(validate_profile_name("Work").is_ok());
         assert!(validate_profile_name("PROD").is_ok());
+        
+        // Spaces and special characters are now allowed!
+        assert!(validate_profile_name("Test 1").is_ok());
+        assert!(validate_profile_name("My Backend!").is_ok());
+        assert!(validate_profile_name("NAS #2").is_ok());
+        assert!(validate_profile_name("Work (Personal)").is_ok());
+        assert!(validate_profile_name("Backend @ Home").is_ok());
     }
 
     #[test]
     fn test_invalid_profile_names() {
-        assert!(validate_profile_name("").is_err());
-        assert!(validate_profile_name(".hidden").is_err());
-        assert!(validate_profile_name("path/to").is_err());
-        assert!(validate_profile_name("..").is_err());
-        assert!(validate_profile_name("has space").is_err());
-        assert!(validate_profile_name("special@char").is_err());
+        assert!(validate_profile_name("").is_err());           // Empty
+        assert!(validate_profile_name(".hidden").is_err());    // Starts with dot
+        assert!(validate_profile_name("path/to").is_err());    // Path separator
+        assert!(validate_profile_name("path\\to").is_err());   // Path separator
+        assert!(validate_profile_name("..").is_err());         // Path traversal
+        assert!(validate_profile_name("has\nnewline").is_err()); // Control char
+        assert!(validate_profile_name("has\ttab").is_err());   // Control char
     }
 }

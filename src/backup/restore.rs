@@ -397,11 +397,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             };
 
             // Check if we are dealing with a profiled backup for this entry
-            let manifest_entry = self.analysis.manifest.contents.sub_settings.get(&sub_type);
-
             #[cfg(feature = "profiles")]
             let is_profiled_backup = matches!(
-                manifest_entry,
+                self.analysis.manifest.contents.sub_settings.get(&sub_type),
                 Some(SubSettingsManifestEntry::Profiled { .. })
             );
             #[cfg(not(feature = "profiles"))]

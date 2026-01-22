@@ -22,6 +22,7 @@ use crate::profiles::PROFILES_DIR;
 
 /// Helper to collect settings files for backup (handles both profiled and flat)
 /// Returns (`source_path`, `relative_dest_path`) pairs
+#[cfg_attr(not(feature = "profiles"), allow(unused_variables))]
 fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
     config: &crate::config::SettingsConfig<S, Schema>,
     options: &BackupOptions,
@@ -45,6 +46,7 @@ fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
                 let profile_name = entry.file_name().to_string_lossy().to_string();
 
                 // Filter profiles if specified
+                #[cfg(feature = "profiles")]
                 if !options.include_profiles.is_empty()
                     && !options.include_profiles.contains(&profile_name)
                 {
@@ -64,9 +66,6 @@ fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
     }
 
     // Non-profiled or feature disabled: just the single settings file
-    #[cfg(not(feature = "profiles"))]
-    let settings_path = config.settings_path();
-    #[cfg(feature = "profiles")]
     let settings_path = config.settings_path();
 
     if settings_path.exists() {
@@ -578,7 +577,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
             let profile_name = entry.file_name().to_string_lossy().to_string();
 
-            // Filter by requested profiles
+            // Filter by requested profiles (options.include_profiles is gated by #[cfg(feature = "profiles")])
             if !options.include_profiles.is_empty()
                 && !options.include_profiles.contains(&profile_name)
             {
