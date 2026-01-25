@@ -232,6 +232,14 @@ pub struct TextConstraints {
     pub pattern: Option<String>,
 }
 
+/// Constraints for List type settings
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ListConstraints {
+    /// Reserved values that cannot be used
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reserved: Option<Vec<String>>,
+}
+
 /// Type-specific constraints
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct SettingConstraints {
@@ -246,6 +254,10 @@ pub struct SettingConstraints {
     /// Text constraints
     #[serde(flatten)]
     pub text: TextConstraints,
+
+    /// List constraints
+    #[serde(flatten)]
+    pub list: ListConstraints,
 }
 
 // =============================================================================
@@ -473,6 +485,17 @@ impl SettingMetadata {
     }
 
     // =========================================================================
+    // List constraint setters (builder pattern)
+    // =========================================================================
+
+    /// Set reserved values for List type
+    #[must_use]
+    pub fn reserved(mut self, reserved: Vec<String>) -> Self {
+        self.constraints.list.reserved = Some(reserved);
+        self
+    }
+
+    // =========================================================================
     // Secret storage (special handling)
     // =========================================================================
 
@@ -568,6 +591,45 @@ impl SettingMetadata {
             SettingType::List => {
                 if !value.is_array() {
                     return Err("Value must be an array".to_string());
+                }
+
+                // Check reserved values
+                if let Some(reserved) = &self.constraints.list.reserved {
+                    if let Some(arr) = value.as_array() {
+                        for item in arr {
+                            if let Some(s) = item.as_str() {
+                                // If the reserved list is ["--rc-serve", "--log-file"],
+                                // then "--rc-serve" (exact) should fail.
+                                // "--log-file=foo" should fail.
+                                // "--log-file" (exact) should fail.
+                                // "--log-file foo" should also fail (if split by space).
+                                //
+                                // Validation Logic:
+                                // To be consistent with execution logic (which splits on first space),
+                                // we must ensure that neither the full string nor the first part (if split)
+                                // matches a reserved flag.
+                                for r in reserved {
+                                    // 1. Check exact match ("--log-file")
+                                    // 2. Check prefix with equals ("--log-file=...")
+                                    if s == r || s.starts_with(&format!("{}=", r)) {
+                                        return Err(format!(
+                                            "Value '{s}' matches reserved flag '{r}'"
+                                        ));
+                                    }
+
+                                    // 3. Check split by space ("--log-file /path")
+                                    // Mirroring process_common.rs logic: split_once(' ')
+                                    if let Some((key, _)) = s.split_once(' ') {
+                                        if key == r {
+                                            return Err(format!(
+                                                "Value '{s}' matches reserved flag '{r}'"
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             SettingType::Info => {} // Read-only, no validation needed
@@ -973,5 +1035,29 @@ mod tests {
             setting.get_meta_str("label"),
             deserialized.get_meta_str("label")
         );
+    }
+
+    #[test]
+    fn test_reserved_list_validation() {
+        let meta = SettingMetadata::list(&[])
+            .reserved(vec!["--rc-serve".to_string(), "--log-file".to_string()]);
+
+        // Valid values
+        assert!(meta.validate(&json!(["--other-flag"])).is_ok());
+        assert!(meta.validate(&json!(["--rc-something-else"])).is_ok());
+
+        // Exact match reserved
+        assert!(meta.validate(&json!(["--rc-serve"])).is_err());
+        assert!(meta.validate(&json!(["--log-file"])).is_err());
+
+        // Prefix match reserved (flag with value)
+        assert!(meta.validate(&json!(["--rc-serve=true"])).is_err());
+        assert!(meta.validate(&json!(["--log-file=/tmp/log"])).is_err());
+        assert!(meta.validate(&json!(["--rc-serve :5572"])).is_err()); // Space separated check
+        assert!(meta.validate(&json!(["--log-file /tmp/log"])).is_err()); // Space separated check
+
+        // Check error message
+        let err = meta.validate(&json!(["--rc-serve=true"])).unwrap_err();
+        assert!(err.contains("Value '--rc-serve=true' matches reserved flag '--rc-serve'"));
     }
 }

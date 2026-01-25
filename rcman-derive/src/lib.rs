@@ -218,6 +218,10 @@ fn process_field(
     if attrs.secret {
         modifiers.push(quote! { .secret() });
     }
+    if !attrs.reserved.is_empty() {
+        let reserved_items = &attrs.reserved;
+        modifiers.push(quote! { .reserved(vec![#(#reserved_items.to_string()),*]) });
+    }
 
     // Add dynamic metadata modifiers
     for (key, value) in &attrs.metadata_str {
@@ -253,6 +257,7 @@ struct FieldAttrs {
     step: Option<f64>,
     pattern: Option<String>,
     options: Vec<(String, String)>, // (value, label) pairs for select type
+    reserved: Vec<String>,
     secret: bool,
     skip: bool,
     nested: bool, // Explicit marker for nested structs
@@ -502,6 +507,8 @@ fn parse_field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs, syn::Error> {
                     Meta::List(list) => {
                         if list.path.is_ident("options") {
                             parse_options_list(&list, &mut result)?;
+                        } else if list.path.is_ident("reserved") {
+                            parse_reserved_list(&list, &mut result)?;
                         }
                     }
                 }
@@ -510,6 +517,30 @@ fn parse_field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs, syn::Error> {
     }
 
     Ok(result)
+}
+
+fn parse_reserved_list(list: &syn::MetaList, result: &mut FieldAttrs) -> Result<(), syn::Error> {
+    let items = list
+        .parse_args_with(syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated)?;
+
+    for item in items {
+        if let Expr::Lit(lit) = item {
+            if let Lit::Str(s) = lit.lit {
+                result.reserved.push(s.value());
+            } else {
+                return Err(syn::Error::new_spanned(
+                    lit,
+                    "#[setting(reserved)] values must be string literals",
+                ));
+            }
+        } else {
+            return Err(syn::Error::new_spanned(
+                item,
+                "#[setting(reserved)] values must be string literals",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Classification of Rust types for settings generation

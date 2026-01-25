@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Full parity with manual schema builder (min, max, step, pattern, options, secret)
 - Encrypted settings export support. Default is disabled.
 - Windows file and directory security support (With ACL).
+- Added reserved list for settings metadata.
 
 ### Changed
 
