@@ -100,7 +100,7 @@ pub fn validate_profile_name(name: &str) -> crate::Result<()> {
 
     // Only reject control characters and path-unsafe chars
     // Allows: letters, numbers, spaces, punctuation, unicode, etc.
-    if name.chars().any(|c| c.is_control()) {
+    if name.chars().any(char::is_control) {
         return Err(Error::InvalidProfileName(format!(
             "{name}: Profile name cannot contain control characters"
         )));
@@ -121,7 +121,7 @@ mod tests {
         assert!(validate_profile_name("profile_123").is_ok());
         assert!(validate_profile_name("Work").is_ok());
         assert!(validate_profile_name("PROD").is_ok());
-        
+
         // Spaces and special characters are now allowed!
         assert!(validate_profile_name("Test 1").is_ok());
         assert!(validate_profile_name("My Backend!").is_ok());
@@ -132,12 +132,12 @@ mod tests {
 
     #[test]
     fn test_invalid_profile_names() {
-        assert!(validate_profile_name("").is_err());           // Empty
-        assert!(validate_profile_name(".hidden").is_err());    // Starts with dot
-        assert!(validate_profile_name("path/to").is_err());    // Path separator
-        assert!(validate_profile_name("path\\to").is_err());   // Path separator
-        assert!(validate_profile_name("..").is_err());         // Path traversal
+        assert!(validate_profile_name("").is_err()); // Empty
+        assert!(validate_profile_name(".hidden").is_err()); // Starts with dot
+        assert!(validate_profile_name("path/to").is_err()); // Path separator
+        assert!(validate_profile_name("path\\to").is_err()); // Path separator
+        assert!(validate_profile_name("..").is_err()); // Path traversal
         assert!(validate_profile_name("has\nnewline").is_err()); // Control char
-        assert!(validate_profile_name("has\ttab").is_err());   // Control char
+        assert!(validate_profile_name("has\ttab").is_err()); // Control char
     }
 }

@@ -611,7 +611,7 @@ impl SettingMetadata {
                                 for r in reserved {
                                     // 1. Check exact match ("--log-file")
                                     // 2. Check prefix with equals ("--log-file=...")
-                                    if s == r || s.starts_with(&format!("{}=", r)) {
+                                    if s == r || s.starts_with(&format!("{r}=")) {
                                         return Err(format!(
                                             "Value '{s}' matches reserved flag '{r}'"
                                         ));
