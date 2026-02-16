@@ -9,11 +9,65 @@ use crate::sync::RwLockExt;
 use crate::backup::{BackupManager, ExternalConfigProvider};
 
 use log::{debug, info};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Schema> {
+    /// Helper to get a setting value, checking keyring if it's a secret.
+    ///
+    /// This centralizes the logic for retrieving values that may be stored in
+    /// the keyring (for secrets) or in the file cache (for normal settings).
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn get_value_with_secret_support(
+        &self,
+        key: &str,
+        metadata: &SettingMetadata,
+    ) -> Result<Option<Value>> {
+        // For secrets, check keyring first
+        if metadata.is_secret() {
+            // Check env var override for secrets if enabled
+            if self.config.env_overrides_secrets {
+                if let Some(env_value) = self.get_env_override(key) {
+                    return Ok(Some(env_value));
+                }
+            }
+
+            // Try retrieving from keyring
+            if let Ok(Some(secret_value)) = self.get_credential_with_profile(key) {
+                return Ok(Some(Value::String(secret_value)));
+            }
+
+            // Secret not found, use default
+            return Ok(Some(metadata.default.clone()));
+        }
+
+        // Not a secret - check cache (with env override support)
+        if let Some(env_value) = self.get_env_override(key) {
+            return Ok(Some(env_value));
+        }
+
+        let parts: Vec<&str> = key.split('.').collect();
+        self.settings_cache
+            .get_value(parts[0], parts[1], key)
+    }
+
+    /// Helper to get a setting value (non-credential version)
+    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+    fn get_value_with_secret_support(
+        &self,
+        key: &str,
+        _metadata: &SettingMetadata,
+    ) -> Result<Option<Value>> {
+        // Check env override first
+        if let Some(env_value) = self.get_env_override(key) {
+            return Ok(Some(env_value));
+        }
+
+        let parts: Vec<&str> = key.split('.').collect();
+        self.settings_cache
+            .get_value(parts[0], parts[1], key)
+    }
     /// Check if a setting value is overridden by an environment variable
     ///
     /// Returns the parsed value if env var is set and successfully parsed.
@@ -38,64 +92,27 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // Ensure cache is populated
         self.ensure_cache_populated()?;
 
-        // Get stored settings from cache
-        let stored = self
-            .settings_cache
-            .get_stored()?
-            .unwrap_or_else(|| json!({}));
-
         // Get metadata and populate values
         let mut metadata = Schema::get_metadata();
 
         for (key, option) in &mut metadata {
             let parts: Vec<&str> = key.split('.').collect();
             if parts.len() == 2 {
-                let category = parts[0];
-                let setting_name = parts[1];
-
-                // Handle secret settings - fetch from credential manager
-                #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                if option.is_secret() {
-                    // Check env var override for secrets if enabled
-                    if self.config.env_overrides_secrets {
-                        if let Some(env_value) = self.get_env_override(key) {
-                            option.value = Some(env_value);
-                            option
-                                .metadata
-                                .insert("env_override".to_string(), Value::Bool(true));
-                            debug!("Secret {key} overridden by env var");
-                            continue;
-                        }
+                // Use the helper method to get value (handles secrets and env overrides)
+                if let Ok(Some(value)) = self.get_value_with_secret_support(key, option) {
+                    option.value = Some(value);
+                    
+                    // Mark as env-overridden if applicable
+                    if self.get_env_override(key).is_some() {
+                        option
+                            .metadata
+                            .insert("env_override".to_string(), Value::Bool(true));
+                        debug!("Setting {key} overridden by env var");
                     }
-
-                    if let Ok(Some(secret_value)) = self.get_credential_with_profile(key) {
-                        option.value = Some(Value::String(secret_value));
-                        continue;
-                    }
-                    // Secret not found in keychain, use default
+                } else {
+                    // Fallback to default if helper returns None
                     option.value = Some(option.default.clone());
-                    continue;
                 }
-
-                // Priority: env var override > stored value > default
-                // Check for environment variable override first
-                if let Some(env_value) = self.get_env_override(key) {
-                    option.value = Some(env_value);
-                    option
-                        .metadata
-                        .insert("env_override".to_string(), Value::Bool(true)); // Mark as env-overridden for UI
-                    debug!("Setting {key} overridden by env var");
-                    continue;
-                }
-
-                // Get effective value (stored or default)
-                let effective_value = stored
-                    .get(category)
-                    .and_then(|cat| cat.get(setting_name))
-                    .cloned()
-                    .unwrap_or_else(|| option.default.clone());
-
-                option.value = Some(effective_value);
             }
         }
 
@@ -129,7 +146,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     /// Get raw JSON value for a setting key.
     ///
-    /// Returns the value from merged settings cache.
+    /// Returns the value from merged settings cache, or from keyring if it's a secret.
     ///
     /// # Arguments
     ///
@@ -154,12 +171,15 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // Ensure cache is populated with schema defaults
         self.ensure_cache_populated()?;
 
-        // Use cache helper
-        if let Some(value) = self.settings_cache.get_value(category, setting_name, key)? {
-            return Ok(value);
-        }
+        // Get metadata to check if this is a secret
+        let metadata = Schema::get_metadata();
+        let setting_metadata = metadata
+            .get(key)
+            .ok_or_else(|| Error::SettingNotFound(format!("{category}.{setting_name}")))?;
 
-        Err(Error::SettingNotFound(format!("{category}.{setting_name}")))
+        // Use the helper that handles both secrets and regular settings
+        self.get_value_with_secret_support(key, setting_metadata)?
+            .ok_or_else(|| Error::SettingNotFound(format!("{category}.{setting_name}")))
     }
 
     /// Get merged settings struct with caching.
@@ -220,10 +240,16 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Returns an error if the sub-settings handler cannot be initialized (e.g. invalid path).
     pub fn register_sub_settings(&self, config: SubSettingsConfig) -> Result<()> {
         let name = config.name.clone();
+
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        let credentials = self.credentials.clone();
+
         let handler = Arc::new(SubSettings::new(
             &self.config.config_dir,
             config,
             self.storage.clone(),
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+            credentials,
         )?);
 
         let mut guard = self.sub_settings.write_recovered()?;

@@ -259,6 +259,34 @@ let all_remotes = remotes.list()?;
 remotes.delete("onedrive")?;
 ```
 
+Optional schema validation (same metadata model as main settings):
+
+```rust
+use rcman::{SettingMetadata, SettingsSchema, SubSettingsConfig, opt, settings};
+use std::collections::HashMap;
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct RemoteSchema;
+
+impl SettingsSchema for RemoteSchema {
+    fn get_metadata() -> HashMap<String, SettingMetadata> {
+        settings! {
+            "type" => SettingMetadata::select("drive", vec![
+                opt("drive", "Drive"),
+                opt("s3", "S3"),
+            ]),
+            "endpoint" => SettingMetadata::text("https://example.com").pattern(r"^https?://.+"),
+        }
+    }
+}
+
+let config = SubSettingsConfig::new("remotes").with_schema::<RemoteSchema>();
+```
+
+Secret fields in sub-settings are supported too. Mark a sub-field with `.secret()` in
+the sub-settings schema, and with `.with_credentials()` enabled the value is stored in
+credential storage (keychain/encrypted backend) instead of the sub-settings file payload.
+
 **Storage Modes:**
 
 | Mode                 | Files Created                            | Use Case                                  |

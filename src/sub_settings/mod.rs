@@ -13,9 +13,11 @@ mod store;
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
 use crate::sync::RwLockExt;
+use crate::{SettingMetadata, SettingsSchema};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -45,6 +47,9 @@ pub struct SubSettingsConfig {
     /// Optional migration function for schema changes
     pub migrator: Option<Arc<dyn Fn(Value) -> Value + Send + Sync>>,
 
+    /// Optional schema metadata for validating sub-settings entries
+    pub schema: Option<Arc<HashMap<String, SettingMetadata>>>,
+
     /// Storage mode (`MultiFile` or `SingleFile`)
     pub mode: SubSettingsMode,
 
@@ -66,6 +71,7 @@ impl Default for SubSettingsConfig {
             name: "items".into(),
             extension: None,
             migrator: None,
+            schema: None,
             mode: SubSettingsMode::MultiFile,
             cache_strategy: crate::CacheStrategy::default(),
             #[cfg(feature = "profiles")]
@@ -122,6 +128,17 @@ impl SubSettingsConfig {
         self
     }
 
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: HashMap<String, SettingMetadata>) -> Self {
+        self.schema = Some(Arc::new(metadata));
+        self
+    }
+
+    #[must_use]
+    pub fn with_schema<Schema: SettingsSchema>(self) -> Self {
+        self.with_metadata(Schema::get_metadata())
+    }
+
     #[cfg(feature = "profiles")]
     #[must_use]
     pub fn with_profiles(mut self) -> Self {
@@ -143,6 +160,9 @@ pub type ChangeCallback = Arc<dyn Fn(&str, SubSettingsAction) + Send + Sync>;
 /// Handler for a single sub-settings type
 pub struct SubSettings<S: StorageBackend = crate::storage::JsonStorage> {
     config: SubSettingsConfig,
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    credential_manager: Option<crate::credentials::CredentialManager>,
 
     /// The active store implementation
     store: RwLock<Box<dyn SubSettingsStore>>,
@@ -194,6 +214,9 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         config_dir: &std::path::Path,
         mut config: SubSettingsConfig,
         storage: S,
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))] credential_manager: Option<
+            crate::credentials::CredentialManager,
+        >,
     ) -> Result<Self> {
         if config.extension.is_none() {
             config.extension = Some(storage.extension().to_string());
@@ -201,6 +224,17 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
         if let Err(e) = config.cache_strategy.validate() {
             return Err(Error::InvalidCacheStrategy(e.to_string()));
+        }
+
+        if let Some(schema) = &config.schema {
+            for (key, metadata) in schema.iter() {
+                if let Err(reason) = metadata.validate_schema() {
+                    return Err(Error::InvalidSettingMetadata {
+                        key: format!("{}.{}", config.name, key),
+                        reason,
+                    });
+                }
+            }
         }
 
         #[cfg(feature = "profiles")]
@@ -264,6 +298,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
         Ok(Self {
             config,
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+            credential_manager,
             store: RwLock::new(store),
             #[cfg(feature = "profiles")]
             storage,
@@ -394,6 +430,299 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         }
     }
 
+    /// Update a single field in a sub-settings entry.
+    ///
+    /// This performs a read-modify-write on one entry:
+    /// - Loads existing entry (or `{}` if missing)
+    /// - Sets the provided field path (supports dot notation)
+    /// - Saves through `set()`, so schema validation and secret handling still apply
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails, schema validation fails,
+    /// or store write fails.
+    pub fn set_field<T: Serialize + Sync>(
+        &self,
+        name: &str,
+        field_path: &str,
+        value: &T,
+    ) -> Result<()> {
+        let mut entry = self
+            .get_value(name)
+            .unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
+
+        if !entry.is_object() {
+            entry = Value::Object(serde_json::Map::new());
+        }
+
+        let new_value = serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
+        Self::set_value_at_path(&mut entry, field_path, new_value);
+
+        self.set(name, &entry)
+    }
+
+    fn value_at_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+        let mut current = value;
+        if path.is_empty() {
+            return Some(current);
+        }
+
+        for segment in path.split('.') {
+            current = current.as_object()?.get(segment)?;
+        }
+
+        Some(current)
+    }
+
+    fn validate_against_schema(&self, entry_name: &str, value: &Value) -> Result<()> {
+        let Some(schema) = self.config.schema.as_ref() else {
+            return Ok(());
+        };
+
+        if let Some(obj) = value.as_object() {
+            let allowed_roots: std::collections::HashSet<&str> = schema
+                .keys()
+                .map(|key| key.split('.').next().unwrap_or(key.as_str()))
+                .collect();
+
+            for key in obj.keys() {
+                if !allowed_roots.contains(key.as_str()) {
+                    return Err(Error::InvalidSettingValue {
+                        key: format!("{}.{}.{}", self.config.name, entry_name, key),
+                        reason: "Field is not defined in sub-settings schema".to_string(),
+                    });
+                }
+            }
+        }
+
+        for (path, metadata) in schema.iter() {
+            if let Some(field_value) = Self::value_at_path(value, path) {
+                if let Err(reason) = metadata.validate(field_value) {
+                    return Err(Error::InvalidSettingValue {
+                        key: format!("{}.{}.{}", self.config.name, entry_name, path),
+                        reason,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn remove_value_at_path(value: &mut Value, path: &str) -> Option<Value> {
+        fn remove_nested(
+            obj: &mut serde_json::Map<String, Value>,
+            parts: &[&str],
+        ) -> Option<Value> {
+            match parts {
+                [] => None,
+                [last] => obj.remove(*last),
+                [head, rest @ ..] => {
+                    let child = obj.get_mut(*head)?;
+                    let child_obj = child.as_object_mut()?;
+                    let removed = remove_nested(child_obj, rest);
+                    if child_obj.is_empty() {
+                        obj.remove(*head);
+                    }
+                    removed
+                }
+            }
+        }
+
+        let parts: Vec<&str> = path.split('.').collect();
+        let obj = value.as_object_mut()?;
+        remove_nested(obj, &parts)
+    }
+
+    fn set_value_at_path(value: &mut Value, path: &str, new_value: Value) {
+        if path.is_empty() {
+            *value = new_value;
+            return;
+        }
+
+        if !value.is_object() {
+            *value = Value::Object(serde_json::Map::new());
+        }
+
+        let mut current = value;
+        let mut parts = path.split('.').peekable();
+
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                if let Some(obj) = current.as_object_mut() {
+                    obj.insert(part.to_string(), new_value);
+                }
+                return;
+            }
+
+            if let Some(obj) = current.as_object_mut() {
+                let entry = obj
+                    .entry(part.to_string())
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+
+                if !entry.is_object() {
+                    *entry = Value::Object(serde_json::Map::new());
+                }
+
+                current = entry;
+            } else {
+                return;
+            }
+        }
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn secret_credential_key(&self, entry_name: &str, field_path: &str) -> String {
+        format!("sub.{}.{}.{}", self.config.name, entry_name, field_path)
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn active_secret_profile(&self) -> Option<String> {
+        #[cfg(feature = "profiles")]
+        {
+            if self.config.profiles_enabled {
+                return self
+                    .profile_manager
+                    .as_ref()
+                    .and_then(|pm| pm.active().ok());
+            }
+        }
+
+        None
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn extract_and_store_secrets(&self, entry_name: &str, value: &mut Value) -> Result<()> {
+        let Some(schema) = self.config.schema.as_ref() else {
+            return Ok(());
+        };
+
+        let secret_fields: Vec<_> = schema
+            .iter()
+            .filter(|(_, metadata)| metadata.is_secret())
+            .collect();
+
+        if secret_fields.is_empty() {
+            return Ok(());
+        }
+
+        let creds = self
+            .credential_manager
+            .as_ref()
+            .ok_or_else(|| Error::Credential("Credentials not enabled".to_string()))?;
+
+        let profile = self.active_secret_profile();
+
+        for (path, metadata) in secret_fields {
+            let Some(secret_value) = Self::remove_value_at_path(value, path) else {
+                continue;
+            };
+
+            let credential_key = self.secret_credential_key(entry_name, path);
+
+            if secret_value == metadata.default {
+                creds.remove(&credential_key)?;
+                continue;
+            }
+
+            let value_str = match secret_value {
+                Value::String(s) => s,
+                v => v.to_string(),
+            };
+
+            creds.store_with_profile(&credential_key, &value_str, profile.as_deref())?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+    fn extract_and_store_secrets(&self, _entry_name: &str, _value: &mut Value) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn inject_secrets_from_store(&self, entry_name: &str, value: &mut Value) -> Result<()> {
+        let Some(schema) = self.config.schema.as_ref() else {
+            return Ok(());
+        };
+
+        let Some(creds) = self.credential_manager.as_ref() else {
+            return Ok(());
+        };
+
+        let profile = self.active_secret_profile();
+
+        for (path, metadata) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
+            let credential_key = self.secret_credential_key(entry_name, path);
+            let secret = creds.get_with_profile(&credential_key, profile.as_deref())?;
+            let resolved = secret.map_or_else(|| metadata.default.clone(), Value::String);
+            Self::set_value_at_path(value, path, resolved);
+        }
+
+        Ok(())
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn has_stored_secret_for_entry(&self, entry_name: &str) -> Result<bool> {
+        let Some(schema) = self.config.schema.as_ref() else {
+            return Ok(false);
+        };
+
+        let Some(creds) = self.credential_manager.as_ref() else {
+            return Ok(false);
+        };
+
+        let profile = self.active_secret_profile();
+
+        for (path, metadata) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
+            let credential_key = self.secret_credential_key(entry_name, path);
+            if creds
+                .get_with_profile(&credential_key, profile.as_deref())?
+                .is_some()
+            {
+                let _ = metadata;
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+    fn has_stored_secret_for_entry(&self, _entry_name: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+    fn inject_secrets_from_store(&self, _entry_name: &str, _value: &mut Value) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn clear_secret_fields(&self, entry_name: &str) -> Result<()> {
+        let Some(schema) = self.config.schema.as_ref() else {
+            return Ok(());
+        };
+
+        let Some(creds) = self.credential_manager.as_ref() else {
+            return Ok(());
+        };
+
+        for (path, _) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
+            let credential_key = self.secret_credential_key(entry_name, path);
+            creds.remove(&credential_key)?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+    fn clear_secret_fields(&self, _entry_name: &str) -> Result<()> {
+        Ok(())
+    }
+
     // Delegation methods
 
     /// Get a raw Value from the store
@@ -407,7 +736,29 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     /// Returns an error if the setting is not found or store access fails.
     pub fn get_value(&self, name: &str) -> Result<Value> {
         let store = self.store.read_recovered()?;
-        store.get(name)
+
+        // Try to get the entry from the store
+        let mut value = match store.get(name) {
+            Ok(v) => v,
+            Err(Error::SubSettingsEntryNotFound(_)) => {
+                // Entry not found in file, but might have secrets in keyring
+                // If at least one secret exists in keyring, reconstruct from keyring + defaults
+                if self.has_stored_secret_for_entry(name)? {
+                    let mut empty_value = serde_json::json!({});
+                    self.inject_secrets_from_store(name, &mut empty_value)?;
+                    return Ok(empty_value);
+                }
+                // No schema or no secrets found, return original error
+                return Err(Error::SubSettingsEntryNotFound(format!(
+                    "Sub-setting entry '{name}' not found"
+                )));
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Inject secrets into the existing value
+        self.inject_secrets_from_store(name, &mut value)?;
+        Ok(value)
     }
 
     /// Get and deserialize a value from the store
@@ -440,7 +791,11 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     /// - Serialization fails
     /// - Store write fails
     pub fn set<T: Serialize + Sync>(&self, name: &str, value: &T) -> Result<()> {
-        let json_value = serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
+        let mut json_value =
+            serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
+
+        self.validate_against_schema(name, &json_value)?;
+        self.extract_and_store_secrets(name, &mut json_value)?;
 
         let store = self.store.read_recovered()?;
         let exists = store.get(name).is_ok();
@@ -472,6 +827,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         // Check if exists first for strict notification accuracy?
         // Store.remove handles "not found" gracefully usually.
         store.remove(name)?;
+        self.clear_secret_fields(name)?;
 
         self.notify_change(name, SubSettingsAction::Deleted);
         Ok(())

@@ -10,9 +10,10 @@
 mod common;
 
 use common::TestFixture;
-use rcman::{SettingsManager, SubSettingsConfig};
+use rcman::{SettingMetadata, SettingsManager, SettingsSchema, SubSettingsConfig, opt, settings};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
@@ -26,6 +27,50 @@ struct RemoteConfig {
     remote_type: String,
     endpoint: Option<String>,
     bucket: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct RemoteEntrySchema;
+
+impl SettingsSchema for RemoteEntrySchema {
+    fn get_metadata() -> HashMap<String, SettingMetadata> {
+        settings! {
+            "type" => SettingMetadata::select("drive", vec![
+                opt("drive", "Drive"),
+                opt("s3", "S3"),
+            ]),
+
+            "endpoint" => SettingMetadata::text("https://example.com")
+                .pattern(r"^https?://.+"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct InvalidRemoteSchema;
+
+impl SettingsSchema for InvalidRemoteSchema {
+    fn get_metadata() -> HashMap<String, SettingMetadata> {
+        settings! {
+            "port" => SettingMetadata::number(8080.0)
+                .min(9000.0)
+                .max(1000.0),
+        }
+    }
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct SecretRemoteSchema;
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+impl SettingsSchema for SecretRemoteSchema {
+    fn get_metadata() -> HashMap<String, SettingMetadata> {
+        settings! {
+            "host" => SettingMetadata::text("localhost"),
+            "token" => SettingMetadata::text("").secret(),
+        }
+    }
 }
 
 // =============================================================================
@@ -182,6 +227,45 @@ fn test_update_entry() {
     let loaded: RemoteConfig = remotes.get("myremote").unwrap();
     assert_eq!(loaded.bucket, Some("new-bucket".into()));
     assert_eq!(loaded.endpoint, Some("https://new-endpoint.com".into()));
+}
+
+#[test]
+fn test_set_field_updates_single_value() {
+    let fixture = TestFixture::with_sub_settings();
+    let remotes = fixture.manager.sub_settings("remotes").unwrap();
+
+    remotes
+        .set(
+            "myremote",
+            &json!({
+                "type": "s3",
+                "host": "old-host",
+                "port": 9000
+            }),
+        )
+        .unwrap();
+
+    remotes
+        .set_field("myremote", "host", &json!("new-host"))
+        .unwrap();
+
+    let loaded = remotes.get_value("myremote").unwrap();
+    assert_eq!(loaded["host"], json!("new-host"));
+    assert_eq!(loaded["type"], json!("s3"));
+    assert_eq!(loaded["port"], json!(9000));
+}
+
+#[test]
+fn test_set_field_creates_missing_entry() {
+    let fixture = TestFixture::with_sub_settings();
+    let remotes = fixture.manager.sub_settings("remotes").unwrap();
+
+    remotes
+        .set_field("created", "host", &json!("127.0.0.1"))
+        .unwrap();
+
+    let loaded = remotes.get_value("created").unwrap();
+    assert_eq!(loaded["host"], json!("127.0.0.1"));
 }
 
 #[test]
@@ -406,4 +490,153 @@ fn test_special_characters_in_entry_name() {
 
     let list = remotes.list().unwrap();
     assert_eq!(list.len(), 3);
+}
+
+// =============================================================================
+// Schema Validation
+// =============================================================================
+
+#[test]
+fn test_sub_settings_schema_accepts_valid_entry() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_sub_settings(SubSettingsConfig::new("remotes").with_schema::<RemoteEntrySchema>())
+        .build()
+        .unwrap();
+
+    let remotes = manager.sub_settings("remotes").unwrap();
+    remotes
+        .set(
+            "prod",
+            &json!({"type": "s3", "endpoint": "https://s3.amazonaws.com"}),
+        )
+        .unwrap();
+}
+
+#[test]
+fn test_sub_settings_schema_rejects_invalid_entry() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_sub_settings(SubSettingsConfig::new("remotes").with_schema::<RemoteEntrySchema>())
+        .build()
+        .unwrap();
+
+    let remotes = manager.sub_settings("remotes").unwrap();
+    let result = remotes.set(
+        "broken",
+        &json!({"type": "unsupported", "endpoint": "not-a-url"}),
+    );
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid setting value")
+    );
+}
+
+#[test]
+fn test_sub_settings_schema_rejects_unknown_root_field() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_sub_settings(SubSettingsConfig::new("remotes").with_schema::<RemoteEntrySchema>())
+        .build()
+        .unwrap();
+
+    let remotes = manager.sub_settings("remotes").unwrap();
+    let result = remotes.set("unexpected", &json!({"unknown": true}));
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("not defined in sub-settings schema")
+    );
+}
+
+#[test]
+fn test_sub_settings_invalid_schema_rejected_on_registration() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .build()
+        .unwrap();
+
+    let result = manager.register_sub_settings(
+        SubSettingsConfig::new("remotes").with_schema::<InvalidRemoteSchema>(),
+    );
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid setting metadata")
+    );
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+#[cfg_attr(
+    feature = "keychain",
+    ignore = "Requires Secret Service daemon (not available in CI)"
+)]
+fn test_sub_settings_secret_not_written_to_file_and_restored_on_read() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_credentials()
+        .with_sub_settings(SubSettingsConfig::new("remotes").with_schema::<SecretRemoteSchema>())
+        .build()
+        .unwrap();
+
+    let remotes = manager.sub_settings("remotes").unwrap();
+    remotes
+        .set(
+            "secure",
+            &json!({"host": "localhost", "token": "super-secret"}),
+        )
+        .unwrap();
+
+    let remotes_file = temp_dir.path().join("remotes").join("secure.json");
+    let content = std::fs::read_to_string(remotes_file).unwrap();
+
+    assert!(!content.contains("super-secret"));
+
+    let loaded = remotes.get_value("secure").unwrap();
+    assert_eq!(loaded["host"], json!("localhost"));
+    assert_eq!(loaded["token"], json!("super-secret"));
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_sub_settings_secret_requires_credentials_when_present() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_sub_settings(SubSettingsConfig::new("remotes").with_schema::<SecretRemoteSchema>())
+        .build()
+        .unwrap();
+
+    let remotes = manager.sub_settings("remotes").unwrap();
+    let result = remotes.set("secure", &json!({"host": "localhost", "token": "secret"}));
+
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Credentials not enabled")
+    );
 }
