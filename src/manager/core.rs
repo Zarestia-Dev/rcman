@@ -1,6 +1,6 @@
 #[cfg(feature = "backup")]
 use crate::backup::ExternalConfigProvider;
-use crate::config::{SettingsConfig, SettingsSchema};
+use crate::config::{SettingMetadata, SettingsConfig, SettingsSchema};
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 use crate::credentials::CredentialManager;
 use crate::error::Result;
@@ -72,6 +72,9 @@ pub struct SettingsManager<
     /// Pre-computed schema defaults (shared across cache operations)
     pub(crate) schema_defaults: Arc<HashMap<String, Value>>,
 
+    /// Cached schema metadata (shared across read paths)
+    pub(crate) schema_metadata: Arc<HashMap<String, SettingMetadata>>,
+
     /// Credential manager for secret settings (optional, requires keychain or encrypted-file feature)
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub(crate) credentials: Option<CredentialManager>,
@@ -140,8 +143,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         #[cfg(not(feature = "profiles"))]
         let settings_dir = config.config_dir.clone();
 
-        // Pre-compute schema defaults ONCE (memory optimization)
-        let metadata = Schema::get_metadata();
+        // Pre-compute schema metadata/defaults ONCE (memory optimization)
+        let metadata = Arc::new(Schema::get_metadata());
         let schema_defaults = Arc::new(
             metadata
                 .iter()
@@ -166,6 +169,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             settings_cache: SettingsCache::new(),
             env_handler,
             schema_defaults,
+            schema_metadata: metadata,
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             credentials,
             #[cfg(feature = "backup")]

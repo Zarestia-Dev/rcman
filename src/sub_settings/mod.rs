@@ -196,6 +196,32 @@ pub enum SubSettingsAction {
 }
 
 impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
+    fn make_store(
+        config: &SubSettingsConfig,
+        base_dir: PathBuf,
+        storage: S,
+    ) -> Box<dyn SubSettingsStore> {
+        let extension = config.extension.as_deref().unwrap_or("json").to_string();
+
+        match config.mode {
+            SubSettingsMode::MultiFile => Box::new(MultiFileStore::new(
+                config.name.clone(),
+                base_dir,
+                extension,
+                storage,
+                config.migrator.clone(),
+                config.cache_strategy,
+            )),
+            SubSettingsMode::SingleFile => Box::new(SingleFileStore::new(
+                config.name.clone(),
+                base_dir,
+                extension,
+                storage,
+                config.migrator.clone(),
+            )),
+        }
+    }
+
     /// Create a new `SubSettings` instance
     ///
     /// # Arguments
@@ -276,25 +302,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         #[cfg(not(feature = "profiles"))]
         let base_dir = root_dir.clone();
 
-        let extension = config.extension.as_deref().unwrap_or("json").to_string();
-
-        let store: Box<dyn SubSettingsStore> = match config.mode {
-            SubSettingsMode::MultiFile => Box::new(MultiFileStore::new(
-                config.name.clone(),
-                base_dir,
-                extension,
-                storage.clone(),
-                config.migrator.clone(),
-                config.cache_strategy,
-            )),
-            SubSettingsMode::SingleFile => Box::new(SingleFileStore::new(
-                config.name.clone(),
-                base_dir,
-                extension,
-                storage.clone(),
-                config.migrator.clone(),
-            )),
-        };
+        let store = Self::make_store(&config, base_dir, storage.clone());
 
         Ok(Self {
             config,
@@ -373,30 +381,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
         // Re-create store pointing to new path
         let new_path = pm.profile_path(name);
-        let extension = self
-            .config
-            .extension
-            .as_deref()
-            .unwrap_or("json")
-            .to_string();
-
-        let new_store: Box<dyn SubSettingsStore> = match self.config.mode {
-            SubSettingsMode::MultiFile => Box::new(MultiFileStore::new(
-                self.config.name.clone(),
-                new_path,
-                extension,
-                self.storage.clone(),
-                self.config.migrator.clone(),
-                self.config.cache_strategy,
-            )),
-            SubSettingsMode::SingleFile => Box::new(SingleFileStore::new(
-                self.config.name.clone(),
-                new_path,
-                extension,
-                self.storage.clone(),
-                self.config.migrator.clone(),
-            )),
-        };
+        let new_store = Self::make_store(&self.config, new_path, self.storage.clone());
 
         let mut store_guard = self.store.write_recovered()?;
         *store_guard = new_store;
@@ -447,9 +432,11 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         field_path: &str,
         value: &T,
     ) -> Result<()> {
-        let mut entry = self
-            .get_value(name)
-            .unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
+        let mut entry = match self.get_value(name) {
+            Ok(value) => value,
+            Err(Error::SubSettingsEntryNotFound(_)) => Value::Object(serde_json::Map::new()),
+            Err(err) => return Err(err),
+        };
 
         if !entry.is_object() {
             entry = Value::Object(serde_json::Map::new());
@@ -797,12 +784,12 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         self.validate_against_schema(name, &json_value)?;
         self.extract_and_store_secrets(name, &mut json_value)?;
 
-        let store = self.store.read_recovered()?;
-        let exists = store.get(name).is_ok();
+        let existed = self.exists(name)?;
 
+        let store = self.store.read_recovered()?;
         store.set(name, json_value)?;
 
-        let action = if exists {
+        let action = if existed {
             SubSettingsAction::Updated
         } else {
             SubSettingsAction::Created
@@ -822,6 +809,10 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if store write fails.
     pub fn delete(&self, name: &str) -> Result<()> {
+        if !self.exists(name)? {
+            return Ok(());
+        }
+
         let store = self.store.read_recovered()?;
 
         // Check if exists first for strict notification accuracy?
@@ -853,8 +844,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if the store cannot be read or if an unexpected error occurs during lookup.
     pub fn exists(&self, name: &str) -> Result<bool> {
-        let store = self.store.read_recovered()?;
-        match store.get(name) {
+        match self.get_value(name) {
             Ok(_) => Ok(true),
             Err(Error::SubSettingsEntryNotFound(_)) => Ok(false),
             Err(e) => Err(e),

@@ -140,12 +140,18 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
         }
 
         if let Some(cache) = &mut state.cache {
-            if value.is_null() {
-                cache.remove(key);
+            let changed = if value.is_null() {
+                cache.remove(key).is_some()
+            } else if cache.get(key).is_some_and(|existing| existing == &value) {
+                false
             } else {
                 cache.insert(key.to_string(), value);
+                true
+            };
+
+            if changed {
+                self.save_to_disk(cache)?;
             }
-            self.save_to_disk(cache)?;
         }
 
         Ok(())
@@ -190,5 +196,88 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
 
     fn get_single_file_path(&self) -> Option<PathBuf> {
         Some(self.file_path())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::JsonStorage;
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
+    use serde_json::json;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone)]
+    struct CountingStorage {
+        inner: JsonStorage,
+        writes: Arc<AtomicUsize>,
+    }
+
+    impl CountingStorage {
+        fn new(writes: Arc<AtomicUsize>) -> Self {
+            Self {
+                inner: JsonStorage::new(),
+                writes,
+            }
+        }
+    }
+
+    impl StorageBackend for CountingStorage {
+        fn extension(&self) -> &str {
+            self.inner.extension()
+        }
+
+        fn serialize<T: Serialize>(&self, data: &T) -> Result<String> {
+            self.inner.serialize(data)
+        }
+
+        fn deserialize<T: DeserializeOwned>(&self, content: &str) -> Result<T> {
+            self.inner.deserialize(content)
+        }
+
+        fn write<T: Serialize>(&self, path: &Path, data: &T) -> Result<()> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            self.inner.write(path, data)
+        }
+    }
+
+    #[test]
+    fn test_set_same_value_does_not_rewrite_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let writes = Arc::new(AtomicUsize::new(0));
+        let storage = CountingStorage::new(writes.clone());
+        let store = SingleFileStore::new(
+            "backends".to_string(),
+            dir.path().to_path_buf(),
+            "json".to_string(),
+            storage,
+            None,
+        );
+
+        store.set("remote", json!({"host": "localhost"})).unwrap();
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+
+        store.set("remote", json!({"host": "localhost"})).unwrap();
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_set_null_missing_key_does_not_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let writes = Arc::new(AtomicUsize::new(0));
+        let storage = CountingStorage::new(writes.clone());
+        let store = SingleFileStore::new(
+            "backends".to_string(),
+            dir.path().to_path_buf(),
+            "json".to_string(),
+            storage,
+            None,
+        );
+
+        store.set("missing", Value::Null).unwrap();
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
     }
 }

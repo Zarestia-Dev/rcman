@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v0.1.4] - Not Released
+
+### Changed
+
+- `SubSettings` store creation is centralized to reduce duplication and keep profile switching logic consistent.
+- `SingleFileStore::set()` now skips file writes when data is unchanged.
+- `SettingsManager` now caches schema metadata and reuses it in metadata/get/save/reset paths.
+
+### Fixed
+
+- `set_field()` now only treats `SubSettingsEntryNotFound` as missing; other read/parse errors are propagated.
+- `exists()` now follows `get_value()` semantics, including secret-backed entries.
+- `delete()` no longer emits a `Deleted` callback for missing entries.
+- Secret reset/removal now respects active profile scope for main settings with credentials.
+- Removed panic path in manager settings-path resolution; lock errors now propagate as regular `Result` errors.
+- Removed panic-style unwrap in merged cache retrieval; returns a regular error on unexpected initialization failure.
+- Removed remaining runtime unwraps in credential fallback logging and profiled backup manifest single-item conversion.
+
+### Tests
+
+- Added focused sub-settings regressions for `set_field` error propagation, callback action semantics, delete-missing behavior, and secret-only existence handling.
+- Added `single_file` unit tests to verify no-op writes are skipped.
+- Added profile integration coverage for profile-scoped secret reset behavior.
+
 ## [v0.1.3] - 2026-02-01
 
 ### Added

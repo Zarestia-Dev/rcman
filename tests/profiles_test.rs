@@ -517,3 +517,67 @@ fn test_main_settings_profiles_directory_structure() {
         "settings.json should exist in default profile"
     );
 }
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+#[cfg_attr(
+    feature = "keychain",
+    ignore = "Requires Secret Service daemon (not available in CI)"
+)]
+fn test_secret_reset_is_profile_scoped() {
+    use rcman::{SettingMetadata, SettingsSchema};
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+
+    #[derive(Default, Serialize, Deserialize)]
+    struct TestSettings {
+        api: ApiSettings,
+    }
+
+    #[derive(Default, Serialize, Deserialize)]
+    struct ApiSettings {
+        key: String,
+    }
+
+    impl SettingsSchema for TestSettings {
+        fn get_metadata() -> HashMap<String, SettingMetadata> {
+            let mut map = HashMap::new();
+            map.insert(
+                "api.key".to_string(),
+                SettingMetadata::text("").meta_str("label", "API Key").secret(),
+            );
+            map
+        }
+    }
+
+    let temp_dir = TempDir::new().unwrap();
+
+    let config = SettingsConfig::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
+        .with_profiles()
+        .with_credentials()
+        .build();
+    let manager = SettingsManager::new(config).unwrap();
+
+    manager
+        .save_setting("api", "key", &json!("default-secret"))
+        .unwrap();
+
+    manager.create_profile("work").unwrap();
+    manager.switch_profile("work").unwrap();
+    manager
+        .save_setting("api", "key", &json!("work-secret"))
+        .unwrap();
+    manager.reset_setting("api", "key").unwrap();
+
+    let work_metadata = manager.metadata().unwrap();
+    assert_eq!(work_metadata.get("api.key").unwrap().value, Some(json!("")));
+
+    manager.switch_profile("default").unwrap();
+    let default_metadata = manager.metadata().unwrap();
+    assert_eq!(
+        default_metadata.get("api.key").unwrap().value,
+        Some(json!("default-secret"))
+    );
+}

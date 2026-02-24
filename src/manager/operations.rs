@@ -14,6 +14,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Schema> {
+    fn parse_setting_key(key: &str) -> Option<(&str, &str)> {
+        let mut parts = key.split('.');
+        let category = parts.next()?;
+        let setting = parts.next()?;
+
+        if parts.next().is_some() {
+            return None;
+        }
+
+        Some((category, setting))
+    }
+
     /// Helper to get a setting value, checking keyring if it's a secret.
     ///
     /// This centralizes the logic for retrieving values that may be stored in
@@ -47,9 +59,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             return Ok(Some(env_value));
         }
 
-        let parts: Vec<&str> = key.split('.').collect();
-        self.settings_cache
-            .get_value(parts[0], parts[1], key)
+        let Some((category, setting_name)) = Self::parse_setting_key(key) else {
+            return Ok(None);
+        };
+
+        self.settings_cache.get_value(category, setting_name, key)
     }
 
     /// Helper to get a setting value (non-credential version)
@@ -64,9 +78,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             return Ok(Some(env_value));
         }
 
-        let parts: Vec<&str> = key.split('.').collect();
-        self.settings_cache
-            .get_value(parts[0], parts[1], key)
+        let Some((category, setting_name)) = Self::parse_setting_key(key) else {
+            return Ok(None);
+        };
+
+        self.settings_cache.get_value(category, setting_name, key)
     }
     /// Check if a setting value is overridden by an environment variable
     ///
@@ -93,11 +109,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         self.ensure_cache_populated()?;
 
         // Get metadata and populate values
-        let mut metadata = Schema::get_metadata();
+        let mut metadata = (*self.schema_metadata).clone();
 
         for (key, option) in &mut metadata {
-            let parts: Vec<&str> = key.split('.').collect();
-            if parts.len() == 2 {
+            if Self::parse_setting_key(key).is_some() {
                 // Use the helper method to get value (handles secrets and env overrides)
                 if let Ok(Some(value)) = self.get_value_with_secret_support(key, option) {
                     option.value = Some(value);
@@ -159,21 +174,18 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// - The setting doesn't exist
     /// - Storage read fails
     pub fn get_value(&self, key: &str) -> Result<Value> {
-        let parts: Vec<&str> = key.split('.').collect();
-        if parts.len() != 2 {
+        let Some((category, setting_name)) = Self::parse_setting_key(key) else {
             return Err(Error::Config(
                 "Key must be in format 'category.setting'".into(),
             ));
-        }
-        let category = parts[0];
-        let setting_name = parts[1];
+        };
 
         // Ensure cache is populated with schema defaults
         self.ensure_cache_populated()?;
 
         // Get metadata to check if this is a secret
-        let metadata = Schema::get_metadata();
-        let setting_metadata = metadata
+        let setting_metadata = self
+            .schema_metadata
             .get(key)
             .ok_or_else(|| Error::SettingNotFound(format!("{category}.{setting_name}")))?;
 

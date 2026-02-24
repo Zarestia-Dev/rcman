@@ -10,7 +10,10 @@
 mod common;
 
 use common::TestFixture;
-use rcman::{SettingMetadata, SettingsManager, SettingsSchema, SubSettingsConfig, opt, settings};
+use rcman::{
+    SettingMetadata, SettingsManager, SettingsSchema, SubSettingsAction, SubSettingsConfig, opt,
+    settings,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -269,6 +272,22 @@ fn test_set_field_creates_missing_entry() {
 }
 
 #[test]
+fn test_set_field_propagates_store_errors() {
+    let fixture = TestFixture::with_sub_settings();
+    let remotes = fixture.manager.sub_settings("remotes").unwrap();
+
+    let remotes_dir = fixture.config_dir().join("remotes");
+    std::fs::create_dir_all(&remotes_dir).unwrap();
+    std::fs::write(remotes_dir.join("broken.json"), "{invalid json").unwrap();
+
+    let result = remotes.set_field("broken", "host", &json!("new-host"));
+    assert!(result.is_err());
+
+    let err = result.unwrap_err();
+    assert!(!err.is_not_found());
+}
+
+#[test]
 fn test_delete_entry() {
     let fixture = TestFixture::with_sub_settings();
     let remotes = fixture.manager.sub_settings("remotes").unwrap();
@@ -456,6 +475,64 @@ fn test_on_change_callback() {
     assert_eq!(recorded[0].0, "new_remote");
     assert_eq!(recorded[1].0, "new_remote");
     assert_eq!(recorded[2].0, "new_remote");
+    assert_eq!(recorded[0].1, SubSettingsAction::Created);
+    assert_eq!(recorded[1].1, SubSettingsAction::Updated);
+    assert_eq!(recorded[2].1, SubSettingsAction::Deleted);
+}
+
+#[test]
+fn test_on_change_callback_reports_created_after_delete_and_recreate() {
+    let fixture = TestFixture::with_sub_settings();
+    let remotes = fixture.manager.sub_settings("remotes").unwrap();
+
+    let changes = Arc::new(Mutex::new(Vec::new()));
+    let changes_clone = changes.clone();
+
+    remotes
+        .set_on_change(move |name, action| {
+            changes_clone
+                .lock()
+                .unwrap()
+                .push((name.to_string(), action));
+        })
+        .unwrap();
+
+    remotes.set("lifecycle", &json!({"v": 1})).unwrap();
+    remotes.set("lifecycle", &json!({"v": 2})).unwrap();
+    remotes.delete("lifecycle").unwrap();
+    remotes.set("lifecycle", &json!({"v": 3})).unwrap();
+
+    let recorded = changes.lock().unwrap();
+    let actions: Vec<SubSettingsAction> = recorded.iter().map(|(_, action)| *action).collect();
+
+    assert_eq!(actions.len(), 4);
+    assert_eq!(actions[0], SubSettingsAction::Created);
+    assert_eq!(actions[1], SubSettingsAction::Updated);
+    assert_eq!(actions[2], SubSettingsAction::Deleted);
+    assert_eq!(actions[3], SubSettingsAction::Created);
+}
+
+#[test]
+fn test_delete_missing_entry_does_not_trigger_callback() {
+    let fixture = TestFixture::with_sub_settings();
+    let remotes = fixture.manager.sub_settings("remotes").unwrap();
+
+    let changes = Arc::new(Mutex::new(Vec::new()));
+    let changes_clone = changes.clone();
+
+    remotes
+        .set_on_change(move |name, action| {
+            changes_clone
+                .lock()
+                .unwrap()
+                .push((name.to_string(), action));
+        })
+        .unwrap();
+
+    remotes.delete("missing").unwrap();
+
+    let recorded = changes.lock().unwrap();
+    assert!(recorded.is_empty());
 }
 
 // =============================================================================
@@ -639,4 +716,34 @@ fn test_sub_settings_secret_requires_credentials_when_present() {
             .to_string()
             .contains("Credentials not enabled")
     );
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+#[cfg_attr(
+    feature = "keychain",
+    ignore = "Requires Secret Service daemon (not available in CI)"
+)]
+fn test_exists_recognizes_secret_only_entry_without_file() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_credentials()
+        .with_sub_settings(SubSettingsConfig::new("remotes").with_schema::<SecretRemoteSchema>())
+        .build()
+        .unwrap();
+
+    let remotes = manager.sub_settings("remotes").unwrap();
+    remotes.set("secure", &json!({"token": "super-secret"})).unwrap();
+
+    let remotes_file = temp_dir.path().join("remotes").join("secure.json");
+    if remotes_file.exists() {
+        std::fs::remove_file(&remotes_file).unwrap();
+    }
+
+    assert!(remotes.exists("secure").unwrap());
+
+    remotes.delete("secure").unwrap();
+    assert!(!remotes.exists("secure").unwrap());
 }

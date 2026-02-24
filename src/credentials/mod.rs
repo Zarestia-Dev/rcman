@@ -186,11 +186,6 @@ impl CredentialManager {
     /// # Errors
     ///
     /// Returns an error if the primary backend fails to store the key or if the fallback backend fails to store the key.
-    /// # Panics
-    ///
-    /// This function will not panic under normal circumstances. The `.unwrap()` call
-    /// on `self.fallback` is safe because it only executes within an `if let Some(...)`
-    /// block that has already confirmed the fallback exists.
     pub fn store_with_profile(&self, key: &str, value: &str, profile: Option<&str>) -> Result<()> {
         let full_key = self.make_key_with_profile(key, profile);
 
@@ -207,7 +202,7 @@ impl CredentialManager {
                 if let Some(ref fallback) = self.fallback {
                     log::warn!(
                         "Primary backend failed, using fallback: {}",
-                        self.fallback.as_ref().unwrap().backend_name()
+                        fallback.backend_name()
                     );
                     fallback.store(&full_key, value)
                 } else {
@@ -257,7 +252,16 @@ impl CredentialManager {
     ///
     /// Returns an error if the primary backend fails to remove the key or if the fallback backend fails to remove the key.
     pub fn remove(&self, key: &str) -> Result<()> {
-        let full_key = self.make_key(key);
+        self.remove_with_profile(key, None)
+    }
+
+    /// Remove a credential with optional profile context
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the primary backend fails to remove the key or if the fallback backend fails to remove the key.
+    pub fn remove_with_profile(&self, key: &str, profile: Option<&str>) -> Result<()> {
+        let full_key = self.make_key_with_profile(key, profile);
 
         // Remove from both backends
         let _ = self.primary.remove(&full_key);

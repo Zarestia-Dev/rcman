@@ -73,7 +73,11 @@ impl SettingsCache {
             // Compute and set
             let computed_val = computer(&cached.stored)?;
             let _ = cached.merged.set(computed_val);
-            return Ok(cached.merged.get().unwrap().clone());
+            return cached
+                .merged
+                .get()
+                .cloned()
+                .ok_or_else(|| Error::Config("Merged cache initialization failed".into()));
         }
         Err(Error::Config("Cache not populated".into()))
     }

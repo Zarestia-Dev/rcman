@@ -620,13 +620,19 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 .into_iter()
                 .map(|(profile_name, items)| {
                     let entry = if items.len() == 1 {
-                        super::types::ProfileEntry::Single(items.into_iter().next().unwrap())
+                        let mut single_item = items;
+                        let item = single_item.pop().ok_or_else(|| {
+                            Error::BackupFailed(
+                                "Expected single profile item but none found".to_string(),
+                            )
+                        })?;
+                        super::types::ProfileEntry::Single(item)
                     } else {
                         super::types::ProfileEntry::Multiple(items)
                     };
-                    (profile_name, entry)
+                    Ok((profile_name, entry))
                 })
-                .collect();
+                .collect::<Result<_>>()?;
 
             Some(SubSettingsManifestEntry::Profiled {
                 profiles: profiles_map,

@@ -15,12 +15,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// This returns the path where settings.json is stored.
     /// If profiles are enabled, this points to the active profile's directory.
-    pub(crate) fn settings_path(&self) -> std::path::PathBuf {
-        let dir = self
-            .settings_dir
-            .read_recovered()
-            .expect("Settings dir lock unrecoverable");
-        dir.join(&self.config.settings_file)
+    pub(crate) fn settings_path(&self) -> Result<std::path::PathBuf> {
+        let dir = self.settings_dir.read_recovered()?;
+        Ok(dir.join(&self.config.settings_file))
     }
 
     /// Get the credential manager, potentially with profile context
@@ -61,6 +58,26 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let profile: Option<String> = None;
 
         creds.store_with_profile(key, value, profile.as_deref())
+    }
+
+    /// Remove credential with profile context
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    pub(crate) fn remove_credential_with_profile(&self, key: &str) -> Result<()> {
+        let creds = self
+            .credentials
+            .as_ref()
+            .ok_or(Error::Credential("Credentials not enabled".to_string()))?;
+
+        #[cfg(feature = "profiles")]
+        let profile = self
+            .profile_manager
+            .as_ref()
+            .and_then(|pm| pm.active().ok());
+
+        #[cfg(not(feature = "profiles"))]
+        let profile: Option<String> = None;
+
+        creds.remove_with_profile(key, profile.as_deref())
     }
 
     /// Invalidate the settings cache
@@ -108,11 +125,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// * Saving to storage fails
     /// * Parsing the existing settings fails
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn save_setting(&self, category: &str, key: &str, value: &Value) -> Result<()> {
-        let path = self.settings_path();
+        let path = self.settings_path()?;
         let full_key = format!("{category}.{key}");
 
         // Validate the value before saving
@@ -126,7 +140,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // Get metadata for this schema (needed for secret checking and validation)
         // Note: For performance-critical apps with many settings, consider implementing
         // a caching layer in your SettingsSchema implementation
-        let metadata = Schema::get_metadata();
+        let metadata = &self.schema_metadata;
 
         // Handle secret settings separately
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -141,8 +155,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
             // If value equals default, remove from keychain (keep storage minimal)
             if *value == default_value {
-                if let Some(ref creds) = self.credentials {
-                    creds.remove(&full_key)?;
+                if self.credentials.is_some() {
+                    self.remove_credential_with_profile(&full_key)?;
                 }
                 info!("Secret {full_key} set to default, removed from keychain");
                 return Ok(());
@@ -255,7 +269,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// - Writing to storage fails
     pub fn reset_setting(&self, category: &str, key: &str) -> Result<Value> {
         let metadata_key = format!("{category}.{key}");
-        let default_value = Schema::get_metadata()
+        let default_value = self
+            .schema_metadata
             .get(&metadata_key)
             .map(|m| m.default.clone())
             .ok_or_else(|| Error::SettingNotFound(format!("{category}.{key}")))?;
@@ -271,7 +286,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if writing to storage fails or credential clearing fails.
     pub fn reset_all(&self) -> Result<()> {
-        let path = self.settings_path();
+        let path = self.settings_path()?;
 
         // Write empty object
         self.storage.write(&path, &json!({}))?;
@@ -292,7 +307,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Load settings from disk, applying migrations if needed
     pub(crate) fn load_from_disk(&self) -> Result<CachedSettings> {
         // Read from file
-        let settings_path = self.settings_path();
+        let settings_path = self.settings_path()?;
         let mut value: Value = match self.storage.read(&settings_path) {
             Ok(v) => v,
             Err(Error::FileRead { .. } | Error::PathNotFound(_)) => {
