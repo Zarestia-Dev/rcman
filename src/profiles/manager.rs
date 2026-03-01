@@ -250,10 +250,6 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Arguments
     ///
     /// * `callback` - The callback function to be called when a profile event occurs
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn set_on_event<F>(&self, callback: F)
     where
         F: Fn(ProfileEvent) + Send + Sync + 'static,
@@ -268,10 +264,6 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Arguments
     ///
     /// * `callback` - The callback function to be called when a profile switch occurs
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn set_on_invalidate<F>(&self, callback: F)
     where
         F: Fn() + Send + Sync + 'static,
@@ -302,10 +294,6 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// Invalidate the internal manifest cache
     ///
     /// This forces the manifest to be re-read from disk on the next access.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn invalidate_manifest(&self) {
         if let Ok(mut guard) = self.manifest.write() {
             *guard = None;
@@ -395,15 +383,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Errors
     ///
     /// Returns an error if the manifest cannot be read.
-    /// # Panics
-    ///
-    /// This function will not panic under normal circumstances. The `.unwrap()` call
-    /// is safe because `ensure_manifest()` is called first, which guarantees the manifest
-    /// is populated.
     pub fn active(&self) -> Result<String> {
         self.ensure_manifest()?;
         let guard = self.manifest.read_recovered()?;
-        Ok(guard.as_ref().unwrap().active.clone())
+        Ok(guard.as_ref().ok_or(Error::NotInitialized)?.active.clone())
     }
 
     /// List all profile names
@@ -415,15 +398,14 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Errors
     ///
     /// Returns an error if the manifest cannot be read.
-    /// # Panics
-    ///
-    /// This function will not panic under normal circumstances. The `.unwrap()` call
-    /// is safe because `ensure_manifest()` is called first, which guarantees the manifest
-    /// is populated.
     pub fn list(&self) -> Result<Vec<String>> {
         self.ensure_manifest()?;
         let guard = self.manifest.read_recovered()?;
-        Ok(guard.as_ref().unwrap().profiles.clone())
+        Ok(guard
+            .as_ref()
+            .ok_or(Error::NotInitialized)?
+            .profiles
+            .clone())
     }
 
     /// Check if a profile exists
@@ -439,15 +421,13 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Errors
     ///
     /// Returns an error if the manifest cannot be read.
-    /// # Panics
-    ///
-    /// This function will not panic under normal circumstances. The `.unwrap()` call
-    /// is safe because `ensure_manifest()` is called first, which guarantees the manifest
-    /// is populated.
     pub fn exists(&self, name: &str) -> Result<bool> {
         self.ensure_manifest()?;
         let guard = self.manifest.read_recovered()?;
-        Ok(guard.as_ref().unwrap().has_profile(name))
+        Ok(guard
+            .as_ref()
+            .ok_or(Error::NotInitialized)?
+            .has_profile(name))
     }
 
     /// Create a new profile
@@ -461,11 +441,6 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Errors
     ///
     /// Returns an error if the profile cannot be created.
-    /// # Panics
-    ///
-    /// This function will not panic under normal circumstances. The `.unwrap()` calls
-    /// are safe because `ensure_manifest()` is called first, which guarantees the manifest
-    /// is populated.
     pub fn create(&self, name: &str) -> Result<()> {
         validate_profile_name(name)?;
         self.ensure_manifest()?;
@@ -473,7 +448,11 @@ impl<S: StorageBackend> ProfileManager<S> {
         // Check if already exists
         {
             let guard = self.manifest.read_recovered()?;
-            if guard.as_ref().unwrap().has_profile(name) {
+            if guard
+                .as_ref()
+                .ok_or(Error::NotInitialized)?
+                .has_profile(name)
+            {
                 return Err(Error::ProfileAlreadyExists(name.to_string()));
             }
         }
@@ -485,7 +464,10 @@ impl<S: StorageBackend> ProfileManager<S> {
         // Update manifest
         {
             let mut guard = self.manifest.write_recovered()?;
-            guard.as_mut().unwrap().add_profile(name.to_string());
+            guard
+                .as_mut()
+                .ok_or(Error::NotInitialized)?
+                .add_profile(name.to_string());
         }
         self.save_manifest()?;
 
@@ -508,17 +490,12 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Errors
     ///
     /// Returns an error if the profile cannot be switched.
-    /// # Panics
-    ///
-    /// This function will not panic under normal circumstances. The `.unwrap()` calls
-    /// are safe because `ensure_manifest()` is called first, which guarantees the manifest
-    /// is populated.
     pub fn switch(&self, name: &str) -> Result<()> {
         self.ensure_manifest()?;
 
         let from = {
             let guard = self.manifest.read_recovered()?;
-            let manifest = guard.as_ref().unwrap();
+            let manifest = guard.as_ref().ok_or(Error::NotInitialized)?;
             if !manifest.has_profile(name) {
                 return Err(Error::ProfileNotFound(name.to_string()));
             }
@@ -533,7 +510,10 @@ impl<S: StorageBackend> ProfileManager<S> {
         // Update manifest
         {
             let mut guard = self.manifest.write_recovered()?;
-            guard.as_mut().unwrap().set_active(name);
+            guard
+                .as_mut()
+                .ok_or(Error::NotInitialized)?
+                .set_active(name);
         }
         self.save_manifest()?;
 
@@ -565,17 +545,12 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Errors
     ///
     /// Returns an error if the profile cannot be deleted.
-    /// # Panics
-    ///
-    /// This function will not panic under normal circumstances. The `.unwrap()` calls
-    /// are safe because `ensure_manifest()` is called first, which guarantees the manifest
-    /// is populated.
     pub fn delete(&self, name: &str) -> Result<()> {
         self.ensure_manifest()?;
 
         {
             let guard = self.manifest.read_recovered()?;
-            let manifest = guard.as_ref().unwrap();
+            let manifest = guard.as_ref().ok_or(Error::NotInitialized)?;
 
             if !manifest.has_profile(name) {
                 return Err(Error::ProfileNotFound(name.to_string()));
@@ -602,7 +577,10 @@ impl<S: StorageBackend> ProfileManager<S> {
         // Update manifest
         {
             let mut guard = self.manifest.write_recovered()?;
-            guard.as_mut().unwrap().remove_profile(name);
+            guard
+                .as_mut()
+                .ok_or(Error::NotInitialized)?
+                .remove_profile(name);
         }
         self.save_manifest()?;
 
@@ -624,18 +602,13 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Errors
     ///
     /// Returns an error if the profile cannot be renamed.
-    /// # Panics
-    ///
-    /// This function will not panic under normal circumstances. The `.unwrap()` calls
-    /// are safe because `ensure_manifest()` is called first, which guarantees the manifest
-    /// is populated.
     pub fn rename(&self, from: &str, to: &str) -> Result<()> {
         validate_profile_name(to)?;
         self.ensure_manifest()?;
 
         {
             let guard = self.manifest.read_recovered()?;
-            let manifest = guard.as_ref().unwrap();
+            let manifest = guard.as_ref().ok_or(Error::NotInitialized)?;
 
             if !manifest.has_profile(from) {
                 return Err(Error::ProfileNotFound(from.to_string()));
@@ -670,7 +643,10 @@ impl<S: StorageBackend> ProfileManager<S> {
         // Update manifest
         {
             let mut guard = self.manifest.write_recovered()?;
-            guard.as_mut().unwrap().rename_profile(from, to.to_string());
+            guard
+                .as_mut()
+                .ok_or(Error::NotInitialized)?
+                .rename_profile(from, to.to_string());
         }
         self.save_manifest()?;
 
@@ -699,18 +675,13 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Errors
     ///
     /// Returns an error if the profile cannot be duplicated.
-    /// # Panics
-    ///
-    /// This function will not panic under normal circumstances. The `.unwrap()` calls
-    /// are safe because `ensure_manifest()` is called first, which guarantees the manifest
-    /// is populated.
     pub fn duplicate(&self, source: &str, target: &str) -> Result<()> {
         validate_profile_name(target)?;
         self.ensure_manifest()?;
 
         {
             let guard = self.manifest.read_recovered()?;
-            let manifest = guard.as_ref().unwrap();
+            let manifest = guard.as_ref().ok_or(Error::NotInitialized)?;
 
             if !manifest.has_profile(source) {
                 return Err(Error::ProfileNotFound(source.to_string()));
@@ -737,7 +708,10 @@ impl<S: StorageBackend> ProfileManager<S> {
         // Update manifest
         {
             let mut guard = self.manifest.write_recovered()?;
-            guard.as_mut().unwrap().add_profile(target.to_string());
+            guard
+                .as_mut()
+                .ok_or(Error::NotInitialized)?
+                .add_profile(target.to_string());
         }
         self.save_manifest()?;
 
@@ -888,15 +862,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Errors
     ///
     /// Returns an error if the manifest cannot be read.
-    /// # Panics
-    ///
-    /// This function will not panic under normal circumstances. The `.unwrap()` call
-    /// is safe because `ensure_manifest()` is called first, which guarantees the manifest
-    /// is populated.
     pub fn manifest(&self) -> Result<ProfileManifest> {
         self.ensure_manifest()?;
         let guard = self.manifest.read_recovered()?;
-        Ok(guard.as_ref().unwrap().clone())
+        Ok(guard.as_ref().ok_or(Error::NotInitialized)?.clone())
     }
 
     /// Get the profiles directory path

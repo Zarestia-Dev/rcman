@@ -68,11 +68,11 @@ pub fn generate_docs_from_metadata<S: std::hash::BuildHasher>(
     let title = config
         .title
         .unwrap_or_else(|| "Settings Reference".to_string());
-    writeln!(output, "# {title}\n").unwrap();
+    let _ = writeln!(output, "# {title}\n");
 
     // Description
     if let Some(desc) = config.description {
-        writeln!(output, "{desc}\n").unwrap();
+        let _ = writeln!(output, "{desc}\n");
     }
 
     // Filter and sort settings
@@ -110,7 +110,7 @@ pub fn generate_docs_from_metadata<S: std::hash::BuildHasher>(
 
             // New category header
             if current_category != Some(category) {
-                writeln!(output, "\n## {}\n", capitalize(category)).unwrap();
+                let _ = writeln!(output, "\n## {}\n", capitalize(category));
                 current_category = Some(category);
             }
 
@@ -131,7 +131,7 @@ fn format_setting(out: &mut String, key: &str, meta: &SettingMetadata) {
     use std::fmt::Write;
 
     // Setting name with badges
-    writeln!(out, "### `{key}`\n").unwrap();
+    let _ = writeln!(out, "### `{key}`\n");
 
     // Badges (from dynamic metadata)
     let mut badges = Vec::new();
@@ -148,33 +148,33 @@ fn format_setting(out: &mut String, key: &str, meta: &SettingMetadata) {
         badges.push("Disabled");
     }
     if !badges.is_empty() {
-        writeln!(out, "{}\n", badges.join(" • ")).unwrap();
+        let _ = writeln!(out, "{}\n", badges.join(" • "));
     }
 
     // Description (from dynamic metadata)
     if let Some(desc) = meta.get_meta_str("description") {
-        writeln!(out, "{desc}\n").unwrap();
+        let _ = writeln!(out, "{desc}\n");
     }
 
     // Type and default
     out.push_str("| Property | Value |\n");
     out.push_str("|----------|-------|\n");
-    writeln!(out, "| **Type** | {} |", format_type(&meta.setting_type)).unwrap();
-    writeln!(out, "| **Default** | `{}` |", format_value(&meta.default)).unwrap();
+    let _ = writeln!(out, "| **Type** | {} |", format_type(&meta.setting_type));
+    let _ = writeln!(out, "| **Default** | `{}` |", format_value(&meta.default));
 
     // Range for numbers
     if meta.setting_type == SettingType::Number {
         if let (Some(min), Some(max)) = (meta.constraints.number.min, meta.constraints.number.max) {
-            writeln!(out, "| **Range** | {min} - {max} |").unwrap();
+            let _ = writeln!(out, "| **Range** | {min} - {max} |");
         }
         if let Some(step) = meta.constraints.number.step {
-            writeln!(out, "| **Step** | {step} |").unwrap();
+            let _ = writeln!(out, "| **Step** | {step} |");
         }
     }
 
     // Pattern for text
     if let Some(ref pattern) = meta.constraints.text.pattern {
-        writeln!(out, "| **Pattern** | `{pattern}` |").unwrap();
+        let _ = writeln!(out, "| **Pattern** | `{pattern}` |");
     }
 
     out.push('\n');
@@ -184,16 +184,15 @@ fn format_setting(out: &mut String, key: &str, meta: &SettingMetadata) {
         out.push_str("**Options:**\n\n");
         for opt in options {
             if let Some(ref desc) = opt.description {
-                writeln!(
+                let _ = writeln!(
                     out,
                     "- `{}` - {} ({})",
                     format_value(&opt.value),
                     opt.label,
                     desc
-                )
-                .unwrap();
+                );
             } else {
-                writeln!(out, "- `{}` - {}", format_value(&opt.value), opt.label).unwrap();
+                let _ = writeln!(out, "- `{}` - {}", format_value(&opt.value), opt.label);
             }
         }
         out.push('\n');

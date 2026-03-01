@@ -544,7 +544,9 @@ fn test_secret_reset_is_profile_scoped() {
             let mut map = HashMap::new();
             map.insert(
                 "api.key".to_string(),
-                SettingMetadata::text("").meta_str("label", "API Key").secret(),
+                SettingMetadata::text("")
+                    .meta_str("label", "API Key")
+                    .secret(),
             );
             map
         }

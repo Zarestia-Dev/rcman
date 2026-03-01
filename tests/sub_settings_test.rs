@@ -735,7 +735,9 @@ fn test_exists_recognizes_secret_only_entry_without_file() {
         .unwrap();
 
     let remotes = manager.sub_settings("remotes").unwrap();
-    remotes.set("secure", &json!({"token": "super-secret"})).unwrap();
+    remotes
+        .set("secure", &json!({"token": "super-secret"}))
+        .unwrap();
 
     let remotes_file = temp_dir.path().join("remotes").join("secure.json");
     if remotes_file.exists() {

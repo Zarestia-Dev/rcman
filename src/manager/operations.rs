@@ -116,7 +116,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 // Use the helper method to get value (handles secrets and env overrides)
                 if let Ok(Some(value)) = self.get_value_with_secret_support(key, option) {
                     option.value = Some(value);
-                    
+
                     // Mark as env-overridden if applicable
                     if self.get_env_override(key).is_some() {
                         option

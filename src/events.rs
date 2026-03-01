@@ -41,10 +41,6 @@ impl EventManager {
     ///
     /// # Arguments
     /// * `callback` - Function receiving (`full_key`, `old_value`, `new_value`)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn on_change<F>(&self, callback: F)
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
@@ -59,10 +55,6 @@ impl EventManager {
     /// # Arguments
     /// * `key` - The setting key (e.g., "`general.dark_mode`")
     /// * `callback` - Function receiving (`full_key`, `old_value`, `new_value`)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn watch<F>(&self, key: &str, callback: F)
     where
         F: Fn(&str, &Value, &Value) + Send + Sync + 'static,
@@ -83,10 +75,6 @@ impl EventManager {
     /// # Arguments
     /// * `key` - The setting key (e.g., "`general.dark_mode`")
     /// * `validator` - Function receiving (`full_key`, `old_value`, `new_value`)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn add_validator<F>(&self, key: &str, validator: F)
     where
         F: Fn(&Value) -> Result<(), String> + Send + Sync + 'static,
@@ -106,10 +94,6 @@ impl EventManager {
     /// # Errors
     ///
     /// Returns the first validation error message if any validator fails.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn validate(&self, key: &str, value: &Value) -> Result<(), String> {
         let guard = self
             .validators
@@ -129,10 +113,6 @@ impl EventManager {
     /// * `key` - The setting key (e.g., "`general.dark_mode`")
     /// * `old_value` - The old value
     /// * `new_value` - The new value
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn notify(&self, key: &str, old_value: &Value, new_value: &Value) {
         // Call global listeners
         if let Ok(guard) = self.global_listeners.read_recovered() {
@@ -152,10 +132,6 @@ impl EventManager {
     }
 
     /// Remove all listeners for a specific key
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn unwatch(&self, key: &str) {
         if let Ok(mut guard) = self.key_listeners.write_recovered() {
             guard.remove(key);
@@ -163,10 +139,6 @@ impl EventManager {
     }
 
     /// Clear all listeners
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn clear(&self) {
         if let Ok(mut guard) = self.global_listeners.write_recovered() {
             guard.clear();

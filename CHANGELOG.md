@@ -21,6 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Removed panic path in manager settings-path resolution; lock errors now propagate as regular `Result` errors.
 - Removed panic-style unwrap in merged cache retrieval; returns a regular error on unexpected initialization failure.
 - Removed remaining runtime unwraps in credential fallback logging and profiled backup manifest single-item conversion.
+- `CredentialManager::clear()` is now profile-scoped when a profile context is active, with regression tests.
+- `ProfileManager` manifest access/update paths now return explicit `NotInitialized` errors instead of relying on unwrap assumptions.
+- `SubSettings` single-file and multi-file stores now use recovered lock handling to avoid panic on poisoned locks.
+- Docs generation formatting paths were updated to avoid panic-style unwraps for consistency.
 
 ### Tests
 

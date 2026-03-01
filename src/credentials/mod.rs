@@ -293,10 +293,16 @@ impl CredentialManager {
     /// # Errors
     /// Returns an error if the primary backend fails to list keys or if the fallback backend fails to remove keys.
     pub fn clear(&self) -> Result<()> {
-        // Warning: clear() operates on the service level, ignores profile context for now
-        // to avoid accidentally deleting everything if context logic is wrong.
-        // TODO: Implement scoped clear for profiles
+        #[cfg(feature = "profiles")]
+        let prefix = if let Some(profile_ctx) = &self.profile_context {
+            format!("{}:profiles:{}:", self.service_name, profile_ctx)
+        } else {
+            format!("{}:", self.service_name)
+        };
+
+        #[cfg(not(feature = "profiles"))]
         let prefix = format!("{}:", self.service_name);
+
         let mut keys_to_remove = std::collections::HashSet::new();
 
         if let Ok(keys) = self.primary.list_keys() {
@@ -392,5 +398,65 @@ mod tests {
         let manager = CredentialManager::memory_only("test-app");
         let value = manager.get("nonexistent").unwrap();
         assert_eq!(value, None);
+    }
+
+    #[cfg(feature = "profiles")]
+    #[test]
+    fn test_clear_with_profile_context_is_scoped() {
+        let manager = CredentialManager::memory_only("test-app");
+
+        manager
+            .store_with_profile("api_key", "default-secret", Some("default"))
+            .unwrap();
+        manager
+            .store_with_profile("api_key", "work-secret", Some("work"))
+            .unwrap();
+        manager.store("global_key", "global-secret").unwrap();
+
+        let work_manager = manager.with_profile_context("work");
+        work_manager.clear().unwrap();
+
+        assert_eq!(
+            manager.get_with_profile("api_key", Some("work")).unwrap(),
+            None
+        );
+        assert_eq!(
+            manager
+                .get_with_profile("api_key", Some("default"))
+                .unwrap(),
+            Some("default-secret".to_string())
+        );
+        assert_eq!(
+            manager.get("global_key").unwrap(),
+            Some("global-secret".to_string())
+        );
+    }
+
+    #[cfg(feature = "profiles")]
+    #[test]
+    fn test_clear_without_profile_context_removes_all_scopes() {
+        let manager = CredentialManager::memory_only("test-app");
+
+        manager
+            .store_with_profile("api_key", "default-secret", Some("default"))
+            .unwrap();
+        manager
+            .store_with_profile("api_key", "work-secret", Some("work"))
+            .unwrap();
+        manager.store("global_key", "global-secret").unwrap();
+
+        manager.clear().unwrap();
+
+        assert_eq!(
+            manager
+                .get_with_profile("api_key", Some("default"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            manager.get_with_profile("api_key", Some("work")).unwrap(),
+            None
+        );
+        assert_eq!(manager.get("global_key").unwrap(), None);
     }
 }

@@ -2,6 +2,7 @@ use crate::CacheStrategy;
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
 use crate::sub_settings::store::SubSettingsStore;
+use crate::sync::RwLockExt;
 use log::debug;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -48,34 +49,35 @@ impl<S: StorageBackend> MultiFileStore<S> {
         self.base_dir.join(format!("{}.{}", key, self.extension))
     }
 
-    fn ensure_cache_populated(&self) {
+    fn ensure_cache_populated(&self) -> Result<()> {
         if matches!(self.cache_strategy, CacheStrategy::None) {
-            return;
+            return Ok(());
         }
 
         // Fast path
-        if self.state.read().unwrap().cache.is_some() {
-            return;
+        if self.state.read_recovered()?.cache.is_some() {
+            return Ok(());
         }
 
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write_recovered()?;
         if state.cache.is_some() {
-            return;
+            return Ok(());
         }
 
         // Initialize empty cache - we load lazily or could load full directory?
         // Original logic was initializing empty map.
         state.cache = Some(HashMap::new());
+        Ok(())
     }
 }
 
 impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
     fn get(&self, key: &str) -> Result<Value> {
-        self.ensure_cache_populated();
+        self.ensure_cache_populated()?;
 
         // Check cache first
         {
-            let state = self.state.read().unwrap();
+            let state = self.state.read_recovered()?;
             if let Some(cache) = &state.cache {
                 if let Some(val) = cache.get(key) {
                     return Ok(val.clone());
@@ -106,7 +108,7 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
 
         // Update cache
         {
-            let mut state = self.state.write().unwrap();
+            let mut state = self.state.write_recovered()?;
             if let Some(cache) = &mut state.cache {
                 cache.insert(key.to_string(), value.clone());
             }
@@ -132,7 +134,7 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
 
         // Update cache
         if !matches!(self.cache_strategy, CacheStrategy::None) {
-            let mut state = self.state.write().unwrap();
+            let mut state = self.state.write_recovered()?;
             // Initialize cache if needed (though set usually implies we want consistency)
             if state.cache.is_none() {
                 state.cache = Some(HashMap::new());
@@ -153,7 +155,7 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         }
 
         // Remove from cache
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write_recovered()?;
         if let Some(cache) = &mut state.cache {
             cache.remove(key);
         }
@@ -188,8 +190,9 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
     }
 
     fn invalidate_cache(&self) {
-        let mut state = self.state.write().unwrap();
-        state.cache = None;
+        if let Ok(mut state) = self.state.write_recovered() {
+            state.cache = None;
+        }
     }
 
     fn get_base_path(&self) -> PathBuf {

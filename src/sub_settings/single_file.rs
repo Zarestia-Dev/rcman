@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
 use crate::sub_settings::store::SubSettingsStore;
+use crate::sync::RwLockExt;
 
 use log::debug;
 use serde_json::Value;
@@ -51,11 +52,11 @@ impl<S: StorageBackend> SingleFileStore<S> {
     }
 
     fn ensure_loaded(&self) -> Result<()> {
-        if self.state.read().unwrap().loaded_from_disk {
+        if self.state.read_recovered()?.loaded_from_disk {
             return Ok(());
         }
 
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write_recovered()?;
         if state.loaded_from_disk {
             return Ok(());
         }
@@ -116,7 +117,7 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     fn get(&self, key: &str) -> Result<Value> {
         self.ensure_loaded()?;
 
-        let state = self.state.read().unwrap();
+        let state = self.state.read_recovered()?;
         if let Some(cache) = &state.cache {
             if let Some(val) = cache.get(key) {
                 return Ok(val.clone());
@@ -132,7 +133,7 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     fn set(&self, key: &str, value: Value) -> Result<()> {
         self.ensure_loaded()?; // Load everything first!
 
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write_recovered()?;
 
         // Initialize cache if something went wrong, though ensure_loaded should handle it
         if state.cache.is_none() {
@@ -160,7 +161,7 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     fn remove(&self, key: &str) -> Result<()> {
         self.ensure_loaded()?;
 
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write_recovered()?;
         if let Some(cache) = &mut state.cache {
             if cache.remove(key).is_some() {
                 self.save_to_disk(cache)?;
@@ -174,7 +175,7 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     fn list(&self) -> Result<Vec<String>> {
         self.ensure_loaded()?;
 
-        let state = self.state.read().unwrap();
+        let state = self.state.read_recovered()?;
         if let Some(cache) = &state.cache {
             let mut keys: Vec<String> = cache.keys().cloned().collect();
             keys.sort();
@@ -185,9 +186,10 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     }
 
     fn invalidate_cache(&self) {
-        let mut state = self.state.write().unwrap();
-        state.loaded_from_disk = false;
-        state.cache = None;
+        if let Ok(mut state) = self.state.write_recovered() {
+            state.loaded_from_disk = false;
+            state.cache = None;
+        }
     }
 
     fn get_base_path(&self) -> PathBuf {
