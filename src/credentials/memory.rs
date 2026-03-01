@@ -1,7 +1,7 @@
 //! In-memory credential backend for testing
 
 use super::CredentialBackend;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -28,29 +28,25 @@ impl Default for MemoryBackend {
 
 impl CredentialBackend for MemoryBackend {
     fn store(&self, key: &str, value: &str) -> Result<()> {
-        if let Ok(mut store) = self.store.write() {
-            store.insert(key.to_string(), value.to_string());
-        }
+        let mut store = self.store.write().map_err(|_| Error::LockPoisoned)?;
+        store.insert(key.to_string(), value.to_string());
         Ok(())
     }
 
     fn get(&self, key: &str) -> Result<Option<String>> {
-        Ok(self.store.read().ok().and_then(|s| s.get(key).cloned()))
+        let store = self.store.read().map_err(|_| Error::LockPoisoned)?;
+        Ok(store.get(key).cloned())
     }
 
     fn remove(&self, key: &str) -> Result<()> {
-        if let Ok(mut store) = self.store.write() {
-            store.remove(key);
-        }
+        let mut store = self.store.write().map_err(|_| Error::LockPoisoned)?;
+        store.remove(key);
         Ok(())
     }
 
     fn list_keys(&self) -> Result<Vec<String>> {
-        Ok(self
-            .store
-            .read()
-            .map(|s| s.keys().cloned().collect())
-            .unwrap_or_default())
+        let store = self.store.read().map_err(|_| Error::LockPoisoned)?;
+        Ok(store.keys().cloned().collect())
     }
 
     fn backend_name(&self) -> &'static str {
@@ -65,6 +61,7 @@ impl CredentialBackend for MemoryBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     #[test]
     fn test_memory_store_and_get() {
@@ -99,5 +96,20 @@ mod tests {
         let mut keys = backend.list_keys().unwrap();
         keys.sort();
         assert_eq!(keys, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_memory_reports_poisoned_lock_errors() {
+        let backend = MemoryBackend::new();
+
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = backend.store.write().unwrap();
+            panic!("poison memory backend lock");
+        }));
+
+        assert!(matches!(backend.store("k", "v"), Err(Error::LockPoisoned)));
+        assert!(matches!(backend.get("k"), Err(Error::LockPoisoned)));
+        assert!(matches!(backend.remove("k"), Err(Error::LockPoisoned)));
+        assert!(matches!(backend.list_keys(), Err(Error::LockPoisoned)));
     }
 }

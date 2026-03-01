@@ -248,6 +248,75 @@ fn test_concurrent_writes_different_keys() {
     );
 }
 
+#[test]
+fn test_concurrent_save_and_reset_all_interactions() {
+    let fixture = Arc::new(TestFixture::new());
+    let _ = fixture.manager.get_all().unwrap();
+
+    let mut handles = vec![];
+
+    // Writer thread: keeps applying non-default values
+    let fixture_clone = Arc::clone(&fixture);
+    handles.push(thread::spawn(move || {
+        for _ in 0..50 {
+            fixture_clone
+                .manager
+                .save_setting("ui", "theme", &json!("light"))
+                .unwrap();
+            fixture_clone
+                .manager
+                .save_setting("ui", "font_size", &json!(16.0))
+                .unwrap();
+            fixture_clone
+                .manager
+                .save_setting("general", "language", &json!("tr"))
+                .unwrap();
+        }
+    }));
+
+    // Resetter thread: repeatedly resets to defaults
+    let fixture_clone = Arc::clone(&fixture);
+    handles.push(thread::spawn(move || {
+        for _ in 0..50 {
+            fixture_clone.manager.reset_all().unwrap();
+        }
+    }));
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Final state can reflect either last reset or last writes, but must be coherent.
+    let metadata = fixture.manager.metadata().unwrap();
+
+    let theme = metadata
+        .get("ui.theme")
+        .and_then(|m| m.value.as_ref())
+        .and_then(serde_json::Value::as_str)
+        .unwrap();
+    assert!(theme == "dark" || theme == "light");
+
+    let font_size = metadata
+        .get("ui.font_size")
+        .and_then(|m| m.value.as_ref())
+        .and_then(serde_json::Value::as_f64)
+        .unwrap();
+    assert!((font_size - 14.0).abs() < f64::EPSILON || (font_size - 16.0).abs() < f64::EPSILON);
+
+    let language = metadata
+        .get("general.language")
+        .and_then(|m| m.value.as_ref())
+        .and_then(serde_json::Value::as_str)
+        .unwrap();
+    assert!(language == "en" || language == "tr");
+
+    // Ensure persisted file remains valid JSON object after mixed concurrent operations.
+    let settings_path = fixture.manager.config().settings_path();
+    let persisted: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
+    assert!(persisted.is_object());
+}
+
 // =============================================================================
 // Corrupted File Handling
 // =============================================================================

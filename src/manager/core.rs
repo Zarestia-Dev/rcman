@@ -14,7 +14,7 @@ use log::info;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Main settings manager for loading, saving, and managing application settings.
 ///
@@ -65,6 +65,9 @@ pub struct SettingsManager<
 
     /// Unified settings cache
     pub(crate) settings_cache: SettingsCache,
+
+    /// Serializes non-secret settings write transactions to avoid read-modify-write races.
+    pub(crate) settings_write_lock: Mutex<()>,
 
     /// Environment variable handler
     pub(crate) env_handler: EnvironmentHandler,
@@ -167,6 +170,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             sub_settings: RwLock::new(HashMap::new()),
             events: Arc::new(EventManager::new()),
             settings_cache: SettingsCache::new(),
+            settings_write_lock: Mutex::new(()),
             env_handler,
             schema_defaults,
             schema_metadata: metadata,
@@ -191,6 +195,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     /// Get the event manager for registering change listeners and validators
     ///
+    /// Callback semantics:
+    /// - `save_setting()` emits callbacks only when the effective value changes.
+    /// - `reset_setting()` delegates to `save_setting()`, so unchanged resets emit nothing.
+    /// - `reset_all()` emits one callback per changed key (no callbacks for already-default values).
+    /// - With profiles enabled, `switch_profile()` emits callbacks for keys whose effective
+    ///   values differ between the old and new profiles.
+    ///
     /// # Example
     ///
     /// ```
@@ -208,12 +219,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// });
     ///
     /// // Watch specific key
-    /// manager.events().watch("theme", |key, _old, new| {
+    /// manager.events().watch("ui.theme", |key, _old, new| {
     ///     println!("Theme changed to: {:?}", new);
     /// });
     ///
     /// // Add validator
-    /// manager.events().add_validator("port", |v: &Value| {
+    /// manager.events().add_validator("network.port", |v: &Value| {
     ///     if v.as_i64().map(|n| n > 0 && n <= 65535).unwrap_or(false) {
     ///         Ok(())
     ///     } else {

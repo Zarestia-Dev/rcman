@@ -11,6 +11,7 @@ mod common;
 
 use common::{TestFixture, read_settings_file};
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 
 // =============================================================================
 // Basic CRUD Operations
@@ -134,6 +135,60 @@ fn test_reset_all_settings() {
     assert_eq!(settings.ui.theme, "dark");
     assert!((settings.ui.font_size - 14.0).abs() < f64::EPSILON);
     assert_eq!(settings.general.language, "en");
+}
+
+#[test]
+fn test_reset_all_emits_callbacks_for_changed_keys() {
+    let fixture = TestFixture::new();
+
+    let _ = fixture.manager.get_all().unwrap();
+
+    fixture
+        .manager
+        .save_setting("ui", "theme", &json!("light"))
+        .unwrap();
+    fixture
+        .manager
+        .save_setting("general", "language", &json!("tr"))
+        .unwrap();
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    fixture.manager.events().on_change(move |key, old, new| {
+        events_clone
+            .lock()
+            .unwrap()
+            .push((key.to_string(), old.clone(), new.clone()));
+    });
+
+    fixture.manager.reset_all().unwrap();
+
+    let captured = events.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert!(captured
+        .iter()
+        .any(|(key, old, new)| key == "ui.theme" && *old == json!("light") && *new == json!("dark")));
+    assert!(captured.iter().any(|(key, old, new)| {
+        key == "general.language" && *old == json!("tr") && *new == json!("en")
+    }));
+}
+
+#[test]
+fn test_reset_all_without_changes_emits_no_callbacks() {
+    let fixture = TestFixture::new();
+
+    let _ = fixture.manager.get_all().unwrap();
+
+    let callback_count = Arc::new(Mutex::new(0usize));
+    let callback_count_clone = Arc::clone(&callback_count);
+    fixture.manager.events().on_change(move |_key, _old, _new| {
+        let mut guard = callback_count_clone.lock().unwrap();
+        *guard += 1;
+    });
+
+    fixture.manager.reset_all().unwrap();
+
+    assert_eq!(*callback_count.lock().unwrap(), 0);
 }
 
 // =============================================================================

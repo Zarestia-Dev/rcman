@@ -158,7 +158,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
         config_name: &str,
         password: Option<&str>,
     ) -> Result<Vec<u8>> {
-        let _analysis = self.analyze(backup_path)?;
+        let analysis = self.analyze(backup_path)?;
         let data_filename = "data.zip";
 
         // Extract the data archive temporarily
@@ -175,11 +175,37 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
         // Extract (always zip now)
         extract_zip_archive(&data_archive_path, &extract_dir, password)?;
 
-        let config_path = extract_dir.join("external").join(config_name);
-        fs::read(&config_path).map_err(|e| Error::FileRead {
-            path: config_path.clone(),
-            source: e,
-        })
+        let external_dir = extract_dir.join("external");
+
+        let mut candidate_filenames = Vec::new();
+        if let Some(file_name) = analysis
+            .manifest
+            .contents
+            .external_config_files
+            .get(config_name)
+            .cloned()
+        {
+            candidate_filenames.push(file_name);
+        }
+        if let Some(config) = self.resolve_external_config(config_name) {
+            candidate_filenames.push(config.archive_filename);
+        }
+        candidate_filenames.push(config_name.to_string());
+        candidate_filenames.dedup();
+
+        for filename in candidate_filenames {
+            let config_path = external_dir.join(&filename);
+            if config_path.exists() {
+                return fs::read(&config_path).map_err(|e| Error::FileRead {
+                    path: config_path,
+                    source: e,
+                });
+            }
+        }
+
+        Err(Error::PathNotFound(
+            external_dir.join(config_name).display().to_string(),
+        ))
     }
 
     /// Helper to resolve external config from ID using registered providers
@@ -241,7 +267,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         // Logic for legacy flat settings (either profiles disabled or feature off)
         if self.analysis.manifest.contents.settings {
             // Try to load settings from backup (agnostic of extension)
-            if let Some((value, _ext)) = load_settings_agnostic(
+            if let Some((mut value, _ext)) = load_settings_agnostic(
                 self.extract_dir,
                 "settings",
                 self.manager.manager.storage(),
@@ -262,6 +288,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     result.restored.push(dest_filename.to_string());
                     debug!("{} Would restore {}", self.mode_str, dest_filename);
                 } else {
+                    self.hydrate_main_settings_secrets(&mut value, None)?;
+
                     // Write using the configured storage backend (handles conversion!)
                     self.manager
                         .manager
@@ -351,6 +379,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     "settings",
                     self.manager.manager.storage(),
                 )? {
+                    let mut value = value;
+
                     if dest_settings.exists() && !self.options.flags.control.overwrite_existing {
                         result.skipped.push(restore_id);
                     } else if self.options.flags.control.dry_run {
@@ -360,6 +390,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                             self.mode_str
                         );
                     } else {
+                        self.hydrate_main_settings_secrets(
+                            &mut value,
+                            Some(target_profile_name.as_str()),
+                        )?;
+
                         self.manager
                             .manager
                             .storage()
@@ -412,6 +447,91 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 self.restore_flat_sub_settings(&sub_ctx, &sub_src_dir, result)?;
             }
         }
+        Ok(())
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn hydrate_main_settings_secrets(
+        &self,
+        value: &mut serde_json::Value,
+        profile: Option<&str>,
+    ) -> Result<()> {
+        let Some(creds) = self.manager.manager.credentials() else {
+            return Ok(());
+        };
+
+        let mut hydrated_count = 0u32;
+
+        for (full_key, meta) in self
+            .manager
+            .manager
+            .schema_metadata
+            .iter()
+            .filter(|(_, meta)| meta.is_secret())
+        {
+            let mut parts = full_key.split('.');
+            let (Some(category), Some(setting), None) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+
+            let Some(category_value) = value.get_mut(category) else {
+                continue;
+            };
+            let Some(category_obj) = category_value.as_object_mut() else {
+                continue;
+            };
+            let Some(setting_value) = category_obj.get_mut(setting) else {
+                continue;
+            };
+
+            if setting_value.is_null() {
+                continue;
+            }
+
+            if *setting_value == meta.default {
+                if let Err(err) = creds.remove_with_profile(full_key, profile) {
+                    warn!(
+                        "Failed to clear credential for restored default secret {full_key}: {err}"
+                    );
+                } else {
+                    *setting_value = serde_json::Value::Null;
+                }
+                continue;
+            }
+
+            let secret_value = match &*setting_value {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+
+            if let Err(err) = creds.store_with_profile(full_key, &secret_value, profile) {
+                warn!(
+                    "Failed to rehydrate secret {full_key} into credential storage during restore: {err}"
+                );
+                continue;
+            }
+
+            *setting_value = serde_json::Value::Null;
+            hydrated_count += 1;
+        }
+
+        if hydrated_count > 0 {
+            debug!(
+                "Rehydrated {hydrated_count} secret credential(s) during restore for profile {:?}",
+                profile
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+    fn hydrate_main_settings_secrets(
+        &self,
+        _value: &mut serde_json::Value,
+        _profile: Option<&str>,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -742,21 +862,33 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
     }
 
     fn restore_external_configs_entries(&self, result: &mut RestoreResult) -> Result<()> {
-        if !self.options.restore_external_configs.is_empty()
-            || self.options.restore_sub_settings.is_empty()
-        {
-            let external_dir = self.extract_dir.join("external");
-            if external_dir.exists() {
-                for config_name in &self.analysis.manifest.contents.external_configs {
-                    // Skip if specific configs requested and this isn't one
-                    if !self.options.restore_external_configs.is_empty()
-                        && !self.options.restore_external_configs.contains(config_name)
-                    {
-                        continue;
-                    }
-
-                    self.restore_single_external_config(config_name, &external_dir, result)?;
+        let external_dir = self.extract_dir.join("external");
+        if external_dir.exists() {
+            for config_name in &self.analysis.manifest.contents.external_configs {
+                // Skip if specific configs requested and this isn't one
+                if !self.options.restore_external_configs.is_empty()
+                    && !self.options.restore_external_configs.contains(config_name)
+                {
+                    continue;
                 }
+
+                let archive_filename = match self
+                    .analysis
+                    .manifest
+                    .contents
+                    .external_config_files
+                    .get(config_name)
+                {
+                    Some(file_name) => file_name.as_str(),
+                    None => config_name,
+                };
+
+                self.restore_single_external_config(
+                    config_name,
+                    archive_filename,
+                    &external_dir,
+                    result,
+                )?;
             }
         }
         Ok(())
@@ -765,16 +897,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
     fn restore_single_external_config(
         &self,
         config_name: &str,
+        archive_filename: &str,
         external_dir: &Path,
         result: &mut RestoreResult,
     ) -> Result<()> {
         if let Some(external_config) = self.manager.resolve_external_config(config_name) {
-            // Read data from backup
-            let src = external_dir.join(&external_config.archive_filename);
-            let data = fs::read(&src).map_err(|e| Error::FileRead {
-                path: src.clone(),
-                source: e,
-            })?;
+            let data = Self::read_external_backup_data(
+                external_dir,
+                config_name,
+                archive_filename,
+                &external_config.archive_filename,
+            )?;
 
             // Handle different import targets
             match &external_config.import_target {
@@ -864,6 +997,37 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             warn!("Unknown external config ID: {config_name}, requires manual restore");
         }
         Ok(())
+    }
+
+    fn read_external_backup_data(
+        external_dir: &Path,
+        config_name: &str,
+        archive_filename: &str,
+        fallback_archive_filename: &str,
+    ) -> Result<Vec<u8>> {
+        let mut candidate_filenames = vec![archive_filename.to_string()];
+        candidate_filenames.push(fallback_archive_filename.to_string());
+        candidate_filenames.push(config_name.to_string());
+        candidate_filenames.dedup();
+
+        let mut last_candidate_path = None;
+        for filename in candidate_filenames {
+            let src = external_dir.join(filename);
+            last_candidate_path = Some(src.clone());
+            if src.exists() {
+                return fs::read(&src).map_err(|e| Error::FileRead {
+                    path: src,
+                    source: e,
+                });
+            }
+        }
+
+        Err(Error::PathNotFound(
+            last_candidate_path
+                .unwrap_or_else(|| external_dir.join(config_name))
+                .display()
+                .to_string(),
+        ))
     }
 }
 

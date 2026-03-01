@@ -185,6 +185,13 @@
 //! # }
 //! ```
 //!
+//! Secret export behavior:
+//! - Secret keys declared in your main settings schema are exported under main settings structure.
+//! - `SecretBackupPolicy::Exclude` redacts secrets.
+//! - `SecretBackupPolicy::EncryptedOnly` includes secrets only when a backup password is provided; otherwise it behaves like redact.
+//! - `SecretBackupPolicy::Include` always includes secrets.
+//! - When credentials are enabled, restore rehydrates included main-schema secrets back into credential storage and redacts them in restored settings files.
+//!
 //! ## Credentials
 //!
 //! **Note**: `CredentialManager` is only available when the `keychain` or `encrypted-file` feature is enabled.

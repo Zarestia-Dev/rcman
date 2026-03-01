@@ -79,7 +79,10 @@ pub struct BackupOptions {
     /// Sub-settings with specific items only (category -> items)
     pub include_sub_settings_items: std::collections::HashMap<String, Vec<String>>,
 
-    /// External configs to include (by id)
+    /// External configs to include (by id).
+    ///
+    /// In `ExportType::Full`, leaving this empty includes all registered external configs.
+    /// For other export types, this acts as an explicit allow-list.
     pub include_external_configs: Vec<String>,
 
     /// Custom filename suffix (e.g. "remotes" -> "`app_timestamp_remotes.rcman`")
@@ -149,7 +152,16 @@ impl BackupOptions {
         Self::default()
     }
 
-    /// Set secret policy
+    /// Set secret policy for backup export.
+    ///
+    /// Notes:
+    /// - Secret keys are exported in the same schema location where they are declared
+    ///   (for example, main-schema secret keys appear in main settings export structure).
+    /// - `EncryptedOnly` includes secrets only when backup password is set; otherwise
+    ///   export is redacted for secrets.
+    /// - With credentials enabled, restoring a backup with included main-schema secrets
+    ///   rehydrates those values into credential storage and redacts them in restored
+    ///   settings files.
     #[must_use]
     pub fn secret_policy(mut self, policy: crate::SecretBackupPolicy) -> Self {
         self.secret_policy = policy;
@@ -219,7 +231,9 @@ impl BackupOptions {
         self
     }
 
-    /// Include an external config by id
+    /// Include an external config by id.
+    ///
+    /// Useful for selective exports (for example, `ExportType::SettingsOnly`).
     #[must_use]
     pub fn include_external(mut self, id: impl Into<String>) -> Self {
         self.include_external_configs.push(id.into());
@@ -761,6 +775,13 @@ pub struct BackupInfo {
 
     /// User note
     pub user_note: Option<String>,
+
+    /// Secret export policy used when creating this backup.
+    ///
+    /// `None` indicates a legacy backup manifest created before this field
+    /// was introduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_policy: Option<crate::SecretBackupPolicy>,
 }
 
 impl Default for BackupInfo {
@@ -772,6 +793,7 @@ impl Default for BackupInfo {
             export_type: ExportType::Full,
             encrypted: false,
             user_note: None,
+            secret_policy: None,
         }
     }
 }
@@ -819,7 +841,25 @@ pub enum SubSettingsManifestEntry {
 pub struct BackupContents {
     pub settings: bool,
     pub sub_settings: std::collections::HashMap<String, SubSettingsManifestEntry>,
+    /// External config IDs included in backup.
+    ///
+    /// Deprecation plan (target: v0.2.0, breaking):
+    /// - Remove this ID-only list
+    /// - Rename `external_config_files` -> `external_configs`
+    /// - New `external_configs` will be the canonical `id -> archive_filename` map
+    ///
+    /// Keep this field until v0.2.0 for backward compatibility with existing
+    /// manifests and consumers that still read the legacy list format.
     pub external_configs: Vec<String>,
+    /// Canonical mapping of external config id to archive filename.
+    ///
+    /// Introduced to make external restore robust when config ID differs from
+    /// archived filename or when source/target paths differ.
+    ///
+    /// Deprecation plan (target: v0.2.0, breaking): rename this field to
+    /// `external_configs` after removing the legacy `Vec<String>` field above.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub external_config_files: std::collections::HashMap<String, String>,
     #[cfg(feature = "profiles")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profiles: Option<Vec<String>>,

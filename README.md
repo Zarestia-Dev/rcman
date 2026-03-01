@@ -83,7 +83,7 @@ rcman offers two primary patterns depending on your needs:
 Best for: Applications with a defined schema and need compile-time safety.
 
 ```rust
-use rcman::{TypedManager, SettingsSchema, SettingMetadata, settings};
+use rcman::{SettingsManager, SettingsSchema, SettingMetadata, settings};
 use serde::{Serialize, Deserialize};
 
 #[derive(Default, Serialize, Deserialize)]
@@ -91,16 +91,16 @@ struct MySettings { theme: String }
 
 impl SettingsSchema for MySettings {
     fn get_metadata() -> std::collections::HashMap<String, SettingMetadata> {
-        settings! { "ui.theme" => SettingMetadata::text("dark").label("Theme") }
+        settings! { "ui.theme" => SettingMetadata::text("dark").meta_str("label", "Theme") }
     }
 }
 
-let manager = TypedManager::<MySettings>::builder("my-app", "1.0.0")
+let manager = SettingsManager::builder("my-app", "1.0.0")
     .with_schema::<MySettings>()
     .build()?;
 
 // Type-safe access!
-let settings: MySettings = manager.settings()?;
+let settings: MySettings = manager.get_all()?;
 ```
 
 #### 🔧 Dynamic Pattern
@@ -108,15 +108,15 @@ let settings: MySettings = manager.settings()?;
 Best for: Plugins, dynamic configs, or when schema is defined externally.
 
 ```rust
-use rcman::DynamicManager;
+use rcman::SettingsManager;
 
-let manager = DynamicManager::builder("my-app", "1.0.0").build()?;
+let manager = SettingsManager::builder("my-app", "1.0.0").build()?;
 
-// Runtime access via HashMap
-let settings = manager.load_settings()?;
+// Runtime access via metadata map
+let settings = manager.metadata()?;
 ```
 
-> **📖 See [examples/api_patterns.rs](examples/api_patterns.rs) for comprehensive comparisons**
+> **📖 See [examples/basic_usage.rs](examples/basic_usage.rs) for a complete walkthrough**
 
 ---
 
@@ -128,6 +128,8 @@ Define settings using the clean builder API:
 
 ```rust
 use rcman::{settings, SettingsSchema, SettingMetadata, opt};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Default, Serialize, Deserialize)]
 struct AppSettings {
@@ -141,20 +143,21 @@ impl SettingsSchema for AppSettings {
         settings! {
             // Toggle setting
             "ui.dark_mode" => SettingMetadata::toggle(false)
-                .label("Dark Mode")
-                .category("appearance")
-                .order(1),
+                .meta_str("label", "Dark Mode")
+                .meta_str("category", "appearance")
+                .meta_num("order", 1),
 
             // Select with options
             "ui.language" => SettingMetadata::select("en", vec![
                 opt("en", "English"),
                 opt("tr", "Turkish"),
                 opt("de", "German"),
-            ]).label("Language"),
+            ])
+                .meta_str("label", "Language"),
 
             // Number with range
             "ui.font_size" => SettingMetadata::number(14.0)
-                .label("Font Size")
+                .meta_str("label", "Font Size")
                 .min(8.0).max(32.0).step(1.0),
 
             // Secret (auto-stored in keychain!)
@@ -165,9 +168,9 @@ impl SettingsSchema for AppSettings {
 
             // List of strings
             "network.allowed_ips" => SettingMetadata::list(vec!["127.0.0.1".to_string()])
-                .label("Allowed IPs")
-                .description("IP addresses allowed to connect")
-                .category("network"),
+                .meta_str("label", "Allowed IPs")
+                .meta_str("description", "IP addresses allowed to connect")
+                .meta_str("category", "network"),
         }
     }
 }
@@ -246,7 +249,7 @@ use serde_json::json;
 // Register sub-settings via builder
 let manager = SettingsManager::builder("my-app", "1.0.0")
     .with_sub_settings(SubSettingsConfig::new("remotes"))  // Multi-file mode
-    .with_sub_settings(SubSettingsConfig::new("backends").single_file())  // Single-file mode
+    .with_sub_settings(SubSettingsConfig::singlefile("backends"))  // Single-file mode
     .build()?;
 
 // Access sub-settings
@@ -310,6 +313,7 @@ Enable profiles for your main `settings.json` to switch entire app configuration
 
 ```rust
 use rcman::SettingsManager;
+use serde_json::json;
 
 let manager = SettingsManager::builder("my-app", "1.0.0")
     .with_profiles()  // Enable profiles for main settings
@@ -321,7 +325,7 @@ manager.switch_profile("work")?;
 manager.active_profile()?  // "work"
 
 // All settings are now isolated per profile
-manager.save_setting::<MySettings>("ui", "theme", json!("dark"))?;
+manager.save_setting("ui", "theme", &json!("dark"))?;
 ```
 
 **Directory structure:**
@@ -419,8 +423,7 @@ let remotes_config = SubSettingsConfig::new("remotes")
     });
 
 // Sub-settings migration (whole-file for single-file mode)
-let backends_config = SubSettingsConfig::new("backends")
-    .single_file()
+let backends_config = SubSettingsConfig::singlefile("backends")
     .with_migrator(|mut value| {
         // Migrate all backends at once
         if let Some(obj) = value.as_object_mut() {
@@ -456,7 +459,7 @@ Settings marked with `.secret()` are automatically stored in the OS keychain:
     .secret(),
 
 // Usage - automatically routes to keychain!
-manager.save_setting::<MySettings>("api", "key", json!("sk-123"))?;
+manager.save_setting("api", "key", &json!("sk-123"))?;
 // → Stored in OS keychain, NOT in settings.json
 ```
 
@@ -484,6 +487,11 @@ let backup_path = manager.backup()
         .note("Weekly backup")
         .filename_suffix("full"))  // Custom filename: app_timestamp_full.rcman
     ?;
+
+// Full backup behavior:
+// - Main settings: included
+// - Registered sub-settings: included
+// - Registered external configs: included (by default)
 
 // Create partial backup (only specific sub-settings)
 let remotes_backup = manager.backup()
@@ -519,7 +527,52 @@ manager.backup()
         .password("backup_password")
         .overwrite(true))
     ?;
+
+// Secret export policy examples
+use rcman::SecretBackupPolicy;
+
+// 1) Never include secrets (default)
+let _redacted = manager.backup().create(
+    BackupOptions::new()
+        .output_dir("./backups")
+        .secret_policy(SecretBackupPolicy::Exclude),
+)?;
+
+// 2) Include only when backup is encrypted
+let _safe = manager.backup().create(
+    BackupOptions::new()
+        .output_dir("./backups")
+        .password("backup_password")
+        .secret_policy(SecretBackupPolicy::EncryptedOnly),
+)?;
+
+// 3) Always include secrets (plaintext if no backup password)
+let _unsafe = manager.backup().create(
+    BackupOptions::new()
+        .output_dir("./backups")
+        .secret_policy(SecretBackupPolicy::Include),
+)?;
+
+// For non-full exports, explicitly select external configs by id
+let _partial_with_external = manager.backup().create(
+    BackupOptions::new()
+        .output_dir("./backups")
+        .export_type(ExportType::SettingsOnly)
+        .include_settings(false)
+        .include_sub_settings("remotes")
+        .include_external("external_cfg"),
+)?;
 ```
+
+`SecretBackupPolicy::EncryptedOnly` falls back to redacted export when no backup password is provided.
+When credentials are enabled, restore also rehydrates secret values back into credential storage and redacts them in the restored settings file.
+
+| Secret Policy | Backup Password | Exported Secret Value |
+| --- | --- | --- |
+| `Exclude` | Yes / No | Redacted (`null` / omitted) |
+| `EncryptedOnly` | Yes | Included |
+| `EncryptedOnly` | No | Redacted (`null` / omitted) |
+| `Include` | Yes / No | Included |
 
 ---
 
@@ -534,13 +587,13 @@ This keeps files minimal and allows changing defaults in code to auto-apply to u
 
 ```rust
 # Save non-default value (stored)
-manager.save_setting::<S>("ui", "theme", json!("dark"))?;
+manager.save_setting("ui", "theme", &json!("dark"))?;
 
 // Save default value (removed from storage)
-manager.save_setting::<S>("ui", "theme", json!("light"))?;  // "light" is default
+manager.save_setting("ui", "theme", &json!("light"))?;  // "light" is default
 
 // Or use reset_setting() to explicitly reset
-manager.reset_setting::<S>("ui", "theme")?;
+manager.reset_setting("ui", "theme")?;
 ```
 
 ---
@@ -576,9 +629,9 @@ let config = SettingsConfig::builder("my-app", "1.0.0")
 **UI Detection:**
 
 ```rust
-let settings = manager.load_settings::<MySettings>()?;
-for (key, meta) in settings {
-    if meta.env_override {
+let metadata = manager.metadata()?;
+for (key, setting) in metadata {
+    if setting.get_meta_bool(rcman::meta::ENV_OVERRIDE).unwrap_or(false) {
         println!("🔒 {} is overridden by env var", key);
     }
 }
@@ -593,6 +646,31 @@ for (key, meta) in settings {
 >     .env_overrides_secrets(true)  // Allow MYAPP_API_KEY to override keychain
 >     .build()
 > ```
+
+---
+
+### 8. Change Callbacks (Semantics)
+
+Register listeners through the event manager:
+
+```rust
+manager.events().on_change(|key, old, new| {
+    println!("{key}: {old:?} -> {new:?}");
+});
+
+manager.events().watch("ui.theme", |_key, _old, new| {
+    println!("Theme updated to {new:?}");
+});
+```
+
+Callback emission rules:
+
+- `save_setting(...)`: emits only when the effective value actually changes.
+- `reset_setting(...)`: same behavior as `save_setting(...)` (no event for no-op reset).
+- `reset_all()`: emits one callback per key that changed to default.
+- `switch_profile(...)` (with `profiles`): emits callbacks for keys whose effective values differ between profiles.
+
+This makes callback streams deterministic and avoids noise for no-op operations.
 
 ---
 
@@ -724,11 +802,8 @@ let config = SettingsConfig::builder("my-app", "2.0.0")
 When using profiles, you can migrate all profiles automatically:
 
 ```rust
-#[cfg(feature = "profiles")]
-use rcman::profiles::ProfileMigrator;
-
 let config = SettingsConfig::builder("my-app", "2.0.0")
-    .enable_profiles(ProfileMigrator::Auto)  // Applies main migrator to all profiles
+    .with_profiles()  // Applies main migrator to all profiles when profiles are enabled
     .with_migrator(|mut value| {
         // This runs for main settings AND all profiles
         // ... migration logic ...
@@ -799,13 +874,35 @@ fn test_migration_v1_to_v2() {
 rcman uses dependency injection for env vars, making tests clean:
 
 ```rust
-use rcman::{EnvSource, MockEnvSource};
+use rcman::{EnvSource, SettingsConfig};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-let mock_env = Arc::new(MockEnvSource::new());
-mock_env.set("MYAPP_THEME", "dark");
+#[derive(Default)]
+struct TestEnvSource {
+    vars: Mutex<HashMap<String, String>>,
+}
+
+impl EnvSource for TestEnvSource {
+    fn var(&self, key: &str) -> Result<String, std::env::VarError> {
+        self.vars
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+            .ok_or(std::env::VarError::NotPresent)
+    }
+}
+
+let test_env = Arc::new(TestEnvSource::default());
+test_env
+    .vars
+    .lock()
+    .unwrap()
+    .insert("MYAPP_THEME".to_string(), "dark".to_string());
 
 let config = SettingsConfig::builder("my-app", "1.0")
-    .with_env_source(mock_env)
+    .with_env_source(test_env)
     .build();
 ```
 
@@ -827,7 +924,7 @@ All operations return typed errors:
 ```rust
 use rcman::{Error, Result};
 
-match manager.save_setting::<MySettings>("ui", "theme", json!("dark")) {
+match manager.save_setting("ui", "theme", &json!("dark")) {
     Ok(()) => println!("Saved!"),
     Err(Error::InvalidSettingValue { reason, .. }) => println!("Invalid: {}", reason),
     Err(e) => println!("Error: {}", e),
@@ -852,7 +949,7 @@ cargo deny check     # Check dependencies
 
 ### Quality Standards
 
-- **MSRV**: Rust 1.70+
+- **MSRV**: Rust 1.85+
 - **Code Quality**: `clippy -D warnings` enforced in CI
 - **Test Coverage**: Comprehensive test suite with unit, integration, and edge case tests
 - **Documentation**: Comprehensive doctests and API docs

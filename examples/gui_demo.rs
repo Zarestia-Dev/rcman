@@ -15,13 +15,17 @@
 use eframe::egui;
 use rcman::{
     BackupOptions, RestoreOptions, SettingMetadata, SettingsConfig, SettingsManager,
-    SettingsSchema, SubSettingsConfig, opt, settings,
+    SettingsSchema, SecretBackupPolicy, SubSettingsConfig, opt, settings,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+const EXTERNAL_CONFIG_ID: &str = "gui_demo_external";
+const EXTERNAL_CONFIG_REL_PATH: &str = "./example_config/external_gui_demo.conf";
 
 // ============================================================================
 // SETTINGS SCHEMA - Define your settings here
@@ -102,27 +106,23 @@ impl SettingsSchema for DemoSettings {
 
             // Secret settings (stored in keychain when feature enabled)
             "secrets.api_key" => {
-                let s = SettingMetadata::text("")
+                SettingMetadata::text("")
                     .meta_str("label", "API Key")
                     .meta_str("description", "Your API key (stored in keychain)")
                     .meta_str("input_type", "password")
                     .meta_str("category", "Secrets")
-                    .meta_num("order", 1);
-                #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                let s = s.secret();
-                s
+                    .meta_num("order", 1)
+                    .secret()
             },
 
             "secrets.db_password" => {
-                let s = SettingMetadata::text("")
+                SettingMetadata::text("")
                     .meta_str("label", "Database Password")
                     .meta_str("description", "Database password (stored in keychain)")
                     .meta_str("input_type", "password")
                     .meta_str("category", "Secrets")
-                    .meta_num("order", 2);
-                #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                let s = s.secret();
-                s
+                    .meta_num("order", 2)
+                    .secret()
             },
 
             // Advanced settings
@@ -131,6 +131,39 @@ impl SettingsSchema for DemoSettings {
                 .meta_str("description", "Enable verbose logging")
                 .meta_str("category", "Advanced")
                 .meta_bool("advanced", true),
+        }
+    }
+}
+
+#[derive(Default, Serialize, Deserialize, Clone)]
+struct RemoteSettings;
+
+impl SettingsSchema for RemoteSettings {
+    fn get_metadata() -> HashMap<String, SettingMetadata> {
+        settings! {
+            "type" => SettingMetadata::select("drive", vec![
+                opt("drive", "Google Drive"),
+                opt("s3", "Amazon S3"),
+                opt("dropbox", "Dropbox"),
+                opt("onedrive", "OneDrive"),
+            ])
+            .meta_str("label", "Remote Type")
+            .meta_str("description", "Backend type for this remote")
+            .meta_num("order", 1),
+
+            "scope" => SettingMetadata::text("")
+                .meta_str("label", "Scope")
+                .meta_str("description", "Optional remote scope")
+                .meta_num("order", 2),
+
+            "token" => {
+                SettingMetadata::text("")
+                    .meta_str("label", "Access Token")
+                    .meta_str("description", "Secret token for this remote")
+                    .meta_str("input_type", "password")
+                    .meta_num("order", 3)
+                    .secret()
+            },
         }
     }
 }
@@ -191,11 +224,11 @@ impl Default for DemoSettingsState {
     }
 }
 
-#[derive(Default)]
 struct BackupState {
     password: String,
     note: String,
     use_encryption: bool,
+    secret_policy: SecretBackupPolicy,
     last_path: Option<PathBuf>,
     list: Vec<PathBuf>,
     selected_index: Option<usize>,
@@ -204,10 +237,30 @@ struct BackupState {
     analysis: Option<String>,
 }
 
+impl Default for BackupState {
+    fn default() -> Self {
+        Self {
+            password: String::new(),
+            note: String::new(),
+            use_encryption: false,
+            secret_policy: SecretBackupPolicy::Exclude,
+            last_path: None,
+            list: Vec::new(),
+            selected_index: None,
+            restore_password: String::new(),
+            restore_requires_password: false,
+            analysis: None,
+        }
+    }
+}
+
 struct RemotesState {
     list: Vec<String>,
     new_name: String,
     new_type: String,
+    new_scope: String,
+    new_token: String,
+    show_new_token: bool,
     selected: Option<String>,
     selected_data: String,
 }
@@ -218,6 +271,9 @@ impl Default for RemotesState {
             list: Vec::new(),
             new_name: String::new(),
             new_type: "drive".to_string(),
+            new_scope: String::new(),
+            new_token: String::new(),
+            show_new_token: false,
             selected: None,
             selected_data: String::new(),
         }
@@ -232,6 +288,8 @@ struct DemoApp {
     manager: Arc<SettingsManager<rcman::JsonStorage, DemoSettings>>,
     keychain_enabled: bool,
     encrypted_backend_status: String,
+    external_file_path: PathBuf,
+    external_content: String,
     settings: DemoSettingsState,
     ui: DemoUiState,
     backup: BackupState,
@@ -239,6 +297,19 @@ struct DemoApp {
 }
 
 impl DemoApp {
+    fn ensure_external_file(path: &Path) -> String {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        if !path.exists() {
+            let default_content = "# rcman GUI Demo external file\nendpoint=https://example.local\nmode=demo\n";
+            let _ = std::fs::write(path, default_content);
+        }
+
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         // Check if keychain feature is available
         let keychain_enabled = cfg!(feature = "keychain");
@@ -256,14 +327,21 @@ impl DemoApp {
         };
 
         // Initialize settings manager
+        let external_file_path = PathBuf::from(EXTERNAL_CONFIG_REL_PATH);
+        let external_content = Self::ensure_external_file(&external_file_path);
+
         let config_builder = SettingsConfig::builder("rcman-gui-demo", "1.0.0")
             .with_schema::<DemoSettings>()
-            .with_config_dir("./example_config");
+            .with_config_dir("./example_config")
+            .with_external_config(rcman::backup::ExternalConfig::new(
+                EXTERNAL_CONFIG_ID,
+                &external_file_path,
+            ));
 
         // Enable credentials if keychain feature is available
-        #[cfg(feature = "keychain")]
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         let config = config_builder.with_credentials().build();
-        #[cfg(not(feature = "keychain"))]
+        #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
         let config = config_builder.build();
 
         let manager = Arc::new(SettingsManager::new(config).expect("Failed to create manager"));
@@ -272,6 +350,8 @@ impl DemoApp {
             manager,
             keychain_enabled,
             encrypted_backend_status,
+            external_file_path,
+            external_content,
             settings: DemoSettingsState::default(),
             ui: DemoUiState::default(),
             backup: BackupState::default(),
@@ -287,7 +367,7 @@ impl DemoApp {
         // Register sub-settings for remotes and load list
         app.remotes.list = {
             app.manager
-                .register_sub_settings(SubSettingsConfig::new("remotes"))
+                .register_sub_settings(SubSettingsConfig::new("remotes").with_schema::<RemoteSettings>())
                 .unwrap();
 
             // Load remotes list
@@ -376,6 +456,8 @@ impl DemoApp {
             if let Some(n) = note {
                 options = options.note(n);
             }
+            options = options.secret_policy(self.backup.secret_policy.clone());
+            options = options.include_external(EXTERNAL_CONFIG_ID);
             manager.backup().create(&options)
         };
         match res {
@@ -449,10 +531,18 @@ impl DemoApp {
         let manager = self.manager.clone();
         match manager.backup().analyze(&backup_path) {
             Ok(analysis) => {
+                let secret_policy = match analysis.manifest.backup.secret_policy.as_ref() {
+                    Some(SecretBackupPolicy::Exclude) => "Exclude (Redact)",
+                    Some(SecretBackupPolicy::EncryptedOnly) => "Encrypted Only",
+                    Some(SecretBackupPolicy::Include) => "Include (Unsafe)",
+                    None => "Unknown (legacy backup)",
+                };
+
                 let info = format!(
                     "📋 Backup Analysis:\n\
                      ├─ Valid: {}\n\
                      ├─ Encrypted: {}\n\
+                     ├─ Secret Policy: {}\n\
                      ├─ App Version: {}\n\
                      ├─ Manifest Version: {}\n\
                      └─ Warnings: {}",
@@ -466,6 +556,7 @@ impl DemoApp {
                     } else {
                         "🔓 No"
                     },
+                    secret_policy,
                     analysis.manifest.backup.app_version,
                     analysis.manifest.version,
                     if analysis.warnings.is_empty() {
@@ -511,19 +602,25 @@ impl DemoApp {
         let manager = self.manager.clone();
         let name = self.remotes.new_name.clone();
         let remote_type = self.remotes.new_type.clone();
+        let remote_scope = self.remotes.new_scope.clone();
+        let remote_token = self.remotes.new_token.clone();
 
         match (|| -> rcman::Result<_> {
             let sub = manager.sub_settings("remotes")?;
             sub.set(
                 &name,
                 &json!({
-                    "type": remote_type
+                    "type": remote_type,
+                    "scope": remote_scope,
+                    "token": remote_token,
                 }),
             )
         })() {
             Ok(()) => {
                 self.ui.status_message = format!("✅ Added remote: {}", self.remotes.new_name);
                 self.remotes.new_name.clear();
+                self.remotes.new_scope.clear();
+                self.remotes.new_token.clear();
                 self.refresh_remotes();
             }
             Err(e) => {
@@ -606,6 +703,29 @@ impl DemoApp {
         let path = self.manager.config().settings_path();
         self.ui.current_json = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
     }
+
+    fn save_external_file(&mut self) {
+        match std::fs::write(&self.external_file_path, &self.external_content) {
+            Ok(()) => {
+                self.ui.status_message = format!(
+                    "✅ External file saved: {}",
+                    self.external_file_path.display()
+                );
+            }
+            Err(err) => {
+                self.ui.status_message = format!("❌ Failed to save external file: {err}");
+            }
+        }
+    }
+
+    fn reload_external_file(&mut self) {
+        self.external_content = std::fs::read_to_string(&self.external_file_path)
+            .unwrap_or_else(|_| String::new());
+        self.ui.status_message = format!(
+            "✅ External file reloaded: {}",
+            self.external_file_path.display()
+        );
+    }
 }
 
 // ============================================================================
@@ -640,6 +760,8 @@ impl eframe::App for DemoApp {
                 self.ui_advanced_settings(ui);
                 ui.add_space(8.0);
                 self.ui_remotes_settings(ui);
+                ui.add_space(8.0);
+                self.ui_external_config(ui);
                 ui.add_space(8.0);
                 self.ui_backup_settings(ui);
 
@@ -1033,6 +1155,34 @@ impl DemoApp {
                         });
                 });
 
+                ui.horizontal(|ui| {
+                    ui.label("Scope:");
+                    ui.text_edit_singleline(&mut self.remotes.new_scope);
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Token:");
+                    if self.remotes.show_new_token {
+                        ui.text_edit_singleline(&mut self.remotes.new_token);
+                    } else {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.remotes.new_token)
+                                .password(true),
+                        );
+                    }
+
+                    if ui
+                        .small_button(if self.remotes.show_new_token {
+                            "👁"
+                        } else {
+                            "👁‍🗨"
+                        })
+                        .clicked()
+                    {
+                        self.remotes.show_new_token = !self.remotes.show_new_token;
+                    }
+                });
+
                 ui.add_space(4.0);
                 if ui.button("➕ Add Remote").clicked() {
                     self.add_remote();
@@ -1086,7 +1236,7 @@ impl DemoApp {
 
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new("💡 Files stored in ./example_config/remotes/")
+                egui::RichText::new("💡 Files stored in ./example_config/remotes/ (secret token goes to credentials when enabled)")
                     .small()
                     .weak(),
             );
@@ -1096,7 +1246,7 @@ impl DemoApp {
     fn ui_backup_settings(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("💾 Backup & Restore", |ui| {
             ui.label(
-                egui::RichText::new("Create and restore encrypted or plain backups")
+                egui::RichText::new("Create and restore encrypted or plain backups (includes external file)")
                     .small()
                     .weak(),
             );
@@ -1111,6 +1261,47 @@ impl DemoApp {
                 egui::RichText::new("💡 Backups are stored in ./example_config/backups/")
                     .small()
                     .weak(),
+            );
+        });
+    }
+
+    fn ui_external_config(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("🧾 External Config (Backed Up)", |ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Path: {}",
+                    self.external_file_path.display()
+                ))
+                .small()
+                .weak(),
+            );
+
+            ui.add_space(4.0);
+            ui.add(
+                egui::TextEdit::multiline(&mut self.external_content)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(6)
+                    .code_editor(),
+            );
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("💾 Save External File").clicked() {
+                    self.save_external_file();
+                }
+
+                if ui.button("🔄 Reload External File").clicked() {
+                    self.reload_external_file();
+                }
+            });
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "This file is registered as an external config and included in GUI demo backups.",
+                )
+                .small()
+                .weak(),
             );
         });
     }
@@ -1131,6 +1322,49 @@ impl DemoApp {
                     );
                 }
             });
+
+            ui.horizontal(|ui| {
+                ui.label("Secret Export:");
+                egui::ComboBox::from_id_salt("secret_export_policy")
+                    .selected_text(match &self.backup.secret_policy {
+                        SecretBackupPolicy::Exclude => "Exclude (Redact)",
+                        SecretBackupPolicy::EncryptedOnly => "Encrypted Only",
+                        SecretBackupPolicy::Include => "Include (Unsafe)",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.backup.secret_policy,
+                            SecretBackupPolicy::Exclude,
+                            "Exclude (Redact)",
+                        );
+                        ui.selectable_value(
+                            &mut self.backup.secret_policy,
+                            SecretBackupPolicy::EncryptedOnly,
+                            "Encrypted Only",
+                        );
+                        ui.selectable_value(
+                            &mut self.backup.secret_policy,
+                            SecretBackupPolicy::Include,
+                            "Include (Unsafe)",
+                        );
+                    });
+            });
+
+            ui.label(
+                egui::RichText::new(match &self.backup.secret_policy {
+                    SecretBackupPolicy::Exclude => {
+                        "Secrets are redacted in export (safe default)."
+                    }
+                    SecretBackupPolicy::EncryptedOnly => {
+                        "Secrets are exported only when backup encryption password is set."
+                    }
+                    SecretBackupPolicy::Include => {
+                        "⚠️ Secrets will be exported even without encryption."
+                    }
+                })
+                .small()
+                .weak(),
+            );
 
             ui.horizontal(|ui| {
                 ui.label("Note (optional):");

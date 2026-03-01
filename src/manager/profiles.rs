@@ -4,10 +4,52 @@ use crate::manager::core::SettingsManager;
 use crate::storage::StorageBackend;
 use crate::sync::RwLockExt; // Import the trait for read_recovered/write_recovered
 use log::{debug, warn};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(feature = "profiles")]
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Schema> {
+    fn capture_effective_values_for_profile_events(&self) -> HashMap<String, Value> {
+        let mut values = HashMap::new();
+
+        for full_key in self.schema_metadata.keys() {
+            match self.get_value(full_key) {
+                Ok(value) => {
+                    values.insert(full_key.clone(), value);
+                }
+                Err(err) => {
+                    debug!(
+                        "Skipping profile-switch event snapshot for '{full_key}' due to read error: {err}"
+                    );
+                }
+            }
+        }
+
+        values
+    }
+
+    fn emit_profile_switch_setting_events(
+        &self,
+        before: &HashMap<String, Value>,
+        after: &HashMap<String, Value>,
+    ) {
+        for (full_key, metadata) in self.schema_metadata.iter() {
+            let old_value = before
+                .get(full_key)
+                .cloned()
+                .unwrap_or_else(|| metadata.default.clone());
+            let new_value = after
+                .get(full_key)
+                .cloned()
+                .unwrap_or_else(|| metadata.default.clone());
+
+            if old_value != new_value {
+                self.events.notify(full_key, &old_value, &new_value);
+            }
+        }
+    }
+
     /// Check if profiles are enabled for main settings
     pub fn is_profiles_enabled(&self) -> bool {
         self.profile_manager.is_some()
@@ -25,6 +67,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// This switches the active profile for main settings and updates internal paths.
     /// All subsequent operations will use the new profile's settings.
     ///
+    /// If change listeners are registered via `events().on_change(...)`, this emits
+    /// callbacks for keys whose effective values differ between the previous and
+    /// new active profile.
+    ///
     /// # Arguments
     ///
     /// * `name` - The name of the profile to switch to
@@ -40,6 +86,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .profile_manager
             .as_ref()
             .ok_or(Error::ProfilesNotEnabled)?;
+
+        let before_values = self.capture_effective_values_for_profile_events();
 
         // Step 1: Switch the profile in ProfileManager (this handles manifest updates)
         // This must be done first to ensure the profile exists and is valid
@@ -74,12 +122,16 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                     debug!("Switched sub-settings '{key}' to profile '{name}'");
                 }
                 Err(Error::ProfilesNotEnabled) => {
-                    // Ignore sub-settings that don't support profiles
-                    // They will continue to operate in their default mode
+                    // Ignore sub-settings that don't support profiles.
+                    // They continue to operate in their default mode.
+                    debug!("Skipping sub-settings '{key}' profile switch because profiles are not enabled");
                 }
                 Err(e) => warn!("Failed to switch sub-settings '{key}' to profile '{name}': {e}"),
             }
         }
+
+        let after_values = self.capture_effective_values_for_profile_events();
+        self.emit_profile_switch_setting_events(&before_values, &after_values);
 
         Ok(())
     }
@@ -106,12 +158,18 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // Propagate to sub-settings
         let sub_settings = self.sub_settings.read_recovered()?;
         for (key, sub) in sub_settings.iter() {
-            if let Ok(pm) = sub.profiles() {
-                match pm.create(name) {
+            match sub.profiles() {
+                Ok(pm) => match pm.create(name) {
                     Ok(()) => debug!("Created profile '{name}' in sub-settings '{key}'"),
                     Err(e) => {
                         warn!("Failed to create profile '{name}' in sub-settings '{key}': {e}");
                     }
+                },
+                Err(Error::ProfilesNotEnabled) => {
+                    debug!("Skipping sub-settings '{key}' profile creation because profiles are not enabled");
+                }
+                Err(e) => {
+                    warn!("Failed to access profile manager for sub-settings '{key}': {e}");
                 }
             }
         }

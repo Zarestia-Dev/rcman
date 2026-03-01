@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `SubSettings` store creation is centralized to reduce duplication and keep profile switching logic consistent.
 - `SingleFileStore::set()` now skips file writes when data is unchanged.
 - `SettingsManager` now caches schema metadata and reuses it in metadata/get/save/reset paths.
+- API docs and README now document callback emission semantics across `save_setting`, `reset_setting`, `reset_all`, and profile switches.
+- Event watcher/validator examples now consistently use full setting keys (for example `ui.theme`, `network.port`) across docs and unit tests.
+- README examples were refreshed to match current APIs (`SettingsManager`, `get_all`, `metadata`, `SubSettingsConfig::singlefile`, non-generic `save_setting`, and current env-source patterns).
+- Module docs were aligned to current typed API terminology (`get_all()` wording in config builder docs).
+- Added explicit deprecation comments for backup manifest external fields with a planned v0.2.0 breaking rename (`external_config_files` -> `external_configs`) after removing legacy ID-list format.
 
 ### Fixed
 
@@ -25,12 +30,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ProfileManager` manifest access/update paths now return explicit `NotInitialized` errors instead of relying on unwrap assumptions.
 - `SubSettings` single-file and multi-file stores now use recovered lock handling to avoid panic on poisoned locks.
 - Docs generation formatting paths were updated to avoid panic-style unwraps for consistency.
+- `SettingsManager` operations now log lock-recovery fallback paths in sub-settings/provider/cache-invalidation helpers, and stale panic notes were removed from related docs.
+- Main settings callbacks are now consistent across save/reset flows: secret saves emit change events when values actually change, and `reset_all()` emits per-key default-reset events only for changed values.
+- Main-profile switches now emit main-setting change callbacks for effective value diffs between profiles, and emit nothing for unchanged values.
+- `EventManager` now logs lock-recovery fallback paths for listener/validator registration and notification operations, with regression coverage for poisoned-lock handling.
+- `ProfileManager` callback and manifest-invalidation paths now use recovered locks with debug diagnostics, plus poisoned-lock regression coverage for callback flows.
+- Main manager profile propagation now emits explicit diagnostics for non-profiled sub-settings skips and unexpected sub-settings profile-manager access failures.
+- External config restore no longer depends on sub-settings restore filters; external configs are restored independently when present in backup.
+- Backup manifests now include external config id→archive filename mapping to make external restore robust across differing source/target paths.
+- `get_external_config_from_backup()` now resolves by external config id with filename fallbacks for compatibility.
+- Backup now exports credential-only main secrets when `SecretBackupPolicy` allows inclusion, even if the settings file does not contain those keys.
+- Profile backups now also export credential-only main secrets when allowed by `SecretBackupPolicy`, even if a profile settings file is otherwise absent.
+- Restore now rehydrates included main-secret values back into credential storage (when enabled) and redacts those values in restored settings files.
+- Backup manifest metadata now records the secret export policy used for backup creation.
 
 ### Tests
 
 - Added focused sub-settings regressions for `set_field` error propagation, callback action semantics, delete-missing behavior, and secret-only existence handling.
 - Added `single_file` unit tests to verify no-op writes are skipped.
 - Added profile integration coverage for profile-scoped secret reset behavior.
+- Added encrypted-file backup regressions for secret-policy export behavior and restore credential rehydration.
+- Added encrypted-file profile backup regression covering profile-scoped secret rehydration from restore.
 
 ## [v0.1.3] - 2026-02-01
 

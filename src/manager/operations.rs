@@ -199,10 +199,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # Errors
     ///
     /// Returns an error if settings cannot be read or parsed.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal cache lock is poisoned or if the `OnceLock` fails to initialize (should never happen).
     pub fn get_all(&self) -> Result<Schema> {
         // Ensure cache is populated
         self.ensure_cache_populated()?;
@@ -293,26 +289,25 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     /// Check if a sub-settings type exists
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn has_sub_settings(&self, name: &str) -> bool {
-        self.sub_settings
-            .read_recovered()
-            .map(|guard| guard.contains_key(name))
-            .unwrap_or(false)
+        match self.sub_settings.read_recovered() {
+            Ok(guard) => guard.contains_key(name),
+            Err(err) => {
+                debug!("Failed to check sub-settings existence for {name}: {err}");
+                false
+            }
+        }
     }
 
     /// List all registered sub-settings types
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn sub_settings_types(&self) -> Vec<String> {
-        self.sub_settings
-            .read_recovered()
-            .map(|guard| guard.keys().cloned().collect())
-            .unwrap_or_default()
+        match self.sub_settings.read_recovered() {
+            Ok(guard) => guard.keys().cloned().collect(),
+            Err(err) => {
+                debug!("Failed to list sub-settings types: {err}");
+                Vec::new()
+            }
+        }
     }
 
     /// List all entries in a sub-settings type (convenience method)
@@ -339,13 +334,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// This allows dynamic registration of external files to be included in backups.
     ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     #[cfg(feature = "backup")]
     pub fn register_external_provider(&self, provider: Box<dyn ExternalConfigProvider>) {
         if let Ok(mut providers) = self.external_providers.write_recovered() {
             providers.push(provider);
+        } else {
+            debug!("Failed to register external config provider due to lock recovery error");
         }
     }
 

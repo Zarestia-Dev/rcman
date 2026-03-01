@@ -11,6 +11,55 @@ use log::{debug, info};
 use serde_json::{Value, json};
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Schema> {
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn save_secret_setting(
+        &self,
+        full_key: &str,
+        value: &Value,
+        metadata: &SettingMetadata,
+    ) -> Result<()> {
+        let default_value = metadata.default.clone();
+
+        let old_value = if self.credentials.is_some() {
+            match self.get_credential_with_profile(full_key) {
+                Ok(Some(secret_value)) => Value::String(secret_value),
+                Ok(None) => default_value.clone(),
+                Err(err) => {
+                    debug!("Failed to read current secret value for {full_key} before save: {err}");
+                    default_value.clone()
+                }
+            }
+        } else {
+            default_value.clone()
+        };
+
+        if *value == default_value {
+            if self.credentials.is_some() {
+                self.remove_credential_with_profile(full_key)?;
+            }
+            info!("Secret {full_key} set to default, removed from keychain");
+
+            if old_value != *value {
+                self.events.notify(full_key, &old_value, value);
+            }
+
+            return Ok(());
+        }
+
+        let value_str = match value {
+            Value::String(s) => s.clone(),
+            _ => value.to_string(),
+        };
+        self.store_credential_with_profile(full_key, &value_str)?;
+        info!("Secret setting {full_key} stored in keychain");
+
+        if old_value != *value {
+            self.events.notify(full_key, &old_value, value);
+        }
+
+        Ok(())
+    }
+
     /// Get the current settings file path
     ///
     /// This returns the path where settings.json is stored.
@@ -83,10 +132,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Invalidate the settings cache
     ///
     /// Call this if the settings file was modified externally.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn invalidate_cache(&self) {
         self.settings_cache.invalidate();
 
@@ -99,6 +144,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             for sub in sub_settings.values() {
                 sub.invalidate_cache();
             }
+        } else {
+            debug!("Failed to invalidate sub-settings cache due to lock recovery error");
         }
 
         debug!("Settings cache invalidated");
@@ -144,32 +191,18 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         // Handle secret settings separately
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        if metadata
+        if let Some(setting_metadata) = metadata
             .get(&full_key)
-            .is_some_and(SettingMetadata::is_secret)
+            .filter(|setting_metadata| setting_metadata.is_secret())
         {
-            // Get default value from metadata
-            let default_value = metadata
-                .get(&full_key)
-                .map_or(Value::Null, |m| m.default.clone());
-
-            // If value equals default, remove from keychain (keep storage minimal)
-            if *value == default_value {
-                if self.credentials.is_some() {
-                    self.remove_credential_with_profile(&full_key)?;
-                }
-                info!("Secret {full_key} set to default, removed from keychain");
-                return Ok(());
-            }
-
-            let value_str = match value {
-                Value::String(s) => s.clone(),
-                _ => value.to_string(),
-            };
-            self.store_credential_with_profile(&full_key, &value_str)?;
-            info!("Secret setting {full_key} stored in keychain");
+            self.save_secret_setting(&full_key, value, setting_metadata)?;
             return Ok(());
         }
+
+        let _write_guard = self
+            .settings_write_lock
+            .lock()
+            .map_err(|_| Error::Config("Settings write lock poisoned".into()))?;
 
         // Load current settings from cache or disk
         self.ensure_cache_populated()?;
@@ -288,6 +321,57 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     pub fn reset_all(&self) -> Result<()> {
         let path = self.settings_path()?;
 
+        self.ensure_cache_populated()?;
+
+        let stored = self
+            .settings_cache
+            .get_stored()?
+            .unwrap_or_else(|| json!({}));
+
+        let mut changed_events = Vec::new();
+        for (full_key, metadata) in self.schema_metadata.iter() {
+            let mut key_parts = full_key.split('.');
+            let (Some(category), Some(setting), None) =
+                (key_parts.next(), key_parts.next(), key_parts.next())
+            else {
+                debug!("Skipping invalid schema key format during reset_all: {full_key}");
+                continue;
+            };
+
+            let default_value = metadata.default.clone();
+
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+            let old_value = if metadata.is_secret() && self.credentials.is_some() {
+                match self.get_credential_with_profile(full_key) {
+                    Ok(Some(secret_value)) => Value::String(secret_value),
+                    Ok(None) => default_value.clone(),
+                    Err(err) => {
+                        debug!(
+                            "Failed to read secret value for {full_key} during reset_all: {err}"
+                        );
+                        default_value.clone()
+                    }
+                }
+            } else {
+                stored
+                    .get(category)
+                    .and_then(|cat| cat.get(setting))
+                    .cloned()
+                    .unwrap_or_else(|| default_value.clone())
+            };
+
+            #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+            let old_value = stored
+                .get(category)
+                .and_then(|cat| cat.get(setting))
+                .cloned()
+                .unwrap_or_else(|| default_value.clone());
+
+            if old_value != default_value {
+                changed_events.push((full_key.clone(), old_value, default_value));
+            }
+        }
+
         // Write empty object
         self.storage.write(&path, &json!({}))?;
 
@@ -300,6 +384,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         info!("All settings reset to defaults");
 
         self.invalidate_cache();
+
+        for (full_key, old_value, new_value) in changed_events {
+            self.events.notify(&full_key, &old_value, &new_value);
+        }
 
         Ok(())
     }

@@ -459,7 +459,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// Specify the schema type for compile-time type safety.
     ///
     /// This binds your settings struct to the manager, enabling:
-    /// - Type-safe `settings()` method returning your struct
+    /// - Type-safe `get_all()` method returning your struct
     /// - Compile-time validation of setting keys
     /// - Better IDE autocomplete and refactoring support
     ///

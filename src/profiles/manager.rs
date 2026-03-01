@@ -254,8 +254,13 @@ impl<S: StorageBackend> ProfileManager<S> {
     where
         F: Fn(ProfileEvent) + Send + Sync + 'static,
     {
-        if let Ok(mut guard) = self.on_event.write() {
+        if let Ok(mut guard) = self.on_event.write_recovered() {
             *guard = Some(Arc::new(callback));
+        } else {
+            debug!(
+                "Failed to register profile event callback for '{}' due to lock recovery error",
+                self.target_name
+            );
         }
     }
 
@@ -268,26 +273,41 @@ impl<S: StorageBackend> ProfileManager<S> {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        if let Ok(mut guard) = self.on_invalidate.write() {
+        if let Ok(mut guard) = self.on_invalidate.write_recovered() {
             *guard = Some(Arc::new(callback));
+        } else {
+            debug!(
+                "Failed to register profile invalidation callback for '{}' due to lock recovery error",
+                self.target_name
+            );
         }
     }
 
     /// Emit a profile event
     fn emit_event(&self, event: ProfileEvent) {
-        if let Ok(guard) = self.on_event.read() {
+        if let Ok(guard) = self.on_event.read_recovered() {
             if let Some(callback) = guard.as_ref() {
                 callback(event);
             }
+        } else {
+            debug!(
+                "Failed to emit profile event for '{}' due to lock recovery error",
+                self.target_name
+            );
         }
     }
 
     /// Invalidate caches
     fn invalidate_caches(&self) {
-        if let Ok(guard) = self.on_invalidate.read() {
+        if let Ok(guard) = self.on_invalidate.read_recovered() {
             if let Some(callback) = guard.as_ref() {
                 callback();
             }
+        } else {
+            debug!(
+                "Failed to run profile invalidation callback for '{}' due to lock recovery error",
+                self.target_name
+            );
         }
     }
 
@@ -295,8 +315,13 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// This forces the manifest to be re-read from disk on the next access.
     pub fn invalidate_manifest(&self) {
-        if let Ok(mut guard) = self.manifest.write() {
+        if let Ok(mut guard) = self.manifest.write_recovered() {
             *guard = None;
+        } else {
+            debug!(
+                "Failed to invalidate profile manifest cache for '{}' due to lock recovery error",
+                self.target_name
+            );
         }
     }
 
@@ -793,9 +818,6 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Errors
     ///
     /// Returns an error if the manifest cannot be read or saved.
-    /// # Panics
-    ///
-    /// Panics if the internal lock is poisoned.
     pub fn initialize_with_migration<F>(&self, detect_existing: F) -> Result<bool>
     where
         F: FnOnce() -> bool,
@@ -1045,6 +1067,42 @@ mod tests {
         manager.rename("work", "job").unwrap();
 
         assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn test_callback_paths_recover_from_poisoned_locks() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (_dir, manager) = create_test_manager();
+
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = manager.on_event.write().unwrap();
+            panic!("poison on_event lock");
+        }));
+
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = manager.on_invalidate.write().unwrap();
+            panic!("poison on_invalidate lock");
+        }));
+
+        let event_count = Arc::new(AtomicUsize::new(0));
+        let event_count_clone = Arc::clone(&event_count);
+        manager.set_on_event(move |_event| {
+            event_count_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let invalidate_count = Arc::new(AtomicUsize::new(0));
+        let invalidate_count_clone = Arc::clone(&invalidate_count);
+        manager.set_on_invalidate(move || {
+            invalidate_count_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        manager.create("work").unwrap();
+        manager.switch("work").unwrap();
+
+        assert_eq!(event_count.load(Ordering::SeqCst), 2);
+        assert_eq!(invalidate_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]

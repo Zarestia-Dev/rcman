@@ -376,6 +376,32 @@ impl CredentialManager {
 mod tests {
     use super::*;
 
+    struct FailingBackend;
+
+    impl CredentialBackend for FailingBackend {
+        fn store(&self, _key: &str, _value: &str) -> Result<()> {
+            Err(crate::error::Error::Credential("primary store failed".to_string()))
+        }
+
+        fn get(&self, _key: &str) -> Result<Option<String>> {
+            Err(crate::error::Error::Credential("primary get failed".to_string()))
+        }
+
+        fn remove(&self, _key: &str) -> Result<()> {
+            Err(crate::error::Error::Credential(
+                "primary remove failed".to_string(),
+            ))
+        }
+
+        fn list_keys(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "failing"
+        }
+    }
+
     #[test]
     fn test_memory_backend_crud() {
         let manager = CredentialManager::memory_only("test-app");
@@ -398,6 +424,23 @@ mod tests {
         let manager = CredentialManager::memory_only("test-app");
         let value = manager.get("nonexistent").unwrap();
         assert_eq!(value, None);
+    }
+
+    #[test]
+    fn test_fallback_used_when_primary_backend_fails() {
+        let manager = CredentialManager {
+            primary: std::sync::Arc::new(FailingBackend),
+            fallback: Some(std::sync::Arc::new(MemoryBackend::new())),
+            service_name: "test-app".to_string(),
+            #[cfg(feature = "profiles")]
+            profile_context: None,
+        };
+
+        manager.store("api_key", "fallback-secret").unwrap();
+        assert_eq!(manager.get("api_key").unwrap(), Some("fallback-secret".to_string()));
+
+        manager.remove("api_key").unwrap();
+        assert_eq!(manager.get("api_key").unwrap(), None);
     }
 
     #[cfg(feature = "profiles")]
@@ -458,5 +501,47 @@ mod tests {
             None
         );
         assert_eq!(manager.get("global_key").unwrap(), None);
+    }
+
+    #[cfg(feature = "profiles")]
+    #[test]
+    fn test_profile_context_isolation_under_concurrency() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let manager = Arc::new(CredentialManager::memory_only("test-app"));
+
+        let work_manager = Arc::new(manager.with_profile_context("work"));
+        let default_manager = Arc::new(manager.with_profile_context("default"));
+
+        let work = {
+            let work_manager = Arc::clone(&work_manager);
+            thread::spawn(move || {
+                for _ in 0..100 {
+                    work_manager.store("api_key", "work-secret").unwrap();
+                }
+            })
+        };
+
+        let default = {
+            let default_manager = Arc::clone(&default_manager);
+            thread::spawn(move || {
+                for _ in 0..100 {
+                    default_manager
+                        .store("api_key", "default-secret")
+                        .unwrap();
+                }
+            })
+        };
+
+        work.join().unwrap();
+        default.join().unwrap();
+
+        assert_eq!(work_manager.get("api_key").unwrap(), Some("work-secret".to_string()));
+        assert_eq!(
+            default_manager.get("api_key").unwrap(),
+            Some("default-secret".to_string())
+        );
+        assert_eq!(manager.get("api_key").unwrap(), None);
     }
 }

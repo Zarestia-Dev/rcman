@@ -2,7 +2,13 @@
 
 use rcman::{BackupOptions, RestoreOptions};
 use rcman::{SettingsConfigBuilder, SettingsManager, SubSettingsConfig};
+#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+use rcman::{SettingMetadata, SettingsSchema, settings};
+#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+use std::collections::HashMap;
 use std::fs;
 use tempfile::tempdir;
 
@@ -108,4 +114,92 @@ fn test_profile_backup_restore_full() {
     assert_eq!(item1_work["val"], 2);
     let item2_work = items2_work.get_value("item2").unwrap();
     assert_eq!(item2_work["val"], 3);
+}
+
+#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+#[derive(Default, Serialize, Deserialize)]
+struct ProfileSecretSettings;
+
+#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+impl SettingsSchema for ProfileSecretSettings {
+    fn get_metadata() -> HashMap<String, SettingMetadata> {
+        settings! {
+            "secrets.api_key" => SettingMetadata::text("").secret(),
+        }
+    }
+}
+
+#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+#[test]
+fn test_profile_restore_rehydrates_main_secrets_with_credentials() {
+    let temp = tempdir().unwrap();
+    let source_config_dir = temp.path().join("source");
+    fs::create_dir_all(&source_config_dir).unwrap();
+
+    let source_config = SettingsConfigBuilder::new("test-app", "1.0.0")
+        .with_config_dir(&source_config_dir)
+        .with_schema::<ProfileSecretSettings>()
+        .with_profiles()
+        .with_credentials()
+        .build();
+
+    let source = SettingsManager::new(source_config).unwrap();
+
+    source.create_profile("work").unwrap();
+    source.switch_profile("work").unwrap();
+    source
+        .save_setting("secrets", "api_key", &json!("work-profile-secret"))
+        .unwrap();
+
+    let backup_path = source
+        .backup()
+        .create(
+            &BackupOptions::new()
+                .output_dir(temp.path().join("backups"))
+                .include_profile("work")
+                .secret_policy(rcman::SecretBackupPolicy::Include),
+        )
+        .unwrap();
+
+    let target_config_dir = temp.path().join("target");
+    fs::create_dir_all(&target_config_dir).unwrap();
+
+    let target_config = SettingsConfigBuilder::new("test-app", "1.0.0")
+        .with_config_dir(&target_config_dir)
+        .with_schema::<ProfileSecretSettings>()
+        .with_profiles()
+        .with_credentials()
+        .build();
+
+    let target = SettingsManager::new(target_config).unwrap();
+
+    target
+        .backup()
+        .restore(
+            &RestoreOptions::from_path(&backup_path)
+                .overwrite(true)
+                .restore_profile("work"),
+        )
+        .unwrap();
+
+    let secret = target
+        .credentials()
+        .unwrap()
+        .get_with_profile("secrets.api_key", Some("work"))
+        .unwrap();
+    assert_eq!(secret, Some("work-profile-secret".to_string()));
+
+    let settings_path = target
+        .config()
+        .config_dir
+        .join("profiles")
+        .join("work")
+        .join(&target.config().settings_file);
+    let restored_settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
+
+    let persisted_key = restored_settings
+        .get("secrets")
+        .and_then(|secrets| secrets.get("api_key"));
+    assert!(persisted_key.is_none() || persisted_key == Some(&serde_json::Value::Null));
 }

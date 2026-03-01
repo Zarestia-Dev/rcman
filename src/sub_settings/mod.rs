@@ -339,6 +339,10 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         self.config.extension.as_deref().unwrap_or("json")
     }
 
+    pub fn schema_metadata(&self) -> Option<Arc<HashMap<String, SettingMetadata>>> {
+        self.config.schema.clone()
+    }
+
     #[cfg(feature = "profiles")]
     pub fn storage(&self) -> &S {
         &self.storage

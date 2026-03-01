@@ -450,6 +450,126 @@ fn test_main_settings_profiles() {
 }
 
 #[test]
+fn test_main_profile_switch_emits_changed_setting_callbacks() {
+    use rcman::{SettingMetadata, SettingsSchema};
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+
+    #[derive(Default, Serialize, Deserialize)]
+    struct TestSettings {
+        general: GeneralSettings,
+    }
+
+    #[derive(Default, Serialize, Deserialize)]
+    struct GeneralSettings {
+        theme: String,
+    }
+
+    impl SettingsSchema for TestSettings {
+        fn get_metadata() -> HashMap<String, SettingMetadata> {
+            let mut map = HashMap::new();
+            map.insert(
+                "general.theme".to_string(),
+                SettingMetadata::text("light").meta_str("label", "Theme"),
+            );
+            map
+        }
+    }
+
+    let temp_dir = TempDir::new().unwrap();
+
+    let config = SettingsConfig::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
+        .with_profiles()
+        .build();
+    let manager = SettingsManager::new(config).unwrap();
+
+    manager
+        .save_setting("general", "theme", &json!("dark"))
+        .unwrap();
+    manager.create_profile("work").unwrap();
+    manager
+        .switch_profile("work")
+        .unwrap();
+    manager
+        .save_setting("general", "theme", &json!("ocean"))
+        .unwrap();
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    manager.events().on_change(move |key, old, new| {
+        events_clone
+            .lock()
+            .unwrap()
+            .push((key.to_string(), old.clone(), new.clone()));
+    });
+
+    manager.switch_profile("default").unwrap();
+    manager.switch_profile("work").unwrap();
+
+    let recorded = events.lock().unwrap();
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded
+        .iter()
+        .any(|(key, old, new)| key == "general.theme" && *old == json!("ocean") && *new == json!("dark")));
+    assert!(recorded
+        .iter()
+        .any(|(key, old, new)| key == "general.theme" && *old == json!("dark") && *new == json!("ocean")));
+}
+
+#[test]
+fn test_main_profile_switch_without_value_change_emits_no_callbacks() {
+    use rcman::{SettingMetadata, SettingsSchema};
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+
+    #[derive(Default, Serialize, Deserialize)]
+    struct TestSettings {
+        general: GeneralSettings,
+    }
+
+    #[derive(Default, Serialize, Deserialize)]
+    struct GeneralSettings {
+        theme: String,
+    }
+
+    impl SettingsSchema for TestSettings {
+        fn get_metadata() -> HashMap<String, SettingMetadata> {
+            let mut map = HashMap::new();
+            map.insert(
+                "general.theme".to_string(),
+                SettingMetadata::text("light").meta_str("label", "Theme"),
+            );
+            map
+        }
+    }
+
+    let temp_dir = TempDir::new().unwrap();
+
+    let config = SettingsConfig::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
+        .with_profiles()
+        .build();
+    let manager = SettingsManager::new(config).unwrap();
+
+    manager.create_profile("work").unwrap();
+
+    let callback_count = Arc::new(Mutex::new(0usize));
+    let callback_count_clone = Arc::clone(&callback_count);
+    manager.events().on_change(move |_key, _old, _new| {
+        let mut guard = callback_count_clone.lock().unwrap();
+        *guard += 1;
+    });
+
+    manager.switch_profile("work").unwrap();
+    manager.switch_profile("default").unwrap();
+
+    assert_eq!(*callback_count.lock().unwrap(), 0);
+}
+
+#[test]
 fn test_main_settings_profiles_directory_structure() {
     use rcman::{SettingMetadata, SettingsSchema};
     use serde::{Deserialize, Serialize};
@@ -516,6 +636,28 @@ fn test_main_settings_profiles_directory_structure() {
         profiles_dir.join("default").join("settings.json").exists(),
         "settings.json should exist in default profile"
     );
+}
+
+#[test]
+fn test_main_profile_propagation_with_mixed_sub_settings() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_profiles()
+        .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
+        .with_sub_settings(SubSettingsConfig::new("shared"))
+        .build()
+        .unwrap();
+
+    manager.create_profile("work").unwrap();
+    manager.switch_profile("work").unwrap();
+
+    let remotes = manager.sub_settings("remotes").unwrap();
+    assert_eq!(remotes.profiles().unwrap().active().unwrap(), "work");
+
+    let shared = manager.sub_settings("shared").unwrap();
+    assert!(matches!(shared.profiles(), Err(rcman::Error::ProfilesNotEnabled)));
 }
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
