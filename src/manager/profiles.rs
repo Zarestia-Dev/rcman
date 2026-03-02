@@ -124,7 +124,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 Err(Error::ProfilesNotEnabled) => {
                     // Ignore sub-settings that don't support profiles.
                     // They continue to operate in their default mode.
-                    debug!("Skipping sub-settings '{key}' profile switch because profiles are not enabled");
+                    debug!(
+                        "Skipping sub-settings '{key}' profile switch because profiles are not enabled"
+                    );
                 }
                 Err(e) => warn!("Failed to switch sub-settings '{key}' to profile '{name}': {e}"),
             }
@@ -166,7 +168,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                     }
                 },
                 Err(Error::ProfilesNotEnabled) => {
-                    debug!("Skipping sub-settings '{key}' profile creation because profiles are not enabled");
+                    debug!(
+                        "Skipping sub-settings '{key}' profile creation because profiles are not enabled"
+                    );
                 }
                 Err(e) => {
                     warn!("Failed to access profile manager for sub-settings '{key}': {e}");

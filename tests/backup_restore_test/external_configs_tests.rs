@@ -55,7 +55,10 @@ fn test_restore_external_configs_with_sub_settings_filter() {
 
     assert!(result.restored.iter().any(|s| s == "external_cfg"));
     assert!(restore_target.exists());
-    assert_eq!(fs::read_to_string(&restore_target).unwrap(), "token=abc123\n");
+    assert_eq!(
+        fs::read_to_string(&restore_target).unwrap(),
+        "token=abc123\n"
+    );
 }
 
 #[test]
@@ -124,8 +127,14 @@ fn test_full_backup_with_explicit_external_list_filters_registered_configs() {
         )
         .unwrap();
 
-    let external_a_target = temp.path().join("restore_full_filter").join("external_a.conf");
-    let external_b_target = temp.path().join("restore_full_filter").join("external_b.conf");
+    let external_a_target = temp
+        .path()
+        .join("restore_full_filter")
+        .join("external_a.conf");
+    let external_b_target = temp
+        .path()
+        .join("restore_full_filter")
+        .join("external_b.conf");
 
     let restore_manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp.path().join("restore_full_filter_cfg"))
@@ -143,7 +152,10 @@ fn test_full_backup_with_explicit_external_list_filters_registered_configs() {
     assert!(result.restored.iter().any(|s| s == "external_a"));
     assert!(!result.restored.iter().any(|s| s == "external_b"));
     assert!(external_a_target.exists());
-    assert_eq!(fs::read_to_string(&external_a_target).unwrap(), "source=A\n");
+    assert_eq!(
+        fs::read_to_string(&external_a_target).unwrap(),
+        "source=A\n"
+    );
     assert!(!external_b_target.exists());
 }
 
@@ -162,8 +174,16 @@ fn test_full_backup_with_explicit_external_list_filters_provider_configs() {
         .backup()
         .register_external_provider(Box::new(TestExternalProvider {
             configs: vec![
-                ExternalConfig::from_content("provider_a", "provider_a.conf", b"provider=A\n".to_vec()),
-                ExternalConfig::from_content("provider_b", "provider_b.conf", b"provider=B\n".to_vec()),
+                ExternalConfig::from_content(
+                    "provider_a",
+                    "provider_a.conf",
+                    b"provider=A\n".to_vec(),
+                ),
+                ExternalConfig::from_content(
+                    "provider_b",
+                    "provider_b.conf",
+                    b"provider=B\n".to_vec(),
+                ),
             ],
         }));
 
@@ -178,12 +198,14 @@ fn test_full_backup_with_explicit_external_list_filters_provider_configs() {
 
     let analysis = source_manager.backup().analyze(&backup_path).unwrap();
     assert_eq!(analysis.manifest.contents.external_configs.len(), 1);
-    assert!(analysis
-        .manifest
-        .contents
-        .external_configs
-        .iter()
-        .any(|id| id == "provider_a"));
+    assert!(
+        analysis
+            .manifest
+            .contents
+            .external_configs
+            .iter()
+            .any(|id| id == "provider_a")
+    );
 
     let provider_a_target = temp.path().join("provider_restore").join("provider_a.conf");
     let provider_b_target = temp.path().join("provider_restore").join("provider_b.conf");
@@ -213,7 +235,10 @@ fn test_full_backup_with_explicit_external_list_filters_provider_configs() {
     assert!(result.restored.iter().any(|s| s == "provider_a"));
     assert!(!result.restored.iter().any(|s| s == "provider_b"));
     assert!(provider_a_target.exists());
-    assert_eq!(fs::read_to_string(&provider_a_target).unwrap(), "provider=A\n");
+    assert_eq!(
+        fs::read_to_string(&provider_a_target).unwrap(),
+        "provider=A\n"
+    );
     assert!(!provider_b_target.exists());
 }
 
@@ -232,8 +257,16 @@ fn test_full_backup_auto_includes_provider_configs_when_external_list_empty() {
         .backup()
         .register_external_provider(Box::new(TestExternalProvider {
             configs: vec![
-                ExternalConfig::from_content("provider_a", "provider_a.conf", b"provider=A\n".to_vec()),
-                ExternalConfig::from_content("provider_b", "provider_b.conf", b"provider=B\n".to_vec()),
+                ExternalConfig::from_content(
+                    "provider_a",
+                    "provider_a.conf",
+                    b"provider=A\n".to_vec(),
+                ),
+                ExternalConfig::from_content(
+                    "provider_b",
+                    "provider_b.conf",
+                    b"provider=B\n".to_vec(),
+                ),
             ],
         }));
 
@@ -244,21 +277,31 @@ fn test_full_backup_auto_includes_provider_configs_when_external_list_empty() {
 
     let analysis = source_manager.backup().analyze(&backup_path).unwrap();
     assert_eq!(analysis.manifest.contents.external_configs.len(), 2);
-    assert!(analysis
-        .manifest
-        .contents
-        .external_configs
-        .iter()
-        .any(|id| id == "provider_a"));
-    assert!(analysis
-        .manifest
-        .contents
-        .external_configs
-        .iter()
-        .any(|id| id == "provider_b"));
+    assert!(
+        analysis
+            .manifest
+            .contents
+            .external_configs
+            .iter()
+            .any(|id| id == "provider_a")
+    );
+    assert!(
+        analysis
+            .manifest
+            .contents
+            .external_configs
+            .iter()
+            .any(|id| id == "provider_b")
+    );
 
-    let provider_a_target = temp.path().join("provider_auto_restore").join("provider_a.conf");
-    let provider_b_target = temp.path().join("provider_auto_restore").join("provider_b.conf");
+    let provider_a_target = temp
+        .path()
+        .join("provider_auto_restore")
+        .join("provider_a.conf");
+    let provider_b_target = temp
+        .path()
+        .join("provider_auto_restore")
+        .join("provider_b.conf");
 
     let restore_manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp.path().join("provider_auto_restore_cfg"))
@@ -286,8 +329,14 @@ fn test_full_backup_auto_includes_provider_configs_when_external_list_empty() {
     assert!(result.restored.iter().any(|s| s == "provider_b"));
     assert!(provider_a_target.exists());
     assert!(provider_b_target.exists());
-    assert_eq!(fs::read_to_string(&provider_a_target).unwrap(), "provider=A\n");
-    assert_eq!(fs::read_to_string(&provider_b_target).unwrap(), "provider=B\n");
+    assert_eq!(
+        fs::read_to_string(&provider_a_target).unwrap(),
+        "provider=A\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&provider_b_target).unwrap(),
+        "provider=B\n"
+    );
 }
 
 #[test]
@@ -356,7 +405,10 @@ fn test_full_backup_deduplicates_duplicate_external_ids_static_first() {
         1
     );
     assert!(restore_target.exists());
-    assert_eq!(fs::read_to_string(&restore_target).unwrap(), "source=static\n");
+    assert_eq!(
+        fs::read_to_string(&restore_target).unwrap(),
+        "source=static\n"
+    );
 }
 
 #[test]

@@ -165,9 +165,9 @@ fn test_reset_all_emits_callbacks_for_changed_keys() {
 
     let captured = events.lock().unwrap();
     assert_eq!(captured.len(), 2);
-    assert!(captured
-        .iter()
-        .any(|(key, old, new)| key == "ui.theme" && *old == json!("light") && *new == json!("dark")));
+    assert!(captured.iter().any(|(key, old, new)| key == "ui.theme"
+        && *old == json!("light")
+        && *new == json!("dark")));
     assert!(captured.iter().any(|(key, old, new)| {
         key == "general.language" && *old == json!("tr") && *new == json!("en")
     }));

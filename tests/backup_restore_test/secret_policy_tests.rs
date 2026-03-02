@@ -1,7 +1,9 @@
 use super::*;
-use rcman::{BackupOptions, SettingMetadata, SettingsManager, SettingsSchema, SubSettingsConfig, settings};
 #[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
 use rcman::RestoreOptions;
+use rcman::{
+    BackupOptions, SettingMetadata, SettingsManager, SettingsSchema, SubSettingsConfig, settings,
+};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
@@ -53,7 +55,9 @@ fn test_encrypted_only_redacts_without_credentials_backend() {
     let mut inner_zip = zip::ZipArchive::new(std::io::Cursor::new(data_zip_bytes)).unwrap();
     let mut settings_entry = inner_zip.by_name("settings.json").unwrap();
     let mut settings_content = String::new();
-    settings_entry.read_to_string(&mut settings_content).unwrap();
+    settings_entry
+        .read_to_string(&mut settings_content)
+        .unwrap();
 
     let settings_value: serde_json::Value = serde_json::from_str(&settings_content).unwrap();
     let api_key = settings_value
@@ -90,13 +94,18 @@ fn test_encrypted_only_redacts_subsettings_secret_fields_without_password() {
         .unwrap();
 
     manager
-        .register_sub_settings(SubSettingsConfig::new("remotes").with_schema::<RemoteSecretSchema>())
+        .register_sub_settings(
+            SubSettingsConfig::new("remotes").with_schema::<RemoteSecretSchema>(),
+        )
         .unwrap();
 
     manager
         .sub_settings("remotes")
         .unwrap()
-        .set("gdrive", &json!({"type": "drive", "token": "sub-secret-token"}))
+        .set(
+            "gdrive",
+            &json!({"type": "drive", "token": "sub-secret-token"}),
+        )
         .unwrap();
 
     let backup_path = manager
@@ -209,14 +218,15 @@ fn test_restore_rehydrates_secret_credentials_from_backup() {
 
     target.invalidate_cache();
 
-    assert_eq!(target.get_value("api.key").unwrap(), json!("sk-restore-secret"));
+    assert_eq!(
+        target.get_value("api.key").unwrap(),
+        json!("sk-restore-secret")
+    );
 
     let settings_path = target.config().settings_path();
     let restored_settings: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
 
-    let persisted_key = restored_settings
-        .get("api")
-        .and_then(|api| api.get("key"));
+    let persisted_key = restored_settings.get("api").and_then(|api| api.get("key"));
     assert!(persisted_key.is_none() || persisted_key == Some(&serde_json::Value::Null));
 }

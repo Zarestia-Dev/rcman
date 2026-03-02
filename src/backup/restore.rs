@@ -288,7 +288,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     result.restored.push(dest_filename.to_string());
                     debug!("{} Would restore {}", self.mode_str, dest_filename);
                 } else {
-                    self.hydrate_main_settings_secrets(&mut value, None)?;
+                    self.hydrate_main_settings_secrets(&mut value, None);
 
                     // Write using the configured storage backend (handles conversion!)
                     self.manager
@@ -393,7 +393,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                         self.hydrate_main_settings_secrets(
                             &mut value,
                             Some(target_profile_name.as_str()),
-                        )?;
+                        );
 
                         self.manager
                             .manager
@@ -455,9 +455,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         &self,
         value: &mut serde_json::Value,
         profile: Option<&str>,
-    ) -> Result<()> {
+    ) {
         let Some(creds) = self.manager.manager.credentials() else {
-            return Ok(());
+            return;
         };
 
         let mut hydrated_count = 0u32;
@@ -518,12 +518,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
         if hydrated_count > 0 {
             debug!(
-                "Rehydrated {hydrated_count} secret credential(s) during restore for profile {:?}",
-                profile
+                "Rehydrated {hydrated_count} secret credential(s) during restore for profile {profile:?}"
             );
         }
-
-        Ok(())
     }
 
     #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
@@ -531,8 +528,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         &self,
         _value: &mut serde_json::Value,
         _profile: Option<&str>,
-    ) -> Result<()> {
-        Ok(())
+    ) {
     }
 
     fn restore_flat_sub_settings(

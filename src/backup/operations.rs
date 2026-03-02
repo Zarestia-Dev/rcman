@@ -20,7 +20,19 @@ use time::{OffsetDateTime, macros::format_description};
 #[cfg(feature = "profiles")]
 use crate::profiles::PROFILES_DIR;
 
-type ExternalGatherResult = (u64, u32, Vec<String>, std::collections::HashMap<String, String>);
+type ExternalGatherResult = (
+    u64,
+    u32,
+    Vec<String>,
+    std::collections::HashMap<String, String>,
+);
+
+struct SecretContext<'a> {
+    prefix: &'a str,
+    metadata: &'a std::collections::HashMap<String, crate::SettingMetadata>,
+    should_include: bool,
+    credential_profile: Option<&'a str>,
+}
 
 /// Helper to collect settings files for backup (handles both profiled and flat)
 /// Returns (`source_path`, `relative_dest_path`) pairs
@@ -315,9 +327,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         }
 
         // 3. External configs
-        let include_external_configs =
-            matches!(options.export_type, ExportType::Full)
-                || !options.include_external_configs.is_empty();
+        let include_external_configs = matches!(options.export_type, ExportType::Full)
+            || !options.include_external_configs.is_empty();
 
         if include_external_configs {
             let (size, count, configs, config_files) =
@@ -343,6 +354,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         let mut file_count = 0u32;
 
         let settings_files = collect_settings_files(self.manager.config(), options);
+        let metadata = Schema::get_metadata();
         let mut backed_up_profile_settings = HashSet::new();
 
         for (src, dest) in settings_files {
@@ -356,16 +368,20 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             }
 
             let credential_profile = Self::profile_from_backup_dest(&dest);
+            let should_include_secrets = match options.secret_policy {
+                crate::SecretBackupPolicy::Exclude => false,
+                crate::SecretBackupPolicy::Include => true,
+                crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
+            };
+            let ctx = SecretContext {
+                prefix: "",
+                metadata: &metadata,
+                should_include: should_include_secrets,
+                credential_profile,
+            };
 
             // Process and save with secret handling (prefix is empty for main settings)
-            let size = self.process_and_save_settings(
-                &src,
-                &full_dest,
-                "",
-                &Schema::get_metadata(),
-                options,
-                credential_profile,
-            )?;
+            let size = self.process_and_save_settings(&src, &full_dest, &ctx)?;
 
             total_size += size;
             file_count += 1;
@@ -402,10 +418,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     )? {
                         total_size += size;
                         file_count += 1;
-                        debug!(
-                            "Added synthesized profile settings file for profile: {}",
-                            profile_name
-                        );
+                        debug!("Added synthesized profile settings file for profile: {profile_name}");
                     }
                 }
             }
@@ -421,7 +434,10 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             {
                 total_size += size;
                 file_count += 1;
-                debug!("Added synthesized settings file: {}", self.manager.config().settings_file);
+                debug!(
+                    "Added synthesized settings file: {}",
+                    self.manager.config().settings_file
+                );
             }
         }
 
@@ -448,7 +464,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             &Schema::get_metadata(),
             should_include_secrets,
             credential_profile,
-        )?;
+        );
 
         if matches!(value, serde_json::Value::Object(ref map) if map.is_empty()) {
             return Ok(None);
@@ -477,10 +493,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         &self,
         src: &Path,
         dest: &Path,
-        prefix: &str,
-        metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
-        options: &BackupOptions,
-        credential_profile: Option<&str>,
+        ctx: &SecretContext<'_>,
     ) -> Result<u64> {
         let content = std::fs::read(src).map_err(|e| Error::FileRead {
             path: src.to_path_buf(),
@@ -496,26 +509,20 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         let storage = &self.manager.config().storage;
         let mut value: serde_json::Value = storage.deserialize(&content_str)?;
 
-        let should_include_secrets = match options.secret_policy {
-            crate::SecretBackupPolicy::Exclude => false,
-            crate::SecretBackupPolicy::Include => true,
-            crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
-        };
-
         self.populate_missing_secret_values(
             &mut value,
-            prefix,
-            metadata,
-            should_include_secrets,
-            credential_profile,
-        )?;
+            ctx.prefix,
+            ctx.metadata,
+            ctx.should_include,
+            ctx.credential_profile,
+        );
 
         self.traverse_secrets(
             &mut value,
-            prefix,
-            metadata,
-            should_include_secrets,
-            credential_profile,
+            ctx.prefix,
+            ctx.metadata,
+            ctx.should_include,
+            ctx.credential_profile,
         )?;
 
         let serialized = storage.serialize(&value)?;
@@ -532,7 +539,13 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         should_include: bool,
         credential_profile: Option<&str>,
     ) -> Result<()> {
-        self.traverse_secrets_impl(value, prefix, metadata, should_include, credential_profile, 0)
+        let ctx = SecretContext {
+            prefix,
+            metadata,
+            should_include,
+            credential_profile,
+        };
+        self.traverse_secrets_impl(value, prefix, &ctx, 0)
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -543,13 +556,13 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
         should_include: bool,
         credential_profile: Option<&str>,
-    ) -> Result<()> {
+    ) {
         if !should_include {
-            return Ok(());
+            return;
         }
 
         let Some(creds) = self.manager.credentials() else {
-            return Ok(());
+            return;
         };
 
         for (full_key, meta) in metadata {
@@ -579,12 +592,13 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 }
                 Ok(None) => {}
                 Err(err) => {
-                    debug!("Failed to fetch secret {full_key} while building backup payload: {err}");
+                    debug!(
+                        "Failed to fetch secret {full_key} while building backup payload: {err}"
+                    );
                 }
             }
         }
 
-        Ok(())
     }
 
     #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
@@ -595,8 +609,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         _metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
         _should_include: bool,
         _credential_profile: Option<&str>,
-    ) -> Result<()> {
-        Ok(())
+    ) {
     }
 
     fn profile_from_backup_dest(dest: &Path) -> Option<&str> {
@@ -608,7 +621,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 return None;
             }
 
-            return components.next()?.as_os_str().to_str();
+            components.next()?.as_os_str().to_str()
         }
 
         #[cfg(not(feature = "profiles"))]
@@ -701,10 +714,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
     fn traverse_secrets_impl(
         &self,
         value: &mut serde_json::Value,
-        prefix: &str,
-        metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
-        should_include: bool,
-        credential_profile: Option<&str>,
+        current_path: &str,
+        ctx: &SecretContext<'_>,
         depth: usize,
     ) -> Result<()> {
         const MAX_DEPTH: usize = 32;
@@ -717,31 +728,24 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         match value {
             serde_json::Value::Object(map) => {
                 for (k, v) in map {
-                    let key = if prefix.is_empty() {
+                    let next_path = if current_path.is_empty() {
                         k.clone()
                     } else {
-                        format!("{prefix}.{k}")
+                        format!("{current_path}.{k}")
                     };
 
-                    self.traverse_secrets_impl(
-                        v,
-                        &key,
-                        metadata,
-                        should_include,
-                        credential_profile,
-                        depth + 1,
-                    )?;
+                    self.traverse_secrets_impl(v, &next_path, ctx, depth + 1)?;
                 }
             }
             _ => {
-                if let Some(meta) = metadata.get(prefix) {
+                if let Some(meta) = ctx.metadata.get(current_path) {
                     if meta.is_secret() {
-                        if should_include {
+                        if ctx.should_include {
                             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
                             {
                                 if let Some(creds) = self.manager.credentials() {
                                     if let Ok(Some(secret)) =
-                                        creds.get_with_profile(prefix, credential_profile)
+                                        creds.get_with_profile(current_path, ctx.credential_profile)
                                     {
                                         *value = serde_json::Value::String(secret);
                                     }
@@ -1022,9 +1026,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         let mut seen_config_ids = std::collections::HashSet::new();
 
         for config in all_configs {
-            let include_all_for_full =
-                matches!(options.export_type, ExportType::Full)
-                    && options.include_external_configs.is_empty();
+            let include_all_for_full = matches!(options.export_type, ExportType::Full)
+                && options.include_external_configs.is_empty();
 
             if !include_all_for_full && !options.include_external_configs.contains(&config.id) {
                 continue;

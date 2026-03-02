@@ -489,9 +489,7 @@ fn test_main_profile_switch_emits_changed_setting_callbacks() {
         .save_setting("general", "theme", &json!("dark"))
         .unwrap();
     manager.create_profile("work").unwrap();
-    manager
-        .switch_profile("work")
-        .unwrap();
+    manager.switch_profile("work").unwrap();
     manager
         .save_setting("general", "theme", &json!("ocean"))
         .unwrap();
@@ -510,12 +508,12 @@ fn test_main_profile_switch_emits_changed_setting_callbacks() {
 
     let recorded = events.lock().unwrap();
     assert_eq!(recorded.len(), 2);
-    assert!(recorded
-        .iter()
-        .any(|(key, old, new)| key == "general.theme" && *old == json!("ocean") && *new == json!("dark")));
-    assert!(recorded
-        .iter()
-        .any(|(key, old, new)| key == "general.theme" && *old == json!("dark") && *new == json!("ocean")));
+    assert!(recorded.iter().any(|(key, old, new)| key == "general.theme"
+        && *old == json!("ocean")
+        && *new == json!("dark")));
+    assert!(recorded.iter().any(|(key, old, new)| key == "general.theme"
+        && *old == json!("dark")
+        && *new == json!("ocean")));
 }
 
 #[test]
@@ -657,7 +655,10 @@ fn test_main_profile_propagation_with_mixed_sub_settings() {
     assert_eq!(remotes.profiles().unwrap().active().unwrap(), "work");
 
     let shared = manager.sub_settings("shared").unwrap();
-    assert!(matches!(shared.profiles(), Err(rcman::Error::ProfilesNotEnabled)));
+    assert!(matches!(
+        shared.profiles(),
+        Err(rcman::Error::ProfilesNotEnabled)
+    ));
 }
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]

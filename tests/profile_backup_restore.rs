@@ -1,9 +1,9 @@
 #![cfg(feature = "profiles")]
 
 use rcman::{BackupOptions, RestoreOptions};
-use rcman::{SettingsConfigBuilder, SettingsManager, SubSettingsConfig};
 #[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
 use rcman::{SettingMetadata, SettingsSchema, settings};
+use rcman::{SettingsConfigBuilder, SettingsManager, SubSettingsConfig};
 #[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
 use serde::{Deserialize, Serialize};
 use serde_json::json;

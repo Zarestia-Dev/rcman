@@ -380,11 +380,15 @@ mod tests {
 
     impl CredentialBackend for FailingBackend {
         fn store(&self, _key: &str, _value: &str) -> Result<()> {
-            Err(crate::error::Error::Credential("primary store failed".to_string()))
+            Err(crate::error::Error::Credential(
+                "primary store failed".to_string(),
+            ))
         }
 
         fn get(&self, _key: &str) -> Result<Option<String>> {
-            Err(crate::error::Error::Credential("primary get failed".to_string()))
+            Err(crate::error::Error::Credential(
+                "primary get failed".to_string(),
+            ))
         }
 
         fn remove(&self, _key: &str) -> Result<()> {
@@ -437,7 +441,10 @@ mod tests {
         };
 
         manager.store("api_key", "fallback-secret").unwrap();
-        assert_eq!(manager.get("api_key").unwrap(), Some("fallback-secret".to_string()));
+        assert_eq!(
+            manager.get("api_key").unwrap(),
+            Some("fallback-secret".to_string())
+        );
 
         manager.remove("api_key").unwrap();
         assert_eq!(manager.get("api_key").unwrap(), None);
@@ -527,9 +534,7 @@ mod tests {
             let default_manager = Arc::clone(&default_manager);
             thread::spawn(move || {
                 for _ in 0..100 {
-                    default_manager
-                        .store("api_key", "default-secret")
-                        .unwrap();
+                    default_manager.store("api_key", "default-secret").unwrap();
                 }
             })
         };
@@ -537,7 +542,10 @@ mod tests {
         work.join().unwrap();
         default.join().unwrap();
 
-        assert_eq!(work_manager.get("api_key").unwrap(), Some("work-secret".to_string()));
+        assert_eq!(
+            work_manager.get("api_key").unwrap(),
+            Some("work-secret".to_string())
+        );
         assert_eq!(
             default_manager.get("api_key").unwrap(),
             Some("default-secret".to_string())

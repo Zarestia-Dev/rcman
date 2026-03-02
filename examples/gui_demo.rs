@@ -14,8 +14,8 @@
 
 use eframe::egui;
 use rcman::{
-    BackupOptions, RestoreOptions, SettingMetadata, SettingsConfig, SettingsManager,
-    SettingsSchema, SecretBackupPolicy, SubSettingsConfig, opt, settings,
+    BackupOptions, RestoreOptions, SecretBackupPolicy, SettingMetadata, SettingsConfig,
+    SettingsManager, SettingsSchema, SubSettingsConfig, opt, settings,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -303,7 +303,8 @@ impl DemoApp {
         }
 
         if !path.exists() {
-            let default_content = "# rcman GUI Demo external file\nendpoint=https://example.local\nmode=demo\n";
+            let default_content =
+                "# rcman GUI Demo external file\nendpoint=https://example.local\nmode=demo\n";
             let _ = std::fs::write(path, default_content);
         }
 
@@ -367,7 +368,9 @@ impl DemoApp {
         // Register sub-settings for remotes and load list
         app.remotes.list = {
             app.manager
-                .register_sub_settings(SubSettingsConfig::new("remotes").with_schema::<RemoteSettings>())
+                .register_sub_settings(
+                    SubSettingsConfig::new("remotes").with_schema::<RemoteSettings>(),
+                )
                 .unwrap();
 
             // Load remotes list
@@ -719,8 +722,8 @@ impl DemoApp {
     }
 
     fn reload_external_file(&mut self) {
-        self.external_content = std::fs::read_to_string(&self.external_file_path)
-            .unwrap_or_else(|_| String::new());
+        self.external_content =
+            std::fs::read_to_string(&self.external_file_path).unwrap_or_else(|_| String::new());
         self.ui.status_message = format!(
             "✅ External file reloaded: {}",
             self.external_file_path.display()
@@ -1246,9 +1249,11 @@ impl DemoApp {
     fn ui_backup_settings(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("💾 Backup & Restore", |ui| {
             ui.label(
-                egui::RichText::new("Create and restore encrypted or plain backups (includes external file)")
-                    .small()
-                    .weak(),
+                egui::RichText::new(
+                    "Create and restore encrypted or plain backups (includes external file)",
+                )
+                .small()
+                .weak(),
             );
             ui.add_space(8.0);
 
@@ -1352,9 +1357,7 @@ impl DemoApp {
 
             ui.label(
                 egui::RichText::new(match &self.backup.secret_policy {
-                    SecretBackupPolicy::Exclude => {
-                        "Secrets are redacted in export (safe default)."
-                    }
+                    SecretBackupPolicy::Exclude => "Secrets are redacted in export (safe default).",
                     SecretBackupPolicy::EncryptedOnly => {
                         "Secrets are exported only when backup encryption password is set."
                     }

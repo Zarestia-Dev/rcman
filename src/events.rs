@@ -102,13 +102,10 @@ impl EventManager {
     ///
     /// Returns the first validation error message if any validator fails.
     pub fn validate(&self, key: &str, value: &Value) -> Result<(), String> {
-        let guard = self
-            .validators
-            .read_recovered()
-            .map_err(|err| {
-                debug!("Failed to validate {key} due to lock recovery error: {err}");
-                "Internal lock error".to_string()
-            })?;
+        let guard = self.validators.read_recovered().map_err(|err| {
+            debug!("Failed to validate {key} due to lock recovery error: {err}");
+            "Internal lock error".to_string()
+        })?;
         if let Some(validators) = guard.get(key) {
             for validator in validators {
                 validator(value)?;
@@ -183,8 +180,8 @@ impl Default for EventManager {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_global_listener() {
@@ -240,7 +237,11 @@ mod tests {
         // Invalid values
         assert!(events.validate("network.port", &json!(-1)).is_err());
         assert!(events.validate("network.port", &json!(70000)).is_err());
-        assert!(events.validate("network.port", &json!("not a number")).is_err());
+        assert!(
+            events
+                .validate("network.port", &json!("not a number"))
+                .is_err()
+        );
 
         // Unvalidated key should always pass
         assert!(events.validate("other", &json!("anything")).is_ok());
