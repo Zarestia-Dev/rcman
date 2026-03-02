@@ -4,7 +4,7 @@ use super::archive::{extract_zip_archive, read_file_from_zip};
 use crate::config::SettingsSchema;
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
-use crate::sync::RwLockExt;
+use crate::utils::sync::RwLockExt;
 
 use crate::backup::BackupAnalysis;
 #[cfg(feature = "profiles")]
@@ -279,7 +279,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     .to_string_lossy();
 
                 if settings_dest.exists() && !self.options.flags.control.overwrite_existing {
-                    result.skipped.push(dest_filename.to_string());
+                    result
+                        .add_skipped(dest_filename.to_string(), RestoreSkipReason::ExistsConflict);
                     warn!(
                         "{} Skipping {} (exists, overwrite disabled)",
                         self.mode_str, dest_filename
@@ -316,7 +317,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
         if profiles_manifest.exists() {
             if target_manifest.exists() && !self.options.flags.control.overwrite_existing {
-                result.skipped.push(manifest_filename.clone());
+                result.add_skipped(manifest_filename.clone(), RestoreSkipReason::ExistsConflict);
                 warn!("{} Skipping {} (exists)", self.mode_str, manifest_filename);
             } else if self.options.flags.control.dry_run {
                 result.restored.push(manifest_filename.clone());
@@ -368,7 +369,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 };
 
                 let target_profile_path = target_profiles_dir.join(&target_profile_name);
-                crate::security::ensure_secure_dir(&target_profile_path)?;
+                crate::utils::security::ensure_secure_dir(&target_profile_path)?;
 
                 let target_settings_file = &self.manager.manager.config().settings_file;
                 let dest_settings = target_profile_path.join(target_settings_file);
@@ -382,7 +383,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     let mut value = value;
 
                     if dest_settings.exists() && !self.options.flags.control.overwrite_existing {
-                        result.skipped.push(restore_id);
+                        result.add_skipped(restore_id, RestoreSkipReason::ExistsConflict);
                     } else if self.options.flags.control.dry_run {
                         result.restored.push(restore_id);
                         debug!(
@@ -422,6 +423,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             // Get sub-settings handler
             let Ok(sub) = self.manager.manager.sub_settings(&sub_type) else {
                 warn!("Sub-settings type '{sub_type}' not registered, skipping");
+                result.add_skipped(sub_type, RestoreSkipReason::UnregisteredSubSettingsType);
                 continue;
             };
 
@@ -451,11 +453,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn hydrate_main_settings_secrets(
-        &self,
-        value: &mut serde_json::Value,
-        profile: Option<&str>,
-    ) {
+    fn hydrate_main_settings_secrets(&self, value: &mut serde_json::Value, profile: Option<&str>) {
         let Some(creds) = self.manager.manager.credentials() else {
             return;
         };
@@ -469,19 +467,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             .iter()
             .filter(|(_, meta)| meta.is_secret())
         {
-            let mut parts = full_key.split('.');
-            let (Some(category), Some(setting), None) = (parts.next(), parts.next(), parts.next())
-            else {
-                continue;
-            };
-
-            let Some(category_value) = value.get_mut(category) else {
-                continue;
-            };
-            let Some(category_obj) = category_value.as_object_mut() else {
-                continue;
-            };
-            let Some(setting_value) = category_obj.get_mut(setting) else {
+            let Some(setting_value) = crate::utils::value::get_path(value, full_key) else {
                 continue;
             };
 
@@ -495,12 +481,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                         "Failed to clear credential for restored default secret {full_key}: {err}"
                     );
                 } else {
-                    *setting_value = serde_json::Value::Null;
+                    crate::utils::value::remove_path(value, full_key);
                 }
                 continue;
             }
 
-            let secret_value = match &*setting_value {
+            let secret_value = match setting_value {
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
             };
@@ -512,7 +498,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 continue;
             }
 
-            *setting_value = serde_json::Value::Null;
+            crate::utils::value::remove_path(value, full_key);
             hydrated_count += 1;
         }
 
@@ -614,7 +600,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
             // Check if exists
             if !self.options.flags.control.overwrite_existing && sub_ctx.sub.exists(&entry_name)? {
-                result.skipped.push(entry_id);
+                result.add_skipped(entry_id, RestoreSkipReason::ExistsConflict);
                 continue;
             }
 
@@ -699,6 +685,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     "Cannot restore profiled backup of '{}' to non-profiled target without specifying --restore-profile",
                     sub_ctx.sub_type
                 );
+                result.add_pending(
+                    sub_ctx.sub_type,
+                    RestorePendingReason::ProfileSelectionRequired,
+                );
             }
         }
         Ok(())
@@ -714,6 +704,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
     ) -> Result<()> {
         let src_profile_path = profiles_src_dir.join(profile_name);
         if !src_profile_path.exists() {
+            result.add_pending(
+                format!("{}/{profile_name}", sub_ctx.sub_type),
+                RestorePendingReason::MissingSourceProfile,
+            );
             return Ok(());
         }
 
@@ -824,7 +818,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                                 if sub_ctx.sub.exists(&k)?
                                     && !self.options.flags.control.overwrite_existing
                                 {
-                                    result.skipped.push(item_id);
+                                    result.add_skipped(item_id, RestoreSkipReason::ExistsConflict);
                                 } else if self.options.flags.control.dry_run {
                                     result.restored.push(item_id.clone());
                                     debug!("{} Would restore flattened {item_id}", self.mode_str);
@@ -842,7 +836,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
                     if sub_ctx.sub.exists(&stem)? && !self.options.flags.control.overwrite_existing
                     {
-                        result.skipped.push(entry_id);
+                        result.add_skipped(entry_id, RestoreSkipReason::ExistsConflict);
                     } else if self.options.flags.control.dry_run {
                         result.restored.push(entry_id.clone());
                         debug!("{} Would restore flattened {entry_id}", self.mode_str);
@@ -909,11 +903,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             match &external_config.import_target {
                 super::types::ImportTarget::ReadOnly => {
                     debug!("Skipping read-only external config: {config_name}");
-                    result.skipped.push(config_name.to_string());
+                    result.add_skipped(
+                        config_name.to_string(),
+                        RestoreSkipReason::ReadOnlyImportTarget,
+                    );
                 }
                 super::types::ImportTarget::File(dest_path) => {
                     if dest_path.exists() && !self.options.flags.control.overwrite_existing {
-                        result.skipped.push(config_name.to_string());
+                        result.add_skipped(
+                            config_name.to_string(),
+                            RestoreSkipReason::ExistsConflict,
+                        );
                         debug!("{} Skipping external {config_name} (exists)", self.mode_str);
                     } else if self.options.flags.control.dry_run {
                         result.restored.push(config_name.to_string());
@@ -989,7 +989,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 }
             }
         } else {
-            result.external_pending.push(config_name.to_string());
+            result.add_pending(
+                config_name.to_string(),
+                RestorePendingReason::UnknownExternalConfig,
+            );
             warn!("Unknown external config ID: {config_name}, requires manual restore");
         }
         Ok(())
@@ -1083,6 +1086,45 @@ fn load_settings_agnostic<S: StorageBackend>(
 }
 
 /// Result of a restore operation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreSkipReason {
+    /// Target entry already exists and overwrite is disabled.
+    ExistsConflict,
+    /// External config import target is read-only.
+    ReadOnlyImportTarget,
+    /// Requested sub-settings type was not registered in target manager.
+    UnregisteredSubSettingsType,
+}
+
+/// Detailed skipped restore item with reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreSkippedItem {
+    /// Item identifier (same value as in `RestoreResult::skipped`).
+    pub id: String,
+    /// Why this item was skipped.
+    pub reason: RestoreSkipReason,
+}
+
+/// Pending restore reasons that require manual handling or missing source data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestorePendingReason {
+    /// External config is present in backup but not registered in target.
+    UnknownExternalConfig,
+    /// Profiled backup requires selecting a source profile for flat targets.
+    ProfileSelectionRequired,
+    /// Requested source profile was not present in backup contents.
+    MissingSourceProfile,
+}
+
+/// Detailed pending restore item with reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestorePendingItem {
+    /// Item identifier (same value as in `RestoreResult::external_pending`).
+    pub id: String,
+    /// Why this item is pending.
+    pub reason: RestorePendingReason,
+}
+
 #[derive(Debug, Default)]
 pub struct RestoreResult {
     /// Items that were restored
@@ -1091,8 +1133,14 @@ pub struct RestoreResult {
     /// Items that were skipped (already exist)
     pub skipped: Vec<String>,
 
+    /// Detailed skip records with reason for conflict visibility.
+    pub skipped_details: Vec<RestoreSkippedItem>,
+
     /// External configs that need manual handling
     pub external_pending: Vec<String>,
+
+    /// Detailed pending records with reason for manual handling visibility.
+    pub pending_details: Vec<RestorePendingItem>,
 
     /// Whether this was a dry run (no actual changes made)
     pub is_dry_run: bool,
@@ -1102,10 +1150,66 @@ pub struct RestoreResult {
 }
 
 impl RestoreResult {
+    fn add_skipped(&mut self, id: impl Into<String>, reason: RestoreSkipReason) {
+        let id = id.into();
+        self.skipped.push(id.clone());
+        self.skipped_details.push(RestoreSkippedItem { id, reason });
+    }
+
+    fn add_pending(&mut self, id: impl Into<String>, reason: RestorePendingReason) {
+        let id = id.into();
+        self.external_pending.push(id.clone());
+        self.pending_details.push(RestorePendingItem { id, reason });
+    }
+
     /// Check if anything was restored
     #[must_use]
     pub fn has_changes(&self) -> bool {
         !self.restored.is_empty()
+    }
+
+    /// Check if restore had any skipped or pending conflicts.
+    #[must_use]
+    pub fn has_conflicts(&self) -> bool {
+        !self.skipped_details.is_empty() || !self.pending_details.is_empty()
+    }
+
+    /// Count skipped items by reason.
+    #[must_use]
+    pub fn skipped_count_by_reason(&self, reason: RestoreSkipReason) -> usize {
+        self.skipped_details
+            .iter()
+            .filter(|item| item.reason == reason)
+            .count()
+    }
+
+    /// Count pending items by reason.
+    #[must_use]
+    pub fn pending_count_by_reason(&self, reason: RestorePendingReason) -> usize {
+        self.pending_details
+            .iter()
+            .filter(|item| item.reason == reason)
+            .count()
+    }
+
+    /// Return skipped item ids for a specific reason.
+    #[must_use]
+    pub fn skipped_ids_by_reason(&self, reason: RestoreSkipReason) -> Vec<&str> {
+        self.skipped_details
+            .iter()
+            .filter(|item| item.reason == reason)
+            .map(|item| item.id.as_str())
+            .collect()
+    }
+
+    /// Return pending item ids for a specific reason.
+    #[must_use]
+    pub fn pending_ids_by_reason(&self, reason: RestorePendingReason) -> Vec<&str> {
+        self.pending_details
+            .iter()
+            .filter(|item| item.reason == reason)
+            .map(|item| item.id.as_str())
+            .collect()
     }
 
     /// Get total item count
@@ -1118,5 +1222,62 @@ impl RestoreResult {
     #[must_use]
     pub fn would_change(&self) -> bool {
         !self.restored.is_empty() || self.checksum_valid == Some(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_result_reports_conflicts_and_reason_counts() {
+        let mut result = RestoreResult::default();
+        assert!(!result.has_conflicts());
+
+        result.add_skipped("settings.json", RestoreSkipReason::ExistsConflict);
+        result.add_skipped("external_ro", RestoreSkipReason::ReadOnlyImportTarget);
+        result.add_pending(
+            "external_missing",
+            RestorePendingReason::UnknownExternalConfig,
+        );
+
+        assert!(result.has_conflicts());
+        assert_eq!(
+            result.skipped_count_by_reason(RestoreSkipReason::ExistsConflict),
+            1
+        );
+        assert_eq!(
+            result.skipped_count_by_reason(RestoreSkipReason::ReadOnlyImportTarget),
+            1
+        );
+        assert_eq!(
+            result.pending_count_by_reason(RestorePendingReason::UnknownExternalConfig),
+            1
+        );
+        assert_eq!(
+            result.pending_count_by_reason(RestorePendingReason::MissingSourceProfile),
+            0
+        );
+    }
+
+    #[test]
+    fn restore_result_returns_ids_by_reason() {
+        let mut result = RestoreResult::default();
+
+        result.add_skipped("a", RestoreSkipReason::ExistsConflict);
+        result.add_skipped("b", RestoreSkipReason::ReadOnlyImportTarget);
+        result.add_skipped("c", RestoreSkipReason::ExistsConflict);
+
+        result.add_pending("p1", RestorePendingReason::UnknownExternalConfig);
+        result.add_pending("p2", RestorePendingReason::ProfileSelectionRequired);
+
+        assert_eq!(
+            result.skipped_ids_by_reason(RestoreSkipReason::ExistsConflict),
+            vec!["a", "c"]
+        );
+        assert_eq!(
+            result.pending_ids_by_reason(RestorePendingReason::ProfileSelectionRequired),
+            vec!["p2"]
+        );
     }
 }

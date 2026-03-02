@@ -3,7 +3,7 @@ use crate::error::{Error, Result};
 use crate::manager::core::SettingsManager;
 use crate::storage::StorageBackend;
 use crate::sub_settings::{SubSettings, SubSettingsConfig};
-use crate::sync::RwLockExt;
+use crate::utils::sync::RwLockExt;
 
 #[cfg(feature = "backup")]
 use crate::backup::{BackupManager, ExternalConfigProvider};
@@ -216,19 +216,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let default = Schema::default();
         let mut merged = serde_json::to_value(&default)?;
 
-        // Merge stored on top of defaults
-        if let (Some(merged_obj), Some(stored_obj)) = (merged.as_object_mut(), stored.as_object()) {
-            for (category, values) in stored_obj {
-                if let Some(merged_cat) = merged_obj.get_mut(category) {
-                    if let (Some(merged_cat_obj), Some(values_obj)) =
-                        (merged_cat.as_object_mut(), values.as_object())
-                    {
-                        for (key, val) in values_obj {
-                            merged_cat_obj.insert(key.clone(), val.clone());
-                        }
-                    }
-                }
-            }
+        // Merge stored on top of defaults only if stored is an object
+        if stored.is_object() {
+            crate::utils::value::deep_merge(&mut merged, stored);
         }
 
         Ok(merged)

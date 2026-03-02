@@ -4,7 +4,7 @@
 
 use crate::error::{Error, Result};
 use crate::profiles::{DEFAULT_PROFILE, PROFILES_DIR, validate_profile_name};
-use crate::sync::RwLockExt;
+use crate::utils::sync::RwLockExt;
 
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
@@ -382,14 +382,19 @@ impl<S: StorageBackend> ProfileManager<S> {
 
     /// Save the manifest to disk
     fn save_manifest(&self) -> Result<()> {
-        let guard = self.manifest.read_recovered()?;
-        let manifest = guard.as_ref().ok_or(Error::NotInitialized)?;
+        let manifest_clone = {
+            let guard = self.manifest.read_recovered()?;
+            let manifest = guard.as_ref().ok_or(Error::NotInitialized)?;
+            manifest.clone()
+        };
+        // The read lock is now dropped, so concurrent operations are not blocked
+        // while we wait for the (potentially slow) disk I/O to complete.
 
-        self.storage.write(&self.manifest_path, manifest)?;
+        self.storage.write(&self.manifest_path, &manifest_clone)?;
 
         debug!(
             "Saved profile manifest for '{}': active={}",
-            self.target_name, manifest.active
+            self.target_name, manifest_clone.active
         );
 
         Ok(())
@@ -484,7 +489,7 @@ impl<S: StorageBackend> ProfileManager<S> {
 
         // Create profile directory
         let profile_dir = self.profile_path(name);
-        crate::security::ensure_secure_dir(&profile_dir)?;
+        crate::utils::security::ensure_secure_dir(&profile_dir)?;
 
         // Update manifest
         {

@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
 use crate::sub_settings::store::SubSettingsStore;
-use crate::sync::RwLockExt;
+use crate::utils::sync::RwLockExt;
 
 use log::debug;
 use serde_json::Value;
@@ -103,7 +103,7 @@ impl<S: StorageBackend> SingleFileStore<S> {
         // Ensure directory exists - base_dir for single file is the config dir itself mostly
         if let Some(parent) = path.parent() {
             if !parent.exists() {
-                crate::security::ensure_secure_dir(parent)?;
+                crate::utils::security::ensure_secure_dir(parent)?;
             }
         }
 

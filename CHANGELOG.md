@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [v0.1.4] - Not Released
 
+### Added
+
+- YAML storage backend added.
+
 ### Changed
 
 - `SubSettings` store creation is centralized to reduce duplication and keep profile switching logic consistent.

@@ -6,7 +6,9 @@ mod restore;
 mod types;
 
 pub use operations::BackupManager;
-pub use restore::RestoreResult;
+pub use restore::{
+    RestorePendingItem, RestorePendingReason, RestoreResult, RestoreSkipReason, RestoreSkippedItem,
+};
 
 pub use types::{
     BackupAnalysis, BackupContents, BackupInfo, BackupIntegrity, BackupManifest, BackupOptions,

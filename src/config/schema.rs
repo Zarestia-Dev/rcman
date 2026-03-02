@@ -232,12 +232,30 @@ pub struct TextConstraints {
     pub pattern: Option<String>,
 }
 
+/// Match mode for list reservations
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ReservedMatchMode {
+    /// Exact string match only
+    #[default]
+    Exact,
+    /// Exact match OR prefix match with equals (e.g. "foo" matches "foo=bar")
+    PrefixEquals,
+    /// Exact match OR split by space (e.g. "foo" matches "foo bar")
+    PrefixSpace,
+    /// Combined CLI style checking both space and equals
+    CliFlag,
+}
+
 /// Constraints for List type settings
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ListConstraints {
     /// Reserved values that cannot be used
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reserved: Option<Vec<String>>,
+    /// How to match reserved values
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_mode: Option<ReservedMatchMode>,
 }
 
 /// Type-specific constraints
@@ -495,6 +513,13 @@ impl SettingMetadata {
         self
     }
 
+    /// Set reserved match mode for List type
+    #[must_use]
+    pub fn match_mode(mut self, mode: ReservedMatchMode) -> Self {
+        self.constraints.list.match_mode = Some(mode);
+        self
+    }
+
     // =========================================================================
     // Secret storage (special handling)
     // =========================================================================
@@ -595,35 +620,59 @@ impl SettingMetadata {
 
                 // Check reserved values
                 if let Some(reserved) = &self.constraints.list.reserved {
+                    let mode = self
+                        .constraints
+                        .list
+                        .match_mode
+                        .as_ref()
+                        .unwrap_or(&ReservedMatchMode::Exact);
+
                     if let Some(arr) = value.as_array() {
                         for item in arr {
                             if let Some(s) = item.as_str() {
-                                // If the reserved list is ["--rc-serve", "--log-file"],
-                                // then "--rc-serve" (exact) should fail.
-                                // "--log-file=foo" should fail.
-                                // "--log-file" (exact) should fail.
-                                // "--log-file foo" should also fail (if split by space).
-                                //
-                                // Validation Logic:
-                                // To be consistent with execution logic (which splits on first space),
-                                // we must ensure that neither the full string nor the first part (if split)
-                                // matches a reserved flag.
                                 for r in reserved {
-                                    // 1. Check exact match ("--log-file")
-                                    // 2. Check prefix with equals ("--log-file=...")
-                                    if s == r || s.starts_with(&format!("{r}=")) {
-                                        return Err(format!(
-                                            "Value '{s}' matches reserved flag '{r}'"
-                                        ));
-                                    }
-
-                                    // 3. Check split by space ("--log-file /path")
-                                    // Mirroring process_common.rs logic: split_once(' ')
-                                    if let Some((key, _)) = s.split_once(' ') {
-                                        if key == r {
-                                            return Err(format!(
-                                                "Value '{s}' matches reserved flag '{r}'"
-                                            ));
+                                    match mode {
+                                        ReservedMatchMode::Exact => {
+                                            if s == r {
+                                                return Err(format!(
+                                                    "Value '{s}' is a reserved value"
+                                                ));
+                                            }
+                                        }
+                                        ReservedMatchMode::PrefixEquals => {
+                                            if s == r || s.starts_with(&format!("{r}=")) {
+                                                return Err(format!(
+                                                    "Value '{s}' matches reserved prefix '{r}'"
+                                                ));
+                                            }
+                                        }
+                                        ReservedMatchMode::PrefixSpace => {
+                                            if s == r {
+                                                return Err(format!(
+                                                    "Value '{s}' is a reserved value"
+                                                ));
+                                            }
+                                            if let Some((key, _)) = s.split_once(' ') {
+                                                if key == r {
+                                                    return Err(format!(
+                                                        "Value '{s}' matches reserved prefix '{r}'"
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        ReservedMatchMode::CliFlag => {
+                                            if s == r || s.starts_with(&format!("{r}=")) {
+                                                return Err(format!(
+                                                    "Value '{s}' matches reserved flag '{r}'"
+                                                ));
+                                            }
+                                            if let Some((key, _)) = s.split_once(' ') {
+                                                if key == r {
+                                                    return Err(format!(
+                                                        "Value '{s}' matches reserved flag '{r}'"
+                                                    ));
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1040,7 +1089,8 @@ mod tests {
     #[test]
     fn test_reserved_list_validation() {
         let meta = SettingMetadata::list(&[])
-            .reserved(vec!["--rc-serve".to_string(), "--log-file".to_string()]);
+            .reserved(vec!["--rc-serve".to_string(), "--log-file".to_string()])
+            .match_mode(ReservedMatchMode::CliFlag);
 
         // Valid values
         assert!(meta.validate(&json!(["--other-flag"])).is_ok());

@@ -180,7 +180,7 @@ pub fn extract_zip_archive(
         } else {
             if let Some(parent) = outpath.parent() {
                 if !parent.exists() {
-                    crate::security::ensure_secure_dir(parent)?;
+                    crate::utils::security::ensure_secure_dir(parent)?;
                 }
             }
 

@@ -143,7 +143,7 @@ fn run_auto_migration<S: StorageBackend>(
 ) -> Result<()> {
     // 1. Create profiles/default directory
     let default_profile_dir = root_dir.join(PROFILES_DIR).join(DEFAULT_PROFILE);
-    crate::security::ensure_secure_dir(&default_profile_dir)?;
+    crate::utils::security::ensure_secure_dir(&default_profile_dir)?;
 
     // 2. Move files
     if single_file_mode {

@@ -2,7 +2,7 @@
 //!
 //! Provides reactive callbacks for settings modifications.
 
-use crate::sync::RwLockExt;
+use crate::utils::sync::RwLockExt;
 use log::debug;
 use serde_json::Value;
 use std::collections::HashMap;

@@ -38,6 +38,17 @@
 //! - **API Complexity:** You must manage profile lifecycle (create/switch/delete).
 //!
 //! # Implementation Details
+//!
+//! Profile management leverages a `.profiles.{ext}` manifest file stored at the target directory root.
+//! This manifest acts as the source of truth for tracking the `active` profile name and the list
+//! of all existing profiles. When a profile is created or switched, operations are dynamically routed
+//! to the nested `profiles/{profile_name}/` directory.
+//!
+//! To prevent blocking operations in highly concurrent environments (like web servers routing requests
+//! by tenant profile), the `ProfileManager` caches the manifest in an `RwLock` and eagerly clones it
+//! out of the lock before executing blocking disk I/O. Legacy data is transparently migrated into
+//! the `.profiles` folder schema by `ProfileMigrator` seamlessly during boot.
+//!
 //! # Example
 //!
 //! ```rust,ignore

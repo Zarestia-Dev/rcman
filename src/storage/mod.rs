@@ -1,7 +1,7 @@
 //! Storage backend trait and implementations
 
 use crate::error::{Error, Result};
-use crate::security::{ensure_secure_dir, set_secure_file_permissions};
+use crate::utils::security::{ensure_secure_dir, set_secure_file_permissions};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
 
@@ -112,7 +112,21 @@ pub trait StorageBackend: Clone + Send + Sync {
         temp_filename.push(format!(".{now}.tmp"));
         let temp_path = path.with_file_name(temp_filename);
 
-        std::fs::write(&temp_path, &content).map_err(|e| Error::FileWrite {
+        let mut temp_file = std::fs::File::create(&temp_path).map_err(|e| Error::FileWrite {
+            path: temp_path.clone(),
+            source: e,
+        })?;
+
+        use std::io::Write;
+        temp_file
+            .write_all(content.as_bytes())
+            .map_err(|e| Error::FileWrite {
+                path: temp_path.clone(),
+                source: e,
+            })?;
+
+        // Sync physically to disk to prevent data loss on hard crashes before rename
+        temp_file.sync_all().map_err(|e| Error::FileWrite {
             path: temp_path.clone(),
             source: e,
         })?;
@@ -226,6 +240,41 @@ impl StorageBackend for TomlStorage {
 }
 
 // =============================================================================
+// YAML Storage Implementation
+// =============================================================================
+
+/// YAML storage backend
+///
+/// Requires the `yaml` feature.
+#[cfg(feature = "yaml")]
+#[derive(Clone, Default)]
+pub struct YamlStorage;
+
+#[cfg(feature = "yaml")]
+impl YamlStorage {
+    /// Create a new YAML storage backend
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(feature = "yaml")]
+impl StorageBackend for YamlStorage {
+    fn extension(&self) -> &'static str {
+        "yaml"
+    }
+
+    fn serialize<T: Serialize>(&self, data: &T) -> Result<String> {
+        serde_yaml::to_string(data).map_err(|e| Error::Parse(e.to_string()))
+    }
+
+    fn deserialize<T: DeserializeOwned>(&self, content: &str) -> Result<T> {
+        serde_yaml::from_str(content).map_err(|e| Error::Parse(e.to_string()))
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -330,5 +379,28 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("name = \"toml_test\""));
         assert!(content.contains("value = 99"));
+    }
+
+    #[test]
+    #[cfg(feature = "yaml")]
+    fn test_yaml_roundtrip() {
+        let storage = super::YamlStorage::new();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.yaml");
+
+        let data = TestData {
+            name: "yaml_test".into(),
+            value: 99,
+        };
+
+        storage.write(&path, &data).unwrap();
+        let loaded: TestData = storage.read(&path).unwrap();
+
+        assert_eq!(data, loaded);
+
+        // Verify content is actually YAML
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("name: yaml_test"));
+        assert!(content.contains("value: 99"));
     }
 }

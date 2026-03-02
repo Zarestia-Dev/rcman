@@ -12,7 +12,7 @@ mod store;
 
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
-use crate::sync::RwLockExt;
+use crate::utils::sync::RwLockExt;
 use crate::{SettingMetadata, SettingsSchema};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -447,22 +447,9 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         }
 
         let new_value = serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
-        Self::set_value_at_path(&mut entry, field_path, new_value);
+        crate::utils::value::set_path(&mut entry, field_path, new_value);
 
         self.set(name, &entry)
-    }
-
-    fn value_at_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
-        let mut current = value;
-        if path.is_empty() {
-            return Some(current);
-        }
-
-        for segment in path.split('.') {
-            current = current.as_object()?.get(segment)?;
-        }
-
-        Some(current)
     }
 
     fn validate_against_schema(&self, entry_name: &str, value: &Value) -> Result<()> {
@@ -487,7 +474,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         }
 
         for (path, metadata) in schema.iter() {
-            if let Some(field_value) = Self::value_at_path(value, path) {
+            if let Some(field_value) = crate::utils::value::get_path(value, path) {
                 if let Err(reason) = metadata.validate(field_value) {
                     return Err(Error::InvalidSettingValue {
                         key: format!("{}.{}.{}", self.config.name, entry_name, path),
@@ -498,69 +485,6 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         }
 
         Ok(())
-    }
-
-    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn remove_value_at_path(value: &mut Value, path: &str) -> Option<Value> {
-        fn remove_nested(
-            obj: &mut serde_json::Map<String, Value>,
-            parts: &[&str],
-        ) -> Option<Value> {
-            match parts {
-                [] => None,
-                [last] => obj.remove(*last),
-                [head, rest @ ..] => {
-                    let child = obj.get_mut(*head)?;
-                    let child_obj = child.as_object_mut()?;
-                    let removed = remove_nested(child_obj, rest);
-                    if child_obj.is_empty() {
-                        obj.remove(*head);
-                    }
-                    removed
-                }
-            }
-        }
-
-        let parts: Vec<&str> = path.split('.').collect();
-        let obj = value.as_object_mut()?;
-        remove_nested(obj, &parts)
-    }
-
-    fn set_value_at_path(value: &mut Value, path: &str, new_value: Value) {
-        if path.is_empty() {
-            *value = new_value;
-            return;
-        }
-
-        if !value.is_object() {
-            *value = Value::Object(serde_json::Map::new());
-        }
-
-        let mut current = value;
-        let mut parts = path.split('.').peekable();
-
-        while let Some(part) = parts.next() {
-            if parts.peek().is_none() {
-                if let Some(obj) = current.as_object_mut() {
-                    obj.insert(part.to_string(), new_value);
-                }
-                return;
-            }
-
-            if let Some(obj) = current.as_object_mut() {
-                let entry = obj
-                    .entry(part.to_string())
-                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
-
-                if !entry.is_object() {
-                    *entry = Value::Object(serde_json::Map::new());
-                }
-
-                current = entry;
-            } else {
-                return;
-            }
-        }
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -606,7 +530,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         let profile = self.active_secret_profile();
 
         for (path, metadata) in secret_fields {
-            let Some(secret_value) = Self::remove_value_at_path(value, path) else {
+            let Some(secret_value) = crate::utils::value::remove_path(value, path) else {
                 continue;
             };
 
@@ -649,7 +573,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             let credential_key = self.secret_credential_key(entry_name, path);
             let secret = creds.get_with_profile(&credential_key, profile.as_deref())?;
             let resolved = secret.map_or_else(|| metadata.default.clone(), Value::String);
-            Self::set_value_at_path(value, path, resolved);
+            crate::utils::value::set_path(value, path, resolved);
         }
 
         Ok(())

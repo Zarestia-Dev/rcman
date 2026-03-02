@@ -552,37 +552,40 @@ enum TypeInfo {
     Unknown, // Everything else (may be nested struct or std type we don't handle)
 }
 
+/// Extract the last segment's identifier from a type path, ignoring generics.
+/// Example: `std::vec::Vec<String>` -> `Some(Vec)`
+fn get_last_path_segment_ident(ty: &Type) -> Option<&syn::Ident> {
+    if let Type::Path(path) = ty {
+        path.path.segments.last().map(|seg| &seg.ident)
+    } else {
+        None
+    }
+}
+
 /// Classify a type for settings schema generation
 ///
 /// Uses a whitelist approach: known primitives/std types are classified,
 /// everything else returns Unknown (could be nested struct or unsupported std type).
 fn classify_type(ty: &Type) -> TypeInfo {
-    if let Type::Path(path) = ty {
-        if let Some(ident) = path.path.get_ident() {
-            let name = ident.to_string();
-            match name.as_str() {
-                "bool" => return TypeInfo::Toggle,
-                "String" => return TypeInfo::Text,
-                "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
-                | "u128" | "usize" | "f32" | "f64" => return TypeInfo::Number,
-                // Other std types that are NOT nested structs
-                "str" | "char" | "PathBuf" | "OsString" | "CString" | "Duration" | "Instant"
-                | "SystemTime" | "Box" | "Rc" | "Arc" | "Cow" | "Vec" | "VecDeque" | "HashMap"
-                | "HashSet" | "BTreeMap" | "BTreeSet" | "LinkedList" | "Option" | "Result" => {
-                    return TypeInfo::Unknown;
-                }
-                _ => return TypeInfo::Unknown,
+    if let Some(ident) = get_last_path_segment_ident(ty) {
+        let name = ident.to_string();
+        match name.as_str() {
+            "bool" => return TypeInfo::Toggle,
+            "String" => return TypeInfo::Text,
+            "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64"
+            | "u128" | "usize" | "f32" | "f64" => return TypeInfo::Number,
+            // Check for Vec specifically
+            "Vec" => return TypeInfo::List,
+            // Other std types that are NOT nested structs
+            "str" | "char" | "PathBuf" | "OsString" | "CString" | "Duration" | "Instant"
+            | "SystemTime" | "Box" | "Rc" | "Arc" | "Cow" | "VecDeque" | "HashMap" | "HashSet"
+            | "BTreeMap" | "BTreeSet" | "LinkedList" | "Option" | "Result" => {
+                return TypeInfo::Unknown;
             }
+            _ => return TypeInfo::Unknown,
         }
-        // Check for Vec<T> specifically
-        if let Some(seg) = path.path.segments.last() {
-            if seg.ident == "Vec" {
-                return TypeInfo::List;
-            }
-        }
-        // Other complex paths (Option<T>, Result<T>, etc.)
-        return TypeInfo::Unknown;
     }
+
     TypeInfo::Unknown
 }
 
@@ -594,8 +597,8 @@ fn classify_type(ty: &Type) -> TypeInfo {
 /// For edge cases (like `Option<MyStruct>`), use explicit `#[setting(nested)]`.
 fn is_nested_struct(ty: &Type) -> bool {
     // Only simple path types with single ident can be nested
-    if let Type::Path(path) = ty {
-        if path.path.get_ident().is_some() {
+    if let Type::Path(_) = ty {
+        if get_last_path_segment_ident(ty).is_some() {
             // Use classify_type: Unknown + simple ident = likely custom struct
             matches!(classify_type(ty), TypeInfo::Unknown)
         } else {

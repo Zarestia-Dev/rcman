@@ -6,6 +6,7 @@
 pub mod cache;
 pub mod core;
 pub mod env;
+pub mod events;
 pub mod io;
 pub mod operations;
 
@@ -14,6 +15,7 @@ pub mod profiles;
 
 // Re-export core types
 pub use self::core::SettingsManager;
+pub use self::events::EventManager;
 
 // Builder Module
 mod builder;

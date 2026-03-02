@@ -47,6 +47,7 @@ cargo add rcman
 | ---------------- | --------------------------------- | -------- |
 | `json`           | JSON storage                      | ✅       |
 | `toml`           | TOML storage                      | ❌       |
+| `yaml`           | YAML storage                      | ❌       |
 | `backup`         | Backup/restore (zip)              | ✅       |
 | `derive`         | `#[derive(SettingsSchema)]` macro | ❌       |
 | `keychain`       | OS keychain support               | ❌       |
@@ -178,27 +179,29 @@ impl SettingsSchema for AppSettings {
 
 ### Available Constructors
 
-| Constructor                | Description                    | Validates                      |
-| -------------------------- | ------------------------------ | ------------------------------ |
-| `text(default)`            | Text input                     | Pattern (via `.pattern()`)    |
-| `number(default)`          | Number input                   | Min/max/step                   |
-| `toggle(default)`          | Boolean toggle                 | Type (boolean)                 |
-| `select(default, options)` | Dropdown with options          | Valid option                   |
-| `list(default)`            | List of strings                | Type (array)                   |
-| `info(default)`            | Read-only display (any type)   | -                              |
+| Constructor                | Description                  | Validates                  |
+| -------------------------- | ---------------------------- | -------------------------- |
+| `text(default)`            | Text input                   | Pattern (via `.pattern()`) |
+| `number(default)`          | Number input                 | Min/max/step               |
+| `toggle(default)`          | Boolean toggle               | Type (boolean)             |
+| `select(default, options)` | Dropdown with options        | Valid option               |
+| `list(default)`            | List of strings              | Type (array)               |
+| `info(default)`            | Read-only display (any type) | -                          |
 
 > **UI-only types** (password, color, path, file, textarea): Use `text()` with `.meta_str("input_type", "password")` for UI hints.
 
 ### Chainable Setters
 
 **Constraints (validated):**
+
 - `.min(value)` - Minimum value for numbers
-- `.max(value)` - Maximum value for numbers  
+- `.max(value)` - Maximum value for numbers
 - `.step(value)` - Step increment for numbers
 - `.pattern(regex)` - Regex pattern for text validation
 - `.secret()` - Mark as secret (keychain storage)
 
 **Metadata (UI hints only):**
+
 - `.meta_str(key, value)` - Add custom string metadata (e.g., label, description, placeholder)
 - `.meta_bool(key, value)` - Add custom boolean metadata (e.g., advanced, readonly)
 - `.meta_num(key, value)` - Add custom number metadata (e.g., order, priority)
@@ -567,12 +570,12 @@ let _partial_with_external = manager.backup().create(
 `SecretBackupPolicy::EncryptedOnly` falls back to redacted export when no backup password is provided.
 When credentials are enabled, restore also rehydrates secret values back into credential storage and redacts them in the restored settings file.
 
-| Secret Policy | Backup Password | Exported Secret Value |
-| --- | --- | --- |
-| `Exclude` | Yes / No | Redacted (`null` / omitted) |
-| `EncryptedOnly` | Yes | Included |
-| `EncryptedOnly` | No | Redacted (`null` / omitted) |
-| `Include` | Yes / No | Included |
+| Secret Policy   | Backup Password | Exported Secret Value       |
+| --------------- | --------------- | --------------------------- |
+| `Exclude`       | Yes / No        | Redacted (`null` / omitted) |
+| `EncryptedOnly` | Yes             | Included                    |
+| `EncryptedOnly` | No              | Redacted (`null` / omitted) |
+| `Include`       | Yes / No        | Included                    |
 
 ---
 

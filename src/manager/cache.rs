@@ -3,7 +3,7 @@
 //! Encapsulates the double-checked locking and cache invalidation logic.
 
 use crate::error::{Error, Result};
-use crate::sync::RwLockExt;
+use crate::utils::sync::RwLockExt;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

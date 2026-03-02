@@ -326,6 +326,7 @@ fn test_load_corrupted_json() {
     let temp_dir = TempDir::new().unwrap();
     let config = SettingsConfig::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
+        .with_schema::<common::TestSettings>()
         .build();
     let manager = SettingsManager::new(config).unwrap();
 
@@ -345,6 +346,7 @@ fn test_load_truncated_json() {
     let temp_dir = TempDir::new().unwrap();
     let config = SettingsConfig::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
+        .with_schema::<common::TestSettings>()
         .build();
     let manager = SettingsManager::new(config).unwrap();
 

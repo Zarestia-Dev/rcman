@@ -401,3 +401,32 @@ fn test_pattern_constraint() {
             .is_err()
     );
 }
+
+// =============================================================================
+// Fully Qualified Path Tests
+// =============================================================================
+
+#[derive(Default, Serialize, Deserialize, DeriveSettingsSchema)]
+#[schema(category = "fqn")]
+struct FullyQualifiedSettings {
+    #[setting(label = "List of Tags")]
+    tags: std::vec::Vec<std::string::String>,
+
+    #[setting(label = "Resource Path")]
+    path: std::string::String,
+}
+
+#[test]
+fn test_fully_qualified_paths() {
+    let metadata = FullyQualifiedSettings::get_metadata();
+
+    // Test Vec properly resolved via FQN
+    let tags = metadata.get("fqn.tags").unwrap();
+    assert_eq!(tags.get_meta_str("label"), Some("List of Tags"));
+    assert_eq!(tags.setting_type, rcman::SettingType::List);
+
+    // Test String properly resolved via FQN
+    let path = metadata.get("fqn.path").unwrap();
+    assert_eq!(path.get_meta_str("label"), Some("Resource Path"));
+    assert_eq!(path.setting_type, rcman::SettingType::Text);
+}

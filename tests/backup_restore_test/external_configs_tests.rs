@@ -412,6 +412,114 @@ fn test_full_backup_deduplicates_duplicate_external_ids_static_first() {
 }
 
 #[test]
+fn test_restore_external_unknown_config_reports_pending_reason() {
+    let temp = TempDir::new().unwrap();
+    let backup_dir = temp.path().join("backups");
+
+    let source_manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp.path().join("unknown_source_cfg"))
+        .with_schema::<common::TestSettings>()
+        .with_external_config(ExternalConfig::from_content(
+            "unknown_external",
+            "unknown_external.conf",
+            b"token=xyz\n".to_vec(),
+        ))
+        .build()
+        .unwrap();
+
+    let backup_path = source_manager
+        .backup()
+        .create(
+            &BackupOptions::new()
+                .output_dir(&backup_dir)
+                .include_external("unknown_external"),
+        )
+        .unwrap();
+
+    let restore_manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp.path().join("unknown_restore_cfg"))
+        .with_schema::<common::TestSettings>()
+        .build()
+        .unwrap();
+
+    let result = restore_manager
+        .backup()
+        .restore(&RestoreOptions::from_path(&backup_path).overwrite(true))
+        .unwrap();
+
+    assert!(
+        result
+            .pending_details
+            .iter()
+            .any(|item| item.id == "unknown_external"
+                && item.reason == rcman::RestorePendingReason::UnknownExternalConfig)
+    );
+    assert!(
+        result
+            .external_pending
+            .iter()
+            .any(|id| id == "unknown_external")
+    );
+}
+
+#[test]
+fn test_restore_external_exists_conflict_reports_skip_reason() {
+    let temp = TempDir::new().unwrap();
+    let backup_dir = temp.path().join("backups");
+
+    let external_source = temp.path().join("exists_conflict_source.conf");
+    fs::write(&external_source, "source=backup\n").unwrap();
+
+    let source_manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp.path().join("exists_source_cfg"))
+        .with_schema::<common::TestSettings>()
+        .with_external_config(ExternalConfig::new("external_exists", &external_source))
+        .build()
+        .unwrap();
+
+    let backup_path = source_manager
+        .backup()
+        .create(
+            &BackupOptions::new()
+                .output_dir(&backup_dir)
+                .include_external("external_exists"),
+        )
+        .unwrap();
+
+    let restore_target = temp
+        .path()
+        .join("exists_restore")
+        .join("external_exists.conf");
+    fs::create_dir_all(restore_target.parent().unwrap()).unwrap();
+    fs::write(&restore_target, "source=local\n").unwrap();
+
+    let restore_manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp.path().join("exists_restore_cfg"))
+        .with_schema::<common::TestSettings>()
+        .with_external_config(ExternalConfig::new("external_exists", &restore_target))
+        .build()
+        .unwrap();
+
+    let result = restore_manager
+        .backup()
+        .restore(&RestoreOptions::from_path(&backup_path).overwrite(false))
+        .unwrap();
+
+    assert!(
+        result
+            .skipped_details
+            .iter()
+            .any(|item| item.id == "external_exists"
+                && item.reason == rcman::RestoreSkipReason::ExistsConflict)
+    );
+    assert!(result.skipped.iter().any(|id| id == "external_exists"));
+    assert_eq!(
+        fs::read_to_string(&restore_target).unwrap(),
+        "source=local\n"
+    );
+}
+
+#[test]
 fn test_get_external_config_from_backup_by_id() {
     let temp = TempDir::new().unwrap();
     let backup_dir = temp.path().join("backups");

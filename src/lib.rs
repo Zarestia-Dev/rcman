@@ -225,17 +225,11 @@
 
 // Core modules
 mod config;
-mod docs;
 mod error;
-mod events;
 mod manager;
-mod security;
 mod storage;
 mod sub_settings;
-mod sync;
-
-// Cache module (always available - used by sub_settings)
-mod cache;
+pub mod utils;
 
 // Feature-gated modules
 #[cfg(feature = "backup")]
@@ -262,13 +256,13 @@ pub use config::{
 };
 
 /// Documentation generation utilities.
-pub use docs::{DocsConfig, generate_docs, generate_docs_from_metadata};
+pub use config::{DocsConfig, generate_docs, generate_docs_from_metadata};
 
 /// Error types for the library.
 pub use error::{Error, Result};
 
 /// Event system for reactive settings changes.
-pub use events::EventManager;
+pub use manager::EventManager;
 
 /// Main settings manager and builder.
 pub use manager::{SettingsManager, SettingsManagerBuilder};
@@ -287,12 +281,16 @@ pub use storage::{JsonStorage, StorageBackend};
 #[cfg(feature = "toml")]
 pub use storage::TomlStorage;
 
+/// YAML storage backend (requires `yaml` feature).
+#[cfg(feature = "yaml")]
+pub use storage::YamlStorage;
+
 // -----------------------------------------------------------------------------
 // Cache
 // -----------------------------------------------------------------------------
 
 /// Cache strategy for settings components.
-pub use cache::CacheStrategy;
+pub use config::CacheStrategy;
 
 // -----------------------------------------------------------------------------
 // Backup & Restore (requires backup feature)
@@ -301,7 +299,8 @@ pub use cache::CacheStrategy;
 #[cfg(feature = "backup")]
 pub use backup::{
     BackupInfo, BackupManager, BackupOptions, ExportType, ProfileEntry, ProgressCallback,
-    RestoreOptions, RestoreResult, SubSettingsManifestEntry,
+    RestoreOptions, RestorePendingItem, RestorePendingReason, RestoreResult, RestoreSkipReason,
+    RestoreSkippedItem, SubSettingsManifestEntry,
 };
 
 // -----------------------------------------------------------------------------
@@ -391,6 +390,9 @@ pub mod prelude {
 
     #[cfg(feature = "toml")]
     pub use super::TomlStorage;
+
+    #[cfg(feature = "yaml")]
+    pub use super::YamlStorage;
 
     // Cache
     pub use super::CacheStrategy;

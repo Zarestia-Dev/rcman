@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::manager::cache::CachedSettings;
 use crate::manager::core::SettingsManager;
 use crate::storage::StorageBackend;
-use crate::sync::RwLockExt;
+use crate::utils::sync::RwLockExt;
 
 use log::{debug, info};
 use serde_json::{Value, json};
@@ -398,8 +398,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let settings_path = self.settings_path()?;
         let mut value: Value = match self.storage.read(&settings_path) {
             Ok(v) => v,
-            Err(Error::FileRead { .. } | Error::PathNotFound(_)) => {
-                // Start empty if not found
+            Err(Error::FileRead { .. } | Error::PathNotFound(_) | Error::Parse(_)) => {
+                // Start empty if not found or corrupted/invalid JSON
                 json!({})
             }
             Err(e) => return Err(e),

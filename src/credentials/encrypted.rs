@@ -5,7 +5,7 @@
 
 use super::CredentialBackend;
 use crate::error::{Error, Result};
-use crate::sync::RwLockExt;
+use crate::utils::sync::RwLockExt;
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit},
@@ -226,13 +226,49 @@ impl EncryptedFileBackend {
 
         // Ensure parent directory exists
         if let Some(parent) = self.path.parent() {
-            crate::security::ensure_secure_dir(parent)?;
+            crate::utils::security::ensure_secure_dir(parent)?;
         }
 
-        fs::write(&self.path, content).map_err(|e| Error::FileWrite {
+        // Atomic write: Temp file + rename
+        let mut temp_path = self.path.clone();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
+        let file_name = self.path.file_name().unwrap_or_default().to_string_lossy();
+
+        temp_path.set_file_name(format!("{file_name}.{now}.tmp"));
+
+        let mut temp_file = std::fs::File::create(&temp_path).map_err(|e| Error::FileWrite {
+            path: temp_path.clone(),
+            source: e,
+        })?;
+
+        use std::io::Write;
+        temp_file
+            .write_all(content.as_bytes())
+            .map_err(|e| Error::FileWrite {
+                path: temp_path.clone(),
+                source: e,
+            })?;
+
+        temp_file.sync_all().map_err(|e| Error::FileWrite {
+            path: temp_path.clone(),
+            source: e,
+        })?;
+
+        // Explicitly set secure permissions on the temp file
+        crate::utils::security::set_secure_file_permissions(&temp_path)?;
+
+        std::fs::rename(&temp_path, &self.path).map_err(|e| Error::FileWrite {
             path: self.path.clone(),
             source: e,
         })?;
+
+        // Ensure final file has secure permissions
+        crate::utils::security::set_secure_file_permissions(&self.path)?;
 
         Ok(())
     }

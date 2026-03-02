@@ -8,6 +8,48 @@ use crate::storage::{JsonStorage, StorageBackend};
 
 #[cfg(feature = "backup")]
 use crate::backup::ExternalConfig;
+use crate::credentials::CredentialBackend;
+use std::sync::Arc;
+
+/// Configuration for how credentials should be stored.
+#[derive(Clone)]
+pub enum CredentialConfig {
+    /// Credentials are disabled (default behavior when not configured)
+    Disabled,
+    /// Use the default backend (Keychain if enabled, otherwise Memory)
+    Default,
+    /// Use Keychain with an EncryptedFile fallback (requires password/key for encryption)
+    /// This is useful for environments where the OS keychain might be unavailable (e.g., CI/Docker).
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    WithFallback {
+        /// Path to the encrypted JSON file
+        fallback_path: std::path::PathBuf,
+        /// 32-byte encryption key (derive from password using `EncryptedFileBackend::derive_key`)
+        encryption_key: [u8; 32],
+    },
+    /// Provide a custom backend implementation
+    Custom(Arc<dyn CredentialBackend>),
+}
+
+// Custom Debug impl since CredentialBackend and keys might not be Debug
+impl std::fmt::Debug for CredentialConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disabled => write!(f, "Disabled"),
+            Self::Default => write!(f, "Default"),
+            #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+            Self::WithFallback { fallback_path, .. } => f
+                .debug_struct("WithFallback")
+                .field("fallback_path", fallback_path)
+                .field("encryption_key", &"<REDACTED>")
+                .finish(),
+            Self::Custom(_) => f
+                .debug_tuple("Custom")
+                .field(&"<dyn CredentialBackend>")
+                .finish(),
+        }
+    }
+}
 
 /// Trait for retrieving environment variables
 ///
@@ -49,8 +91,8 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchem
     /// Storage backend (defaults to `JsonStorage`)
     pub(crate) storage: S,
 
-    /// Enable credential management for secret settings
-    pub enable_credentials: bool,
+    /// Configuration for how credential secrets should be stored
+    pub credential_config: CredentialConfig,
 
     /// Environment variable prefix for setting overrides (e.g., "MYAPP" -> `MYAPP_UI_THEME`)
     /// If None, env var overrides are disabled
@@ -96,7 +138,7 @@ impl Default for SettingsConfig {
             app_name: "app".into(),
             app_version: "0.1.0".into(),
             storage,
-            enable_credentials: false,
+            credential_config: CredentialConfig::Disabled,
             env_prefix: None,
             env_overrides_secrets: false,
             #[cfg(feature = "backup")]
@@ -204,10 +246,19 @@ struct BuilderConfigFlags {
     profiles_enabled: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct BuilderSecurityFlags {
-    enable_credentials: bool,
+    credential_config: CredentialConfig,
     env_overrides_secrets: bool,
+}
+
+impl Default for BuilderSecurityFlags {
+    fn default() -> Self {
+        Self {
+            credential_config: CredentialConfig::Disabled,
+            env_overrides_secrets: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -228,8 +279,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> std::fmt::Debug
             .field("app_version", &self.app_version)
             .field("pretty_json", &self.options.config.pretty_json)
             .field(
-                "enable_credentials",
-                &self.options.security.enable_credentials,
+                "credential_config",
+                &self.options.security.credential_config,
             )
             .field("env_prefix", &self.env_prefix)
             .field(
@@ -316,11 +367,33 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         self
     }
 
+    /// Enable credential management for secret settings with default behavior.
+    ///
     /// When enabled, settings marked as `secret: true` in metadata
-    /// will be stored in the OS keychain instead of the settings file.
+    /// will be stored in the primary OS keychain instead of the settings file.
     #[must_use]
     pub fn with_credentials(mut self) -> Self {
-        self.options.security.enable_credentials = true;
+        self.options.security.credential_config = CredentialConfig::Default;
+        self
+    }
+
+    /// Extensively configure how credential secrets should be stored, enabling
+    /// advanced scenarios like custom proxy backends or keychain fallbacks.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use rcman::{SettingsConfig, CredentialConfig};
+    ///
+    /// let config = SettingsConfig::builder("my-app", "1.0.0")
+    ///     .with_credential_config(CredentialConfig::WithFallback {
+    ///         fallback_path: "/tmp/secrets.enc.json".into(),
+    ///         encryption_key: [0u8; 32], // Use a derived key in reality
+    ///     })
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn with_credential_config(mut self, config: CredentialConfig) -> Self {
+        self.options.security.credential_config = config;
         self
     }
 
@@ -568,7 +641,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             app_name: self.app_name,
             app_version: self.app_version,
             storage,
-            enable_credentials: self.options.security.enable_credentials,
+            credential_config: self.options.security.credential_config,
             env_prefix: self.env_prefix,
             env_overrides_secrets: self.options.security.env_overrides_secrets,
             #[cfg(feature = "backup")]

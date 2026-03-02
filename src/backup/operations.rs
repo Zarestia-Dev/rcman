@@ -10,7 +10,7 @@ use crate::config::SettingsSchema;
 use crate::error::{Error, Result};
 use crate::manager::SettingsManager;
 use crate::storage::StorageBackend;
-use crate::sync::RwLockExt;
+use crate::utils::sync::RwLockExt;
 use crate::{BackupOptions, ExportType};
 use log::{debug, info};
 use std::fs;
@@ -135,7 +135,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         // Create temp directory for gathering files
         let temp_dir = tempfile::tempdir().map_err(|e| Error::BackupFailed(e.to_string()))?;
         let export_dir = temp_dir.path().join("export");
-        crate::security::ensure_secure_dir(&export_dir)?;
+        crate::utils::security::ensure_secure_dir(&export_dir)?;
 
         // Gather files to backup
         let (contents, total_size) = self.gather_files(&export_dir, options)?;
@@ -418,7 +418,9 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     )? {
                         total_size += size;
                         file_count += 1;
-                        debug!("Added synthesized profile settings file for profile: {profile_name}");
+                        debug!(
+                            "Added synthesized profile settings file for profile: {profile_name}"
+                        );
                     }
                 }
             }
@@ -458,19 +460,11 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         };
 
         let mut value = serde_json::Value::Object(serde_json::Map::new());
-        self.populate_missing_secret_values(
-            &mut value,
-            "",
-            &Schema::get_metadata(),
-            should_include_secrets,
-            credential_profile,
-        );
-
         if matches!(value, serde_json::Value::Object(ref map) if map.is_empty()) {
             return Ok(None);
         }
 
-        self.traverse_secrets(
+        self.inject_or_remove_secrets(
             &mut value,
             "",
             &Schema::get_metadata(),
@@ -509,15 +503,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         let storage = &self.manager.config().storage;
         let mut value: serde_json::Value = storage.deserialize(&content_str)?;
 
-        self.populate_missing_secret_values(
-            &mut value,
-            ctx.prefix,
-            ctx.metadata,
-            ctx.should_include,
-            ctx.credential_profile,
-        );
-
-        self.traverse_secrets(
+        self.inject_or_remove_secrets(
             &mut value,
             ctx.prefix,
             ctx.metadata,
@@ -531,39 +517,16 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         Ok(serialized.len() as u64)
     }
 
-    fn traverse_secrets(
+    fn inject_or_remove_secrets(
         &self,
         value: &mut serde_json::Value,
         prefix: &str,
         metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
         should_include: bool,
-        credential_profile: Option<&str>,
+        #[allow(unused_variables)] credential_profile: Option<&str>,
     ) -> Result<()> {
-        let ctx = SecretContext {
-            prefix,
-            metadata,
-            should_include,
-            credential_profile,
-        };
-        self.traverse_secrets_impl(value, prefix, &ctx, 0)
-    }
-
-    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn populate_missing_secret_values(
-        &self,
-        value: &mut serde_json::Value,
-        prefix: &str,
-        metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
-        should_include: bool,
-        credential_profile: Option<&str>,
-    ) {
-        if !should_include {
-            return;
-        }
-
-        let Some(creds) = self.manager.credentials() else {
-            return;
-        };
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        let creds_opt = self.manager.credentials();
 
         for (full_key, meta) in metadata {
             if !meta.is_secret() {
@@ -582,34 +545,33 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 continue;
             };
 
-            if relative_key.is_empty() || Self::json_path_exists(value, relative_key) {
-                continue;
-            }
-
-            match creds.get_with_profile(full_key, credential_profile) {
-                Ok(Some(secret)) => {
-                    Self::json_set_path(value, relative_key, serde_json::Value::String(secret));
+            if should_include {
+                #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                if let Some(creds) = creds_opt {
+                    // Try to get the secret
+                    match creds.get_with_profile(full_key, credential_profile) {
+                        Ok(Some(secret)) => {
+                            crate::utils::value::set_path(
+                                value,
+                                relative_key,
+                                serde_json::Value::String(secret),
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            debug!(
+                                "Failed to fetch secret {full_key} while building backup payload: {err}"
+                            );
+                        }
+                    }
                 }
-                Ok(None) => {}
-                Err(err) => {
-                    debug!(
-                        "Failed to fetch secret {full_key} while building backup payload: {err}"
-                    );
-                }
+            } else {
+                // Eliminate the secret from the payload completely if it exists
+                crate::utils::value::remove_path(value, relative_key);
             }
         }
 
-    }
-
-    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
-    fn populate_missing_secret_values(
-        &self,
-        _value: &mut serde_json::Value,
-        _prefix: &str,
-        _metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
-        _should_include: bool,
-        _credential_profile: Option<&str>,
-    ) {
+        Ok(())
     }
 
     fn profile_from_backup_dest(dest: &Path) -> Option<&str> {
@@ -629,136 +591,6 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             let _ = dest;
             None
         }
-    }
-
-    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn json_path_exists(value: &serde_json::Value, path: &str) -> bool {
-        let mut current = value;
-
-        for segment in path.split('.') {
-            match current {
-                serde_json::Value::Object(map) => {
-                    let Some(next) = map.get(segment) else {
-                        return false;
-                    };
-                    current = next;
-                }
-                _ => return false,
-            }
-        }
-
-        true
-    }
-
-    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn json_set_path(value: &mut serde_json::Value, path: &str, new_value: serde_json::Value) {
-        let mut current = value;
-        let mut segments = path.split('.').peekable();
-
-        while let Some(segment) = segments.next() {
-            let is_last = segments.peek().is_none();
-
-            if !current.is_object() {
-                *current = serde_json::Value::Object(serde_json::Map::new());
-            }
-
-            let Some(map) = current.as_object_mut() else {
-                return;
-            };
-
-            if is_last {
-                map.insert(segment.to_string(), new_value);
-                return;
-            }
-
-            current = map
-                .entry(segment.to_string())
-                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        }
-    }
-
-    fn prune_secret_paths(
-        value: &mut serde_json::Value,
-        metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
-    ) {
-        for (path, meta) in metadata {
-            if meta.is_secret() {
-                Self::json_remove_path(value, path);
-            }
-        }
-    }
-
-    fn json_remove_path(value: &mut serde_json::Value, path: &str) {
-        let mut current = value;
-        let mut segments = path.split('.').peekable();
-
-        while let Some(segment) = segments.next() {
-            let is_last = segments.peek().is_none();
-
-            let Some(obj) = current.as_object_mut() else {
-                return;
-            };
-
-            if is_last {
-                obj.remove(segment);
-                return;
-            }
-
-            let Some(next) = obj.get_mut(segment) else {
-                return;
-            };
-            current = next;
-        }
-    }
-
-    fn traverse_secrets_impl(
-        &self,
-        value: &mut serde_json::Value,
-        current_path: &str,
-        ctx: &SecretContext<'_>,
-        depth: usize,
-    ) -> Result<()> {
-        const MAX_DEPTH: usize = 32;
-        if depth > MAX_DEPTH {
-            return Err(Error::BackupFailed(format!(
-                "JSON nesting exceeds maximum depth of {MAX_DEPTH}"
-            )));
-        }
-
-        match value {
-            serde_json::Value::Object(map) => {
-                for (k, v) in map {
-                    let next_path = if current_path.is_empty() {
-                        k.clone()
-                    } else {
-                        format!("{current_path}.{k}")
-                    };
-
-                    self.traverse_secrets_impl(v, &next_path, ctx, depth + 1)?;
-                }
-            }
-            _ => {
-                if let Some(meta) = ctx.metadata.get(current_path) {
-                    if meta.is_secret() {
-                        if ctx.should_include {
-                            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-                            {
-                                if let Some(creds) = self.manager.credentials() {
-                                    if let Ok(Some(secret)) =
-                                        creds.get_with_profile(current_path, ctx.credential_profile)
-                                    {
-                                        *value = serde_json::Value::String(secret);
-                                    }
-                                }
-                            }
-                        } else {
-                            *value = serde_json::Value::Null;
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Gather sub-settings files (handles both profiled and flat modes)
@@ -819,17 +651,13 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
                     if let Some(obj) = root_value.as_object_mut() {
                         for entry_value in obj.values_mut() {
-                            self.traverse_secrets(
+                            self.inject_or_remove_secrets(
                                 entry_value,
                                 "",
                                 &sub_metadata,
                                 should_include_secrets,
                                 None,
                             )?;
-
-                            if !should_include_secrets {
-                                Self::prune_secret_paths(entry_value, &sub_metadata);
-                            }
                         }
                     }
 
@@ -865,17 +693,13 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                         crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
                     };
 
-                    self.traverse_secrets(
+                    self.inject_or_remove_secrets(
                         &mut value,
                         "",
                         &sub_metadata,
                         should_include_secrets,
                         None,
                     )?;
-
-                    if !should_include_secrets {
-                        Self::prune_secret_paths(&mut value, &sub_metadata);
-                    }
 
                     let content = storage.serialize(&value)?;
                     crate::error::write_file(&dest, &content)?;

@@ -2,7 +2,7 @@ use crate::config::SettingsSchema;
 use crate::error::{Error, Result};
 use crate::manager::core::SettingsManager;
 use crate::storage::StorageBackend;
-use crate::sync::RwLockExt; // Import the trait for read_recovered/write_recovered
+use crate::utils::sync::RwLockExt; // Import the trait for read_recovered/write_recovered
 use log::{debug, warn};
 use serde_json::Value;
 use std::collections::HashMap;

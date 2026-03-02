@@ -68,13 +68,34 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         self
     }
 
-    /// Enable credential management for secret settings.
+    /// Enable credential management for secret settings with default behavior.
     ///
     /// When enabled, settings marked as `secret: true` in metadata
     /// will be stored in the OS keychain instead of the settings file.
     #[must_use]
     pub fn with_credentials(mut self) -> Self {
         self.config_builder = self.config_builder.with_credentials();
+        self
+    }
+
+    /// Extensively configure how credential secrets should be stored, enabling
+    /// advanced scenarios like custom proxy backends or keychain fallbacks.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use rcman::{SettingsManager, CredentialConfig};
+    ///
+    /// let manager = SettingsManager::builder("my-app", "1.0.0")
+    ///     .with_credential_config(CredentialConfig::WithFallback {
+    ///         fallback_path: "/tmp/secrets.enc.json".into(),
+    ///         encryption_key: [0u8; 32], // Use a derived key
+    ///     })
+    ///     .build()
+    ///     .unwrap();
+    /// ```
+    #[must_use]
+    pub fn with_credential_config(mut self, config: crate::config::CredentialConfig) -> Self {
+        self.config_builder = self.config_builder.with_credential_config(config);
         self
     }
 
@@ -265,5 +286,29 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         }
 
         Ok(manager)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_builder_with_credentials_config() {
+        let manager = SettingsManager::builder("my-app", "1.0.0")
+            .with_config_dir("/tmp/my-app")
+            .with_credential_config(crate::config::CredentialConfig::Default)
+            .build()
+            .unwrap();
+
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        {
+            assert!(manager.credentials.is_some());
+        }
+
+        #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+        {
+            let _ = manager;
+        }
     }
 }

@@ -1,10 +1,12 @@
 #[cfg(feature = "backup")]
 use crate::backup::ExternalConfigProvider;
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+use crate::config::CredentialConfig;
 use crate::config::{SettingMetadata, SettingsConfig, SettingsSchema};
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 use crate::credentials::CredentialManager;
 use crate::error::Result;
-use crate::events::EventManager;
+use crate::manager::EventManager;
 use crate::manager::cache::SettingsCache;
 use crate::manager::env::EnvironmentHandler;
 use crate::storage::StorageBackend;
@@ -119,18 +121,38 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     pub fn new(config: SettingsConfig<S, Schema>) -> Result<Self> {
         // Ensure config directory exists with secure permissions
         if !config.config_dir.exists() {
-            crate::security::ensure_secure_dir(&config.config_dir)?;
+            crate::utils::security::ensure_secure_dir(&config.config_dir)?;
         }
 
         let storage = config.storage.clone();
 
         // Initialize credential manager if enabled and feature is available
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        let credentials = if config.enable_credentials {
-            info!("Credential management enabled for secret settings");
-            Some(CredentialManager::new(&config.app_name))
-        } else {
-            None
+        let credentials = match &config.credential_config {
+            CredentialConfig::Disabled => None,
+            CredentialConfig::Default => {
+                info!("Credential management enabled with default backend");
+                Some(CredentialManager::new(&config.app_name))
+            }
+            #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+            CredentialConfig::WithFallback {
+                fallback_path,
+                encryption_key,
+            } => {
+                info!("Credential management enabled with keychain and encrypted file fallback");
+                Some(CredentialManager::with_fallback(
+                    &config.app_name,
+                    fallback_path.clone(),
+                    encryption_key,
+                ))
+            }
+            CredentialConfig::Custom(backend) => {
+                info!("Credential management enabled with custom backend");
+                Some(CredentialManager::with_backend(
+                    &config.app_name,
+                    backend.clone(),
+                ))
+            }
         };
 
         // Initialize profile manager if profiles are enabled
