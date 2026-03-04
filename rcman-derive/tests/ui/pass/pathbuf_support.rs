@@ -1,4 +1,4 @@
-use rcman::SettingsSchema as _;
+use rcman::SettingsSchema;
 use rcman_derive::SettingsSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

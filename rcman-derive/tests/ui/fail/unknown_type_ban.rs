@@ -1,4 +1,3 @@
-use rcman::SettingsSchema as _;
 use rcman_derive::SettingsSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
