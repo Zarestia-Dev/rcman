@@ -1,0 +1,5 @@
+error: Unsupported type for SettingsSchema. Use `#[setting(skip)]` to ignore it, or `#[setting(nested)]` if it is a custom schema struct.
+ --> tests/ui/fail/unknown_type_ban.rs:8:19
+  |
+8 |     pub hash_map: HashMap<String, String>,
+  |                   ^^^^^^^^^^^^^^^^^^^^^^^
