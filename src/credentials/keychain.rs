@@ -28,10 +28,10 @@ impl KeychainBackend {
     }
 
     fn track_key(&self, key: &str) {
-        if let Ok(mut keys) = self.known_keys.write() {
-            if !keys.contains(&key.to_string()) {
-                keys.push(key.to_string());
-            }
+        if let Ok(mut keys) = self.known_keys.write()
+            && !keys.contains(&key.to_string())
+        {
+            keys.push(key.to_string());
         }
     }
 

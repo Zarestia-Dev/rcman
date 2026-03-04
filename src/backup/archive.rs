@@ -178,10 +178,10 @@ pub fn extract_zip_archive(
                 source: e,
             })?;
         } else {
-            if let Some(parent) = outpath.parent() {
-                if !parent.exists() {
-                    crate::utils::security::ensure_secure_dir(parent)?;
-                }
+            if let Some(parent) = outpath.parent()
+                && !parent.exists()
+            {
+                crate::utils::security::ensure_secure_dir(parent)?;
             }
 
             let mut outfile = File::create(&outpath).map_err(|e| Error::FileWrite {
@@ -213,10 +213,10 @@ pub fn is_zip_encrypted(archive_path: &Path) -> Result<bool> {
 
     // Check if any entry is encrypted
     for i in 0..archive.len() {
-        if let Ok(entry) = archive.by_index_raw(i) {
-            if entry.encrypted() {
-                return Ok(true);
-            }
+        if let Ok(entry) = archive.by_index_raw(i)
+            && entry.encrypted()
+        {
+            return Ok(true);
         }
     }
 

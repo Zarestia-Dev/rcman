@@ -84,10 +84,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load settings with metadata to see current values
     let settings_meta = manager.metadata()?;
-    if let Some(meta) = settings_meta.get("network.allowed_origins") {
-        if let Some(value) = &meta.value {
-            println!("Current allowed origins: {value}");
-        }
+    if let Some(meta) = settings_meta.get("network.allowed_origins")
+        && let Some(value) = &meta.value
+    {
+        println!("Current allowed origins: {value}");
     }
 
     println!("\n🔧 Adding new origin...");
@@ -99,10 +99,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load settings with metadata to see the change
     let updated = manager.metadata()?;
-    if let Some(meta) = updated.get("network.allowed_origins") {
-        if let Some(value) = &meta.value {
-            println!("✅ Updated allowed origins: {value}\n");
-        }
+    if let Some(meta) = updated.get("network.allowed_origins")
+        && let Some(value) = &meta.value
+    {
+        println!("✅ Updated allowed origins: {value}\n");
     }
 
     println!(

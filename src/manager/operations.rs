@@ -39,10 +39,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // For secrets, check keyring first
         if metadata.is_secret() {
             // Check env var override for secrets if enabled
-            if self.config.env_overrides_secrets {
-                if let Some(env_value) = self.get_env_override(key) {
-                    return Ok(Some(env_value));
-                }
+            if self.config.env_overrides_secrets
+                && let Some(env_value) = self.get_env_override(key)
+            {
+                return Ok(Some(env_value));
             }
 
             // Try retrieving from keyring

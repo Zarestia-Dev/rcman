@@ -89,10 +89,10 @@ pub trait StorageBackend: Clone + Send + Sync {
         let content = self.serialize(data)?;
 
         // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                ensure_secure_dir(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            ensure_secure_dir(parent)?;
         }
 
         // Atomic write: temp file + rename

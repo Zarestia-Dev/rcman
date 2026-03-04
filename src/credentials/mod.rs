@@ -313,12 +313,12 @@ impl CredentialManager {
             }
         }
 
-        if let Some(ref fallback) = self.fallback {
-            if let Ok(keys) = fallback.list_keys() {
-                for key in keys {
-                    if key.starts_with(&prefix) {
-                        keys_to_remove.insert(key);
-                    }
+        if let Some(ref fallback) = self.fallback
+            && let Ok(keys) = fallback.list_keys()
+        {
+            for key in keys {
+                if key.starts_with(&prefix) {
+                    keys_to_remove.insert(key);
                 }
             }
         }

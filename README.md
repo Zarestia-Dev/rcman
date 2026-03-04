@@ -4,7 +4,7 @@
 [![Documentation](https://docs.rs/rcman/badge.svg)](https://docs.rs/rcman)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/Zarestia-Dev/rcman/workflows/CI/badge.svg)](https://github.com/Zarestia-Dev/rcman/actions)
-[![MSRV](https://img.shields.io/badge/MSRV-1.85-blue)](https://github.com/rust-lang/rust/releases/tag/1.85.0)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://github.com/rust-lang/rust/releases/tag/1.88.0)
 
 A generic, **framework-agnostic** Rust library for managing application settings with backup/restore, sub-settings, and credential management.
 
@@ -952,7 +952,7 @@ cargo deny check     # Check dependencies
 
 ### Quality Standards
 
-- **MSRV**: Rust 1.85+
+- **MSRV**: Rust 1.88+
 - **Code Quality**: `clippy -D warnings` enforced in CI
 - **Test Coverage**: Comprehensive test suite with unit, integration, and edge case tests
 - **Documentation**: Comprehensive doctests and API docs

@@ -621,57 +621,57 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
         if sub.is_single_file() {
             // Single-file mode
-            if let Some(path) = sub.file_path() {
-                if path.exists() {
-                    crate::error::create_dir(&sub_export_dir)?;
-                    let ext = sub.extension();
-                    let dest = sub_export_dir.join(format!("{sub_type}.{ext}"));
+            if let Some(path) = sub.file_path()
+                && path.exists()
+            {
+                crate::error::create_dir(&sub_export_dir)?;
+                let ext = sub.extension();
+                let dest = sub_export_dir.join(format!("{sub_type}.{ext}"));
 
-                    // Process secrets entry-by-entry with sub-settings schema paths.
-                    // Single-file structure is typically: { "entry": { ...fields... } }
-                    let raw = std::fs::read(&path).map_err(|e| Error::FileRead {
-                        path: path.clone(),
-                        source: e,
-                    })?;
-                    let raw_str = String::from_utf8(raw).map_err(|e| Error::FileRead {
-                        path: path.clone(),
-                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                    })?;
+                // Process secrets entry-by-entry with sub-settings schema paths.
+                // Single-file structure is typically: { "entry": { ...fields... } }
+                let raw = std::fs::read(&path).map_err(|e| Error::FileRead {
+                    path: path.clone(),
+                    source: e,
+                })?;
+                let raw_str = String::from_utf8(raw).map_err(|e| Error::FileRead {
+                    path: path.clone(),
+                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+                })?;
 
-                    let storage_impl = &self.manager.config().storage;
-                    let mut root_value: serde_json::Value = storage_impl.deserialize(&raw_str)?;
+                let storage_impl = &self.manager.config().storage;
+                let mut root_value: serde_json::Value = storage_impl.deserialize(&raw_str)?;
 
-                    let should_include_secrets = match options.secret_policy {
-                        crate::SecretBackupPolicy::Exclude => false,
-                        crate::SecretBackupPolicy::Include => true,
-                        crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
-                    };
+                let should_include_secrets = match options.secret_policy {
+                    crate::SecretBackupPolicy::Exclude => false,
+                    crate::SecretBackupPolicy::Include => true,
+                    crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
+                };
 
-                    if let Some(obj) = root_value.as_object_mut() {
-                        for entry_value in obj.values_mut() {
-                            self.inject_or_remove_secrets(
-                                entry_value,
-                                "",
-                                &sub_metadata,
-                                should_include_secrets,
-                                None,
-                            );
-                        }
+                if let Some(obj) = root_value.as_object_mut() {
+                    for entry_value in obj.values_mut() {
+                        self.inject_or_remove_secrets(
+                            entry_value,
+                            "",
+                            &sub_metadata,
+                            should_include_secrets,
+                            None,
+                        );
                     }
-
-                    let content = storage_impl.serialize(&root_value)?;
-                    crate::error::write_file(&dest, &content)?;
-                    let size = content.len() as u64;
-
-                    debug!("📄 Added single-file sub-settings: {sub_type}");
-                    return Ok((
-                        size,
-                        1,
-                        Some(SubSettingsManifestEntry::SingleFile(format!(
-                            "{sub_type}.{ext}",
-                        ))),
-                    ));
                 }
+
+                let content = storage_impl.serialize(&root_value)?;
+                crate::error::write_file(&dest, &content)?;
+                let size = content.len() as u64;
+
+                debug!("📄 Added single-file sub-settings: {sub_type}");
+                return Ok((
+                    size,
+                    1,
+                    Some(SubSettingsManifestEntry::SingleFile(format!(
+                        "{sub_type}.{ext}",
+                    ))),
+                ));
             }
             Ok((0, 0, None))
         } else {

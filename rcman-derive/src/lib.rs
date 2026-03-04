@@ -14,7 +14,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```rust
 //! use rcman::DeriveSettingsSchema as SettingsSchema;
 //! use serde::{Serialize, Deserialize};
 //!
@@ -32,6 +32,8 @@
 //!     
 //!     pub roles: Vec<String>,
 //! }
+//!
+//! fn main() {}
 //! ```
 //!
 //! ---
@@ -64,16 +66,23 @@
 //! ## Dynamic Metadata
 //! Any `key = value` assignment in `#[setting(...)]` that isn't functionally reserved above is transparently forwarded into the resulting `SettingMetadata` map for your UI components to access dynamically.
 //!
-//! ```rust,ignore
-//! // #1 is a reserved key causing functional impact on the core loop
-//! // #2, #3, and #4 are Dynamic Metadata injections
-//! #[setting(
-//!     min = 1024,                  // 1. Reserved constraint
-//!     label = "Server Port",       // 2. -> .meta_str("label", "Server Port")
-//!     order = 1,                   // 3. -> .meta_num("order", 1)
-//!     advanced = false             // 4. -> .meta_bool("advanced", false)
-//! )]
-//! port: u16,
+//! ```rust
+//! use rcman::DeriveSettingsSchema as SettingsSchema;
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(SettingsSchema, Default, Serialize, Deserialize)]
+//! #[schema(category = "network")]
+//! struct ServerSettings {
+//!     #[setting(
+//!         min = 1024,                  // 1. Reserved constraint
+//!         label = "Server Port",       // 2. -> .meta_str("label", "Server Port")
+//!         order = 1,                   // 3. -> .meta_num("order", 1)
+//!         advanced = false             // 4. -> .meta_bool("advanced", false)
+//!     )]
+//!     pub port: u16,
+//! }
+//!
+//! fn main() {}
 //! ```
 //!
 //! # Panics
@@ -271,22 +280,22 @@ fn validate_field_type_constraints(
     attrs: &FieldAttrs,
 ) -> Result<(), syn::Error> {
     // Semantic Compile-Time Validation
-    if let (Some(min), Some(max)) = (attrs.min, attrs.max) {
-        if min > max {
-            return Err(syn::Error::new_spanned(
-                field,
-                format!("`min` ({min}) cannot be greater than `max` ({max})"),
-            ));
-        }
+    if let (Some(min), Some(max)) = (attrs.min, attrs.max)
+        && min > max
+    {
+        return Err(syn::Error::new_spanned(
+            field,
+            format!("`min` ({min}) cannot be greater than `max` ({max})"),
+        ));
     }
 
-    if let Some(step) = attrs.step {
-        if step <= 0.0 {
-            return Err(syn::Error::new_spanned(
-                field,
-                format!("`step` must be positive, got {step}"),
-            ));
-        }
+    if let Some(step) = attrs.step
+        && step <= 0.0
+    {
+        return Err(syn::Error::new_spanned(
+            field,
+            format!("`step` must be positive, got {step}"),
+        ));
     }
 
     match type_info {
@@ -495,10 +504,10 @@ fn parse_single_field_attr(meta: Meta, result: &mut FieldAttrs) -> Result<(), sy
 }
 
 fn parse_lit_str(expr: &syn::Expr, name: &str) -> Result<String, syn::Error> {
-    if let syn::Expr::Lit(lit) = expr {
-        if let Lit::Str(s) = &lit.lit {
-            return Ok(s.value());
-        }
+    if let syn::Expr::Lit(lit) = expr
+        && let Lit::Str(s) = &lit.lit
+    {
+        return Ok(s.value());
     }
     Err(syn::Error::new_spanned(
         expr,
@@ -553,23 +562,23 @@ fn parse_container_attrs(attrs: &[Attribute]) -> Result<ContainerAttrs, syn::Err
             )?;
 
             for meta in nested {
-                if let Meta::NameValue(nv) = meta {
-                    if nv.path.is_ident("category") {
-                        if let Expr::Lit(lit) = &nv.value {
-                            if let Lit::Str(s) = &lit.lit {
-                                result.category = Some(s.value());
-                            } else {
-                                return Err(syn::Error::new_spanned(
-                                    lit,
-                                    "#[schema(category)] must be a string literal",
-                                ));
-                            }
+                if let Meta::NameValue(nv) = meta
+                    && nv.path.is_ident("category")
+                {
+                    if let Expr::Lit(lit) = &nv.value {
+                        if let Lit::Str(s) = &lit.lit {
+                            result.category = Some(s.value());
                         } else {
                             return Err(syn::Error::new_spanned(
-                                &nv.value,
-                                "#[schema(category)] must be a string literal, not an expression",
+                                lit,
+                                "#[schema(category)] must be a string literal",
                             ));
                         }
+                    } else {
+                        return Err(syn::Error::new_spanned(
+                            &nv.value,
+                            "#[schema(category)] must be a string literal, not an expression",
+                        ));
                     }
                 }
             }
@@ -764,16 +773,13 @@ fn classify_type(ty: &Type) -> TypeInfo {
 
 /// Extract the inner type from Option<T> if the given type is an Option
 fn extract_inner_type_from_option(ty: &Type) -> Option<&Type> {
-    if let Type::Path(path) = ty {
-        if let Some(segment) = path.path.segments.last() {
-            if segment.ident == "Option" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
-                        return Some(inner_ty);
-                    }
-                }
-            }
-        }
+    if let Type::Path(path) = ty
+        && let Some(segment) = path.path.segments.last()
+        && segment.ident == "Option"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+    {
+        return Some(inner_ty);
     }
     None
 }
@@ -791,13 +797,13 @@ fn is_nested_struct(ty: &Type) -> bool {
     }
 
     // Only simple path types with single ident can be nested
-    if let Type::Path(path_ty) = ty {
-        if get_last_path_segment_ident(ty).is_some() {
-            // Must not have type arguments (like Option<T> or Vec<T>) to be auto-detected as a nested struct
-            if path_ty.path.segments.last().unwrap().arguments.is_empty() {
-                // Use classify_type: Unknown + simple ident = likely custom struct
-                return matches!(classify_type(ty), TypeInfo::Unknown);
-            }
+    if let Type::Path(path_ty) = ty
+        && get_last_path_segment_ident(ty).is_some()
+    {
+        // Must not have type arguments (like Option<T> or Vec<T>) to be auto-detected as a nested struct
+        if path_ty.path.segments.last().unwrap().arguments.is_empty() {
+            // Use classify_type: Unknown + simple ident = likely custom struct
+            return matches!(classify_type(ty), TypeInfo::Unknown);
         }
     }
     false

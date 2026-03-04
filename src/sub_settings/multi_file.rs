@@ -129,12 +129,12 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         // Check cache first
         {
             let state = self.state.read_recovered()?;
-            if let Some(cache) = &state.cache {
-                if let Some(val) = cache.get(key) {
-                    // If it's not a null placeholder, return it immediately
-                    if !val.is_null() {
-                        return Ok(val.clone());
-                    }
+            if let Some(cache) = &state.cache
+                && let Some(val) = cache.get(key)
+            {
+                // If it's not a null placeholder, return it immediately
+                if !val.is_null() {
+                    return Ok(val.clone());
                 }
             }
         }
@@ -143,10 +143,10 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         let path = self.file_path(key);
         if !path.exists() {
             // Remove null placeholder if it incorrectly existed
-            if let Ok(mut state) = self.state.write_recovered() {
-                if let Some(cache) = &mut state.cache {
-                    cache.remove(key);
-                }
+            if let Ok(mut state) = self.state.write_recovered()
+                && let Some(cache) = &mut state.cache
+            {
+                cache.remove(key);
             }
             return Err(Error::SubSettingsEntryNotFound(format!(
                 "{}/{}",

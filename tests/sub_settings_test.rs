@@ -381,10 +381,10 @@ fn test_migrator_adds_field() {
         .with_config_dir(temp_dir.path())
         .with_sub_settings(
             SubSettingsConfig::new("configs").with_migrator(|mut value| {
-                if let Some(obj) = value.as_object_mut() {
-                    if !obj.contains_key("version") {
-                        obj.insert("version".into(), json!(2));
-                    }
+                if let Some(obj) = value.as_object_mut()
+                    && !obj.contains_key("version")
+                {
+                    obj.insert("version".into(), json!(2));
                 }
                 value
             }),
@@ -414,10 +414,10 @@ fn test_migrator_upgrades_schema() {
         .with_sub_settings(
             SubSettingsConfig::new("remotes").with_migrator(|mut value| {
                 // Migrate old field name to new
-                if let Some(obj) = value.as_object_mut() {
-                    if let Some(old_value) = obj.remove("remote_type") {
-                        obj.insert("type".into(), old_value);
-                    }
+                if let Some(obj) = value.as_object_mut()
+                    && let Some(old_value) = obj.remove("remote_type")
+                {
+                    obj.insert("type".into(), old_value);
                 }
                 value
             }),

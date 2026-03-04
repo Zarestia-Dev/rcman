@@ -581,15 +581,15 @@ impl SettingMetadata {
             .as_f64()
             .ok_or_else(|| "Value must be a number".to_string())?;
 
-        if let Some(min) = self.constraints.number.min {
-            if num < min {
-                return Err(format!("Value must be at least {min}"));
-            }
+        if let Some(min) = self.constraints.number.min
+            && num < min
+        {
+            return Err(format!("Value must be at least {min}"));
         }
-        if let Some(max) = self.constraints.number.max {
-            if num > max {
-                return Err(format!("Value must be at most {max}"));
-            }
+        if let Some(max) = self.constraints.number.max
+            && num > max
+        {
+            return Err(format!("Value must be at most {max}"));
         }
         Ok(())
     }
@@ -676,20 +676,20 @@ impl SettingMetadata {
                     if item == r {
                         return Err(format!("Value '{item}' is a reserved value"));
                     }
-                    if let Some((key, _)) = item.split_once(' ') {
-                        if key == r {
-                            return Err(format!("Value '{item}' matches reserved prefix '{r}'"));
-                        }
+                    if let Some((key, _)) = item.split_once(' ')
+                        && key == r
+                    {
+                        return Err(format!("Value '{item}' matches reserved prefix '{r}'"));
                     }
                 }
                 ReservedMatchMode::CliFlag => {
                     if item == r || item.starts_with(&format!("{r}=")) {
                         return Err(format!("Value '{item}' matches reserved flag '{r}'"));
                     }
-                    if let Some((key, _)) = item.split_once(' ') {
-                        if key == r {
-                            return Err(format!("Value '{item}' matches reserved flag '{r}'"));
-                        }
+                    if let Some((key, _)) = item.split_once(' ')
+                        && key == r
+                    {
+                        return Err(format!("Value '{item}' matches reserved flag '{r}'"));
                     }
                 }
             }
@@ -715,17 +715,17 @@ impl SettingMetadata {
         }
 
         // Check number range validity
-        if let (Some(min), Some(max)) = (self.constraints.number.min, self.constraints.number.max) {
-            if min > max {
-                return Err(format!("min ({min}) cannot be greater than max ({max})"));
-            }
+        if let (Some(min), Some(max)) = (self.constraints.number.min, self.constraints.number.max)
+            && min > max
+        {
+            return Err(format!("min ({min}) cannot be greater than max ({max})"));
         }
 
         // Check step is positive
-        if let Some(step) = self.constraints.number.step {
-            if step <= 0.0 {
-                return Err(format!("step must be positive, got {step}"));
-            }
+        if let Some(step) = self.constraints.number.step
+            && step <= 0.0
+        {
+            return Err(format!("step must be positive, got {step}"));
         }
 
         // Check pattern is valid regex

@@ -11,7 +11,7 @@ Thanks for considering contributing! This project aims to provide a robust, well
 
 ### Toolchain & MSRV
 
-- Minimum Supported Rust Version (MSRV): 1.85 (declared in `Cargo.toml`).
+- Minimum Supported Rust Version (MSRV): 1.88 (declared in `Cargo.toml`).
 - A `rust-toolchain.toml` pins the local channel to `stable` and installs `rustfmt` + `clippy`.
 
 ## Local Checks

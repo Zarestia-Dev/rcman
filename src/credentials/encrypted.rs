@@ -11,7 +11,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
 };
 use log::debug;
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;

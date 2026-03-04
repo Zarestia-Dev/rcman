@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - README examples were refreshed to match current APIs (`SettingsManager`, `get_all`, `metadata`, `SubSettingsConfig::singlefile`, non-generic `save_setting`, and current env-source patterns).
 - Module docs were aligned to current typed API terminology (`get_all()` wording in config builder docs).
 - Added explicit deprecation comments for backup manifest external fields with a planned v0.2.0 breaking rename (`external_config_files` -> `external_configs`) after removing legacy ID-list format.
+- New UI tests added in derive.
+- Minimum Rust version updated to 1.88
 
 ### Fixed
 

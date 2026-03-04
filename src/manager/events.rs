@@ -223,10 +223,11 @@ mod tests {
 
         // Add a validator that only accepts positive numbers
         events.add_validator("network.port", |value| {
-            if let Some(n) = value.as_i64() {
-                if n > 0 && n <= 65535 {
-                    return Ok(());
-                }
+            if let Some(n) = value.as_i64()
+                && n > 0
+                && n <= 65535
+            {
+                return Ok(());
             }
             Err("Port must be between 1 and 65535".into())
         });

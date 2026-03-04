@@ -9,4 +9,6 @@ struct PathSettings {
     pub log_dir: PathBuf,
 }
 
-fn main() {}
+fn main() {
+    let _map = PathSettings::get_metadata();
+}

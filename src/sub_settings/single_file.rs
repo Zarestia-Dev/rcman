@@ -101,10 +101,10 @@ impl<S: StorageBackend> SingleFileStore<S> {
         let path = self.file_path();
 
         // Ensure directory exists - base_dir for single file is the config dir itself mostly
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                crate::utils::security::ensure_secure_dir(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            crate::utils::security::ensure_secure_dir(parent)?;
         }
 
         let obj: Value = Value::Object(cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
@@ -118,10 +118,10 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
         self.ensure_loaded()?;
 
         let state = self.state.read_recovered()?;
-        if let Some(cache) = &state.cache {
-            if let Some(val) = cache.get(key) {
-                return Ok(val.clone());
-            }
+        if let Some(cache) = &state.cache
+            && let Some(val) = cache.get(key)
+        {
+            return Ok(val.clone());
         }
 
         Err(Error::SubSettingsEntryNotFound(format!(

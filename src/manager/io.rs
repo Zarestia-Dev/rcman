@@ -224,12 +224,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let default_value = validator.map_or(Value::Null, |m| m.default.clone());
 
         // Validate value
-        if let Some(m) = validator {
-            if let Err(e) = m.validate(value) {
-                return Err(Error::Config(format!(
-                    "Validation failed for {category}.{key}: {e}"
-                )));
-            }
+        if let Some(m) = validator
+            && let Err(e) = m.validate(value)
+        {
+            return Err(Error::Config(format!(
+                "Validation failed for {category}.{key}: {e}"
+            )));
         }
 
         // Get old value for change notification

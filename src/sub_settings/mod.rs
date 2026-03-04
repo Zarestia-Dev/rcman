@@ -412,10 +412,10 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     }
 
     fn notify_change(&self, name: &str, action: SubSettingsAction) {
-        if let Ok(guard) = self.on_change.read_recovered() {
-            if let Some(callback) = guard.as_ref() {
-                callback(name, action);
-            }
+        if let Ok(guard) = self.on_change.read_recovered()
+            && let Some(callback) = guard.as_ref()
+        {
+            callback(name, action);
         }
     }
 
@@ -474,13 +474,13 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         }
 
         for (path, metadata) in schema.iter() {
-            if let Some(field_value) = crate::utils::value::get_path(value, path) {
-                if let Err(reason) = metadata.validate(field_value) {
-                    return Err(Error::InvalidSettingValue {
-                        key: format!("{}.{}.{}", self.config.name, entry_name, path),
-                        reason,
-                    });
-                }
+            if let Some(field_value) = crate::utils::value::get_path(value, path)
+                && let Err(reason) = metadata.validate(field_value)
+            {
+                return Err(Error::InvalidSettingValue {
+                    key: format!("{}.{}.{}", self.config.name, entry_name, path),
+                    reason,
+                });
             }
         }
 

@@ -12,7 +12,7 @@ repository = "https://github.com/Zarestia-Dev/rcman"
 readme = "README.md"
 keywords = ["settings", "configuration", "backup", "preferences", "keychain"]
 categories = ["config", "filesystem", "development-tools"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -35,9 +35,9 @@ serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
 log = "0.4"
 time = { version = "0.3", features = ["serde", "serde-well-known", "formatting", "macros"] }
-regex = "1.11"
+regex = "1.0"
 dirs = "6.0"
-lru = "0.16.3"
+lru = "0.16"
 
 # JSON (always included for now, required for settings)
 serde_json = "1.0"
@@ -46,18 +46,18 @@ serde_json = "1.0"
 rcman-derive = { path = "rcman-derive", version = "0.1.4", optional = true }
 
 # Backup (optional, default)
-zip = { version = "7.0", default-features = false, features = ["deflate", "time", "aes-crypto"], optional = true }
+zip = { version = "8.0", default-features = false, features = ["deflate", "time", "aes-crypto"], optional = true }
 sha2 = { version = "0.10", optional = true }
-tempfile = { version = "3.14", optional = true }
+tempfile = { version = "3.0", optional = true }
 
 # Encrypted file (optional)
 aes-gcm = { version = "0.10", optional = true }
-rand = { version = "0.9", optional = true }
+rand = { version = "0.10", optional = true }
 base64 = { version = "0.22", optional = true }
 argon2 = { version = "0.5", features = ["std"], optional = true }
 
 # TOML storage (optional)
-toml = { version = "0.9.6", optional = true }
+toml = { version = "1.0", optional = true }
 
 # YAML storage (optional)
 serde_yaml = { version = "0.9", optional = true }
@@ -75,9 +75,9 @@ winapi = "0.3.9"
 keyring = { version = "3.6", features = ["apple-native"], optional = true }
 
 [dev-dependencies]
-tempfile = "3.14"
-env_logger = "0.11.8"
-eframe = "0.33.3"
+tempfile = "3.0"
+env_logger = "0.11"
+eframe = "0.33"
 
 # Example declarations with required features
 [[example]]
