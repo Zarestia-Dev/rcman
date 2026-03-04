@@ -8,9 +8,17 @@ use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 /// Extension trait for `RwLock` with poison recovery
 pub trait RwLockExt<T> {
     /// Acquire a read lock, recovering from poison errors
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lock is poisoned and recovery fails.
     fn read_recovered(&self) -> Result<RwLockReadGuard<'_, T>>;
 
     /// Acquire a write lock, recovering from poison errors
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lock is poisoned and recovery fails.
     fn write_recovered(&self) -> Result<RwLockWriteGuard<'_, T>>;
 }
 

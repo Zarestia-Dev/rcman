@@ -15,3 +15,5 @@ Thumbs.db
 
 # Test artifacts
 example_config/
+
+*.stderr

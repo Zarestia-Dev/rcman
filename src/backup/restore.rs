@@ -1086,7 +1086,7 @@ fn load_settings_agnostic<S: StorageBackend>(
 }
 
 /// Result of a restore operation
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum RestoreSkipReason {
     /// Target entry already exists and overwrite is disabled.
     ExistsConflict,
@@ -1106,7 +1106,7 @@ pub struct RestoreSkippedItem {
 }
 
 /// Pending restore reasons that require manual handling or missing source data.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum RestorePendingReason {
     /// External config is present in backup but not registered in target.
     UnknownExternalConfig,

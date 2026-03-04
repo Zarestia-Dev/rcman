@@ -213,6 +213,7 @@ impl EncryptedFileBackend {
 
     fn save_store(&self, store: &mut EncryptedStore) -> Result<()> {
         use base64::Engine;
+        use std::io::Write;
 
         // Always ensure salt is saved (v1 Argon2)
         store.version = 1;
@@ -246,7 +247,6 @@ impl EncryptedFileBackend {
             source: e,
         })?;
 
-        use std::io::Write;
         temp_file
             .write_all(content.as_bytes())
             .map_err(|e| Error::FileWrite {

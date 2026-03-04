@@ -84,6 +84,8 @@ pub trait StorageBackend: Clone + Send + Sync {
     ///
     /// * `Error::FileWrite` - If the file cannot be written
     fn write<T: Serialize>(&self, path: &Path, data: &T) -> Result<()> {
+        use std::io::Write;
+
         let content = self.serialize(data)?;
 
         // Ensure parent directory exists
@@ -117,7 +119,6 @@ pub trait StorageBackend: Clone + Send + Sync {
             source: e,
         })?;
 
-        use std::io::Write;
         temp_file
             .write_all(content.as_bytes())
             .map_err(|e| Error::FileWrite {

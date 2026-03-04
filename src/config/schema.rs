@@ -560,128 +560,139 @@ impl SettingMetadata {
     /// Returns an error message if validation fails (type mismatch, out of range, invalid pattern, etc.)
     pub fn validate(&self, value: &Value) -> Result<(), String> {
         match self.setting_type {
-            SettingType::Toggle => {
-                if !value.is_boolean() {
-                    return Err("Value must be a boolean".to_string());
-                }
-            }
-            SettingType::Number => {
-                let num = value
-                    .as_f64()
-                    .ok_or_else(|| "Value must be a number".to_string())?;
+            SettingType::Toggle => Self::validate_toggle(value),
+            SettingType::Number => self.validate_number(value),
+            SettingType::Text => self.validate_text(value),
+            SettingType::Select => self.validate_select(value),
+            SettingType::List => self.validate_list(value),
+            SettingType::Info => Ok(()), // Read-only, no validation needed
+        }
+    }
 
-                if let Some(min) = self.constraints.number.min {
-                    if num < min {
-                        return Err(format!("Value must be at least {min}"));
+    fn validate_toggle(value: &Value) -> Result<(), String> {
+        if !value.is_boolean() {
+            return Err("Value must be a boolean".to_string());
+        }
+        Ok(())
+    }
+
+    fn validate_number(&self, value: &Value) -> Result<(), String> {
+        let num = value
+            .as_f64()
+            .ok_or_else(|| "Value must be a number".to_string())?;
+
+        if let Some(min) = self.constraints.number.min {
+            if num < min {
+                return Err(format!("Value must be at least {min}"));
+            }
+        }
+        if let Some(max) = self.constraints.number.max {
+            if num > max {
+                return Err(format!("Value must be at most {max}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_text(&self, value: &Value) -> Result<(), String> {
+        if let Some(ref pattern) = self.constraints.text.pattern {
+            let text = value.as_str().unwrap_or_default();
+
+            // Use cached compiled regex for performance
+            let re = {
+                let mut cache = REGEX_CACHE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(cached) = cache.get(pattern) {
+                    cached.clone()
+                } else {
+                    let compiled = regex::Regex::new(pattern)
+                        .map_err(|e| format!("Invalid regex pattern: {e}"))?;
+                    cache.insert(pattern.clone(), compiled.clone());
+                    compiled
+                }
+            };
+
+            if !re.is_match(text) {
+                return Err(format!("Value does not match pattern: {pattern}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_select(&self, value: &Value) -> Result<(), String> {
+        if let Some(ref options) = self.constraints.options {
+            let is_valid = options.iter().any(|opt| opt.value == *value);
+            if !is_valid {
+                return Err("Value must be one of the available options".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_list(&self, value: &Value) -> Result<(), String> {
+        if !value.is_array() {
+            return Err("Value must be an array".to_string());
+        }
+
+        // Check reserved values
+        if let Some(reserved) = &self.constraints.list.reserved {
+            let mode = self
+                .constraints
+                .list
+                .match_mode
+                .as_ref()
+                .unwrap_or(&ReservedMatchMode::Exact);
+
+            if let Some(arr) = value.as_array() {
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        Self::check_reserved_item(s, reserved, mode)?;
                     }
                 }
-                if let Some(max) = self.constraints.number.max {
-                    if num > max {
-                        return Err(format!("Value must be at most {max}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_reserved_item(
+        item: &str,
+        reserved: &[String],
+        mode: &ReservedMatchMode,
+    ) -> Result<(), String> {
+        for r in reserved {
+            match mode {
+                ReservedMatchMode::Exact => {
+                    if item == r {
+                        return Err(format!("Value '{item}' is a reserved value"));
                     }
                 }
-            }
-            SettingType::Text => {
-                if let Some(ref pattern) = self.constraints.text.pattern {
-                    let text = value.as_str().unwrap_or_default();
-
-                    // Use cached compiled regex for performance
-                    let re = {
-                        let mut cache = REGEX_CACHE
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if let Some(cached) = cache.get(pattern) {
-                            cached.clone()
-                        } else {
-                            let compiled = regex::Regex::new(pattern)
-                                .map_err(|e| format!("Invalid regex pattern: {e}"))?;
-                            cache.insert(pattern.clone(), compiled.clone());
-                            compiled
+                ReservedMatchMode::PrefixEquals => {
+                    if item == r || item.starts_with(&format!("{r}=")) {
+                        return Err(format!("Value '{item}' matches reserved prefix '{r}'"));
+                    }
+                }
+                ReservedMatchMode::PrefixSpace => {
+                    if item == r {
+                        return Err(format!("Value '{item}' is a reserved value"));
+                    }
+                    if let Some((key, _)) = item.split_once(' ') {
+                        if key == r {
+                            return Err(format!("Value '{item}' matches reserved prefix '{r}'"));
                         }
-                    };
-
-                    if !re.is_match(text) {
-                        return Err(format!("Value does not match pattern: {pattern}"));
                     }
                 }
-            }
-            SettingType::Select => {
-                if let Some(ref options) = self.constraints.options {
-                    let is_valid = options.iter().any(|opt| opt.value == *value);
-                    if !is_valid {
-                        return Err("Value must be one of the available options".to_string());
+                ReservedMatchMode::CliFlag => {
+                    if item == r || item.starts_with(&format!("{r}=")) {
+                        return Err(format!("Value '{item}' matches reserved flag '{r}'"));
                     }
-                }
-            }
-            SettingType::List => {
-                if !value.is_array() {
-                    return Err("Value must be an array".to_string());
-                }
-
-                // Check reserved values
-                if let Some(reserved) = &self.constraints.list.reserved {
-                    let mode = self
-                        .constraints
-                        .list
-                        .match_mode
-                        .as_ref()
-                        .unwrap_or(&ReservedMatchMode::Exact);
-
-                    if let Some(arr) = value.as_array() {
-                        for item in arr {
-                            if let Some(s) = item.as_str() {
-                                for r in reserved {
-                                    match mode {
-                                        ReservedMatchMode::Exact => {
-                                            if s == r {
-                                                return Err(format!(
-                                                    "Value '{s}' is a reserved value"
-                                                ));
-                                            }
-                                        }
-                                        ReservedMatchMode::PrefixEquals => {
-                                            if s == r || s.starts_with(&format!("{r}=")) {
-                                                return Err(format!(
-                                                    "Value '{s}' matches reserved prefix '{r}'"
-                                                ));
-                                            }
-                                        }
-                                        ReservedMatchMode::PrefixSpace => {
-                                            if s == r {
-                                                return Err(format!(
-                                                    "Value '{s}' is a reserved value"
-                                                ));
-                                            }
-                                            if let Some((key, _)) = s.split_once(' ') {
-                                                if key == r {
-                                                    return Err(format!(
-                                                        "Value '{s}' matches reserved prefix '{r}'"
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                        ReservedMatchMode::CliFlag => {
-                                            if s == r || s.starts_with(&format!("{r}=")) {
-                                                return Err(format!(
-                                                    "Value '{s}' matches reserved flag '{r}'"
-                                                ));
-                                            }
-                                            if let Some((key, _)) = s.split_once(' ') {
-                                                if key == r {
-                                                    return Err(format!(
-                                                        "Value '{s}' matches reserved flag '{r}'"
-                                                    ));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                    if let Some((key, _)) = item.split_once(' ') {
+                        if key == r {
+                            return Err(format!("Value '{item}' matches reserved flag '{r}'"));
                         }
                     }
                 }
             }
-            SettingType::Info => {} // Read-only, no validation needed
         }
         Ok(())
     }

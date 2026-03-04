@@ -18,7 +18,7 @@ pub enum CredentialConfig {
     Disabled,
     /// Use the default backend (Keychain if enabled, otherwise Memory)
     Default,
-    /// Use Keychain with an EncryptedFile fallback (requires password/key for encryption)
+    /// Use Keychain with an `EncryptedFile` fallback (requires password/key for encryption)
     /// This is useful for environments where the OS keychain might be unavailable (e.g., CI/Docker).
     #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
     WithFallback {

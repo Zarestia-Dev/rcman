@@ -470,7 +470,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             &Schema::get_metadata(),
             should_include_secrets,
             credential_profile,
-        )?;
+        );
 
         let content = self.manager.storage().serialize(&value)?;
         let full_dest = export_dir.join(relative_dest);
@@ -509,7 +509,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             ctx.metadata,
             ctx.should_include,
             ctx.credential_profile,
-        )?;
+        );
 
         let serialized = storage.serialize(&value)?;
         crate::error::write_file(dest, &serialized)?;
@@ -524,7 +524,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
         should_include: bool,
         #[allow(unused_variables)] credential_profile: Option<&str>,
-    ) -> Result<()> {
+    ) {
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         let creds_opt = self.manager.credentials();
 
@@ -570,8 +570,6 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 crate::utils::value::remove_path(value, relative_key);
             }
         }
-
-        Ok(())
     }
 
     fn profile_from_backup_dest(dest: &Path) -> Option<&str> {
@@ -657,7 +655,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                                 &sub_metadata,
                                 should_include_secrets,
                                 None,
-                            )?;
+                            );
                         }
                     }
 
@@ -699,7 +697,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                         &sub_metadata,
                         should_include_secrets,
                         None,
-                    )?;
+                    );
 
                     let content = storage.serialize(&value)?;
                     crate::error::write_file(&dest, &content)?;

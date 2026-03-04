@@ -29,6 +29,7 @@ pub fn deep_merge(target: &mut Value, source: &Value) {
 /// Retrieve a value from a JSON tree using a dot-separated path (e.g., "parent.child.key").
 ///
 /// Returns `None` if the path doesn't exist.
+#[must_use]
 pub fn get_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     if path.is_empty() {
         return Some(value);
@@ -41,6 +42,7 @@ pub fn get_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
 }
 
 /// Check if a dot-separated path exists in the JSON tree.
+#[must_use]
 pub fn path_exists(value: &Value, path: &str) -> bool {
     get_path(value, path).is_some()
 }
