@@ -277,6 +277,10 @@ pub use sub_settings::{SubSettings, SubSettingsAction, SubSettingsConfig, SubSet
 /// JSON storage backend (default).
 pub use storage::{JsonStorage, StorageBackend};
 
+/// Convenience type alias for the most common configuration:
+/// `SettingsManager` using `JsonStorage`.
+pub type JsonManager<S> = SettingsManager<JsonStorage, S>;
+
 /// TOML storage backend (requires `toml` feature).
 #[cfg(feature = "toml")]
 pub use storage::TomlStorage;

@@ -559,6 +559,13 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     fn inject_secrets_from_store(&self, entry_name: &str, value: &mut Value) -> Result<()> {
+        // Secret injection only makes sense for object values. Plain scalars (e.g. a
+        // string sentinel like `_active`) must pass through untouched; calling
+        // `set_path` on a non-object would silently replace the value with `{}`.
+        if !value.is_object() {
+            return Ok(());
+        }
+
         let Some(schema) = self.config.schema.as_ref() else {
             return Ok(());
         };
@@ -762,6 +769,21 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         store.list()
     }
 
+    /// Get all sub-setting entries as a map
+    ///
+    /// Returns a `HashMap<String, Value>` with all entry names as keys
+    /// and their deserialized values. Entries that fail to load are silently skipped.
+    pub fn get_all_values(&self) -> Result<HashMap<String, Value>> {
+        let keys = self.list()?;
+        let mut result = HashMap::with_capacity(keys.len());
+        for key in keys {
+            if let Ok(value) = self.get_value(&key) {
+                result.insert(key, value);
+            }
+        }
+        Ok(result)
+    }
+
     /// Check if a sub-setting key exists
     ///
     /// # Arguments
@@ -792,5 +814,126 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             .read_recovered()
             .ok()
             .and_then(|s| s.get_single_file_path())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::JsonStorage;
+    use serde_json::json;
+
+    fn make_singlefile(dir: &std::path::Path) -> SubSettings<JsonStorage> {
+        SubSettings::new(
+            dir,
+            SubSettingsConfig::singlefile("connections"),
+            JsonStorage::new(),
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+            None,
+        )
+        .expect("failed to create SubSettings")
+    }
+
+    // =========================================================================
+    // Scalar sentinel regression tests
+    //
+    // `_active` is stored as a plain string in the same file as object-valued
+    // backend entries.  Any code path that iterates secret fields must not
+    // corrupt the value.
+    // =========================================================================
+
+    /// A scalar string entry (like `_active = "Windows"`) must survive a
+    /// `get_value` call unmodified, even when a schema with secret fields is
+    /// configured for the same store.
+    #[test]
+    fn test_get_value_returns_scalar_string_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let ss = make_singlefile(dir.path());
+
+        ss.set("_active", &json!("Windows")).unwrap();
+
+        let val = ss.get_value("_active").unwrap();
+        assert_eq!(
+            val,
+            json!("Windows"),
+            "scalar `_active` must not be replaced by an object"
+        );
+        assert!(val.as_str().is_some(), "`as_str()` must return Some(...)");
+    }
+
+    /// A scalar sentinel entry and regular object entries must co-exist in the
+    /// same file and each be retrievable with the correct type.
+    #[test]
+    fn test_scalar_and_object_entries_coexist() {
+        let dir = tempfile::tempdir().unwrap();
+        let ss = make_singlefile(dir.path());
+
+        ss.set("Local", &json!({"host": "127.0.0.1", "port": 51900})).unwrap();
+        ss.set("Windows", &json!({"host": "192.168.0.10", "port": 5572})).unwrap();
+        ss.set("_active", &json!("Windows")).unwrap();
+
+        let active = ss.get_value("_active").unwrap();
+        assert_eq!(active.as_str(), Some("Windows"));
+
+        assert!(ss.get_value("Local").unwrap().is_object());
+        assert!(ss.get_value("Windows").unwrap().is_object());
+    }
+
+    /// `list()` must include the scalar sentinel alongside the object entries.
+    #[test]
+    fn test_list_includes_scalar_sentinel() {
+        let dir = tempfile::tempdir().unwrap();
+        let ss = make_singlefile(dir.path());
+
+        ss.set("Local", &json!({"host": "127.0.0.1"})).unwrap();
+        ss.set("_active", &json!("Local")).unwrap();
+
+        let mut keys = ss.list().unwrap();
+        keys.sort();
+        assert_eq!(keys, vec!["Local", "_active"]);
+    }
+
+    /// `exists()` must return true for a scalar sentinel entry.
+    #[test]
+    fn test_exists_on_scalar_sentinel() {
+        let dir = tempfile::tempdir().unwrap();
+        let ss = make_singlefile(dir.path());
+
+        assert_eq!(ss.exists("_active").unwrap(), false);
+
+        ss.set("_active", &json!("Windows")).unwrap();
+        assert_eq!(ss.exists("_active").unwrap(), true);
+    }
+
+    /// `delete()` must remove the scalar sentinel without affecting other entries.
+    #[test]
+    fn test_delete_scalar_sentinel() {
+        let dir = tempfile::tempdir().unwrap();
+        let ss = make_singlefile(dir.path());
+
+        ss.set("Windows", &json!({"host": "192.168.0.10"})).unwrap();
+        ss.set("_active", &json!("Windows")).unwrap();
+
+        ss.delete("_active").unwrap();
+
+        assert_eq!(ss.exists("_active").unwrap(), false);
+        assert_eq!(ss.exists("Windows").unwrap(), true);
+    }
+
+    /// The scalar sentinel value must persist across a reload (a fresh
+    /// `SubSettings` pointing at the same file on disk).
+    #[test]
+    fn test_scalar_sentinel_persists_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+
+        {
+            let ss = make_singlefile(dir.path());
+            ss.set("_active", &json!("Windows")).unwrap();
+        }
+
+        // Re-open the same file
+        let ss2 = make_singlefile(dir.path());
+        let val = ss2.get_value("_active").unwrap();
+        assert_eq!(val.as_str(), Some("Windows"));
     }
 }

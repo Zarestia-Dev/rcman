@@ -282,4 +282,48 @@ mod tests {
         store.set("missing", Value::Null).unwrap();
         assert_eq!(writes.load(Ordering::SeqCst), 0);
     }
+
+    /// A plain scalar string (e.g. `_active`) must round-trip through the raw
+    /// store without being promoted to an object.
+    #[test]
+    fn test_scalar_string_value_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SingleFileStore::new(
+            "connections".to_string(),
+            dir.path().to_path_buf(),
+            "json".to_string(),
+            JsonStorage::new(),
+            None,
+        );
+
+        store.set("_active", json!("Windows")).unwrap();
+        let retrieved = store.get("_active").unwrap();
+        assert_eq!(retrieved, json!("Windows"));
+    }
+
+    /// A file with a mix of object entries and a scalar sentinel entry must
+    /// load all values correctly.
+    #[test]
+    fn test_mixed_object_and_scalar_entries_all_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SingleFileStore::new(
+            "connections".to_string(),
+            dir.path().to_path_buf(),
+            "json".to_string(),
+            JsonStorage::new(),
+            None,
+        );
+
+        store.set("Local", json!({"host": "127.0.0.1", "port": 51900})).unwrap();
+        store.set("Windows", json!({"host": "192.168.0.10", "port": 5572})).unwrap();
+        store.set("_active", json!("Windows")).unwrap();
+
+        assert_eq!(store.get("_active").unwrap(), json!("Windows"));
+        assert!(store.get("Local").unwrap().is_object());
+        assert!(store.get("Windows").unwrap().is_object());
+
+        let mut keys = store.list().unwrap();
+        keys.sort();
+        assert_eq!(keys, vec!["Local", "Windows", "_active"]);
+    }
 }

@@ -201,4 +201,30 @@ mod tests {
 
         assert_eq!(get_path(&tree, "keep"), Some(&json!(true)));
     }
+
+    /// Documents that `set_path` on a non-object root silently replaces the
+    /// entire value with an empty object before inserting the field.
+    ///
+    /// This is intentional for `set_path` itself, but callers that iterate
+    /// schema secret fields must guard against it – see the early-return in
+    /// `SubSettings::inject_secrets_from_store`.
+    #[test]
+    fn test_set_path_on_scalar_root_replaces_with_object() {
+        let mut value = json!("Windows");
+        set_path(&mut value, "password", json!("secret"));
+
+        // The original string is gone – replaced by {"password": "secret"}
+        assert!(value.is_object(), "scalar root was not converted to object");
+        assert_eq!(get_path(&value, "password"), Some(&json!("secret")));
+    }
+
+    #[test]
+    fn test_remove_path_on_scalar_root_returns_none() {
+        let mut value = json!("Windows");
+        let result = remove_path(&mut value, "password");
+
+        // remove_path on a non-object root is a no-op and returns None
+        assert_eq!(result, None);
+        assert_eq!(value, json!("Windows"), "scalar root should be unchanged");
+    }
 }
