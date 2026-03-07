@@ -26,6 +26,21 @@ pub fn deep_merge(target: &mut Value, source: &Value) {
     }
 }
 
+/// Recursively remove all keys whose value is `null` from a JSON object tree.
+///
+/// Null values in stored settings files are legacy artifacts: rcman never writes
+/// null (it removes keys that equal the default instead). Stripping them before
+/// merging ensures null cannot clobber schema defaults, without adding special
+/// cases to the merge logic itself.
+pub fn strip_nulls(value: &mut Value) {
+    if let Some(obj) = value.as_object_mut() {
+        obj.retain(|_, v| !v.is_null());
+        for v in obj.values_mut() {
+            strip_nulls(v);
+        }
+    }
+}
+
 /// Retrieve a value from a JSON tree using a dot-separated path (e.g., "parent.child.key").
 ///
 /// Returns `None` if the path doesn't exist.
@@ -226,5 +241,51 @@ mod tests {
         // remove_path on a non-object root is a no-op and returns None
         assert_eq!(result, None);
         assert_eq!(value, json!("Windows"), "scalar root should be unchanged");
+    }
+
+    #[test]
+    fn test_strip_nulls() {
+        let mut stored = json!({
+            "runtime": {
+                "dashboard_layout": null,
+                "theme": "dark"
+            },
+            "nautilus": {
+                "starred": null,
+                "bookmarks": null,
+                "grid_icon_size": 72
+            },
+            "keep_false": false,
+            "keep_zero": 0,
+            "keep_empty_str": ""
+        });
+
+        strip_nulls(&mut stored);
+
+        // Null values are gone
+        assert_eq!(get_path(&stored, "runtime.dashboard_layout"), None);
+        assert_eq!(get_path(&stored, "nautilus.starred"), None);
+        assert_eq!(get_path(&stored, "nautilus.bookmarks"), None);
+
+        // Non-null falsy values are preserved
+        assert_eq!(get_path(&stored, "runtime.theme"), Some(&json!("dark")));
+        assert_eq!(get_path(&stored, "nautilus.grid_icon_size"), Some(&json!(72)));
+        assert_eq!(get_path(&stored, "keep_false"), Some(&json!(false)));
+        assert_eq!(get_path(&stored, "keep_zero"), Some(&json!(0)));
+        assert_eq!(get_path(&stored, "keep_empty_str"), Some(&json!("")));
+    }
+
+    #[test]
+    fn test_deep_merge_does_not_clobber_default_when_stored_has_null() {
+        // Simulate: schema default has dashboard_layout: [], stored file has null (legacy artifact)
+        // After strip_nulls + deep_merge the default survives.
+        let mut stored = json!({ "runtime": { "dashboard_layout": null, "theme": "dark" } });
+        strip_nulls(&mut stored);
+
+        let mut merged = json!({ "runtime": { "dashboard_layout": [], "theme": "system" } });
+        deep_merge(&mut merged, &stored);
+
+        assert_eq!(get_path(&merged, "runtime.dashboard_layout"), Some(&json!([])));
+        assert_eq!(get_path(&merged, "runtime.theme"), Some(&json!("dark")));
     }
 }

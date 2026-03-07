@@ -415,6 +415,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
         }
 
+        // Strip null values: null in a settings file is a legacy artifact from
+        // older code that used Option<T> fields (serialized as null when None).
+        // rcman never writes null — it removes keys equal to the default instead.
+        // Stripping here keeps deep_merge a pure function and prevents null from
+        // clobbering schema defaults.
+        crate::utils::value::strip_nulls(&mut value);
+
         Ok(CachedSettings {
             stored: value,
             merged: std::sync::OnceLock::new(),
