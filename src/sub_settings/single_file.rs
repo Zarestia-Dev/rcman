@@ -314,8 +314,12 @@ mod tests {
             None,
         );
 
-        store.set("Local", json!({"host": "127.0.0.1", "port": 51900})).unwrap();
-        store.set("Windows", json!({"host": "192.168.0.10", "port": 5572})).unwrap();
+        store
+            .set("Local", json!({"host": "127.0.0.1", "port": 51900}))
+            .unwrap();
+        store
+            .set("Windows", json!({"host": "192.168.0.10", "port": 5572}))
+            .unwrap();
         store.set("_active", json!("Windows")).unwrap();
 
         assert_eq!(store.get("_active").unwrap(), json!("Windows"));

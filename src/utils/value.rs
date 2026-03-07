@@ -269,7 +269,10 @@ mod tests {
 
         // Non-null falsy values are preserved
         assert_eq!(get_path(&stored, "runtime.theme"), Some(&json!("dark")));
-        assert_eq!(get_path(&stored, "nautilus.grid_icon_size"), Some(&json!(72)));
+        assert_eq!(
+            get_path(&stored, "nautilus.grid_icon_size"),
+            Some(&json!(72))
+        );
         assert_eq!(get_path(&stored, "keep_false"), Some(&json!(false)));
         assert_eq!(get_path(&stored, "keep_zero"), Some(&json!(0)));
         assert_eq!(get_path(&stored, "keep_empty_str"), Some(&json!("")));
@@ -285,7 +288,10 @@ mod tests {
         let mut merged = json!({ "runtime": { "dashboard_layout": [], "theme": "system" } });
         deep_merge(&mut merged, &stored);
 
-        assert_eq!(get_path(&merged, "runtime.dashboard_layout"), Some(&json!([])));
+        assert_eq!(
+            get_path(&merged, "runtime.dashboard_layout"),
+            Some(&json!([]))
+        );
         assert_eq!(get_path(&merged, "runtime.theme"), Some(&json!("dark")));
     }
 }

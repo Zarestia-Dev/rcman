@@ -773,6 +773,10 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns a `HashMap<String, Value>` with all entry names as keys
     /// and their deserialized values. Entries that fail to load are silently skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be read.
     pub fn get_all_values(&self) -> Result<HashMap<String, Value>> {
         let keys = self.list()?;
         let mut result = HashMap::with_capacity(keys.len());
@@ -868,8 +872,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ss = make_singlefile(dir.path());
 
-        ss.set("Local", &json!({"host": "127.0.0.1", "port": 51900})).unwrap();
-        ss.set("Windows", &json!({"host": "192.168.0.10", "port": 5572})).unwrap();
+        ss.set("Local", &json!({"host": "127.0.0.1", "port": 51900}))
+            .unwrap();
+        ss.set("Windows", &json!({"host": "192.168.0.10", "port": 5572}))
+            .unwrap();
         ss.set("_active", &json!("Windows")).unwrap();
 
         let active = ss.get_value("_active").unwrap();
@@ -899,10 +905,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ss = make_singlefile(dir.path());
 
-        assert_eq!(ss.exists("_active").unwrap(), false);
+        assert!(!ss.exists("_active").unwrap());
 
         ss.set("_active", &json!("Windows")).unwrap();
-        assert_eq!(ss.exists("_active").unwrap(), true);
+        assert!(ss.exists("_active").unwrap());
     }
 
     /// `delete()` must remove the scalar sentinel without affecting other entries.
@@ -916,8 +922,8 @@ mod tests {
 
         ss.delete("_active").unwrap();
 
-        assert_eq!(ss.exists("_active").unwrap(), false);
-        assert_eq!(ss.exists("Windows").unwrap(), true);
+        assert!(!ss.exists("_active").unwrap());
+        assert!(ss.exists("Windows").unwrap());
     }
 
     /// The scalar sentinel value must persist across a reload (a fresh

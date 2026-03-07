@@ -1,5 +1,9 @@
 # Common development tasks
 
+set working-directory := "."
+
+just := just_executable()
+
 docs_cmd := if os_family() == "windows" {
 	"set RUSTDOCFLAGS=--cfg docsrs && cargo doc --all-features --no-deps"
 } else {
@@ -44,21 +48,21 @@ deny-install:
 
 # Ubuntu-latest CI job behavior
 ci-ubuntu:
-	just fmt
-	just clippy
+	{{just}} fmt
+	{{just}} clippy
 	cargo test --all --all-features --quiet
-	just deny-ci
-	just docs
+	{{just}} deny-ci
+	{{just}} docs
 	cargo clippy --features full -- -W clippy::pedantic
 
 # Windows-latest CI job behavior
 ci-windows:
-	just clippy
+	{{just}} clippy
 	cargo test --all --all-features --quiet
 
 # macOS-latest CI job behavior
 ci-macos:
-	just clippy
+	{{just}} clippy
 	cargo test --all --all-features --quiet
 
 # -----------------------------------------------------------------------------
@@ -79,6 +83,6 @@ ci-macos-cross:
 
 # Full local preflight on Linux: Ubuntu-native gates + cross-target smoke
 ci-local:
-	just ci-ubuntu
-	just ci-windows-cross
-	just ci-macos-cross
+	{{just}} ci-ubuntu
+	{{just}} ci-windows-cross
+	{{just}} ci-macos-cross
