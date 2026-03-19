@@ -119,31 +119,41 @@ pub trait StorageBackend: Clone + Send + Sync {
             source: e,
         })?;
 
-        temp_file
-            .write_all(content.as_bytes())
-            .map_err(|e| Error::FileWrite {
+        // Wrap fallible steps so we can clean up the temp file on failure
+        let result = (|| -> Result<()> {
+            temp_file
+                .write_all(content.as_bytes())
+                .map_err(|e| Error::FileWrite {
+                    path: temp_path.clone(),
+                    source: e,
+                })?;
+
+            // Sync physically to disk to prevent data loss on hard crashes before rename
+            temp_file.sync_all().map_err(|e| Error::FileWrite {
                 path: temp_path.clone(),
                 source: e,
             })?;
 
-        // Sync physically to disk to prevent data loss on hard crashes before rename
-        temp_file.sync_all().map_err(|e| Error::FileWrite {
-            path: temp_path.clone(),
-            source: e,
-        })?;
+            // Set secure permissions on temp file before rename
+            set_secure_file_permissions(&temp_path)?;
 
-        // Set secure permissions on temp file before rename
-        set_secure_file_permissions(&temp_path)?;
+            std::fs::rename(&temp_path, path).map_err(|e| Error::FileWrite {
+                path: path.to_path_buf(),
+                source: e,
+            })?;
 
-        std::fs::rename(&temp_path, path).map_err(|e| Error::FileWrite {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+            // Ensure final file has secure permissions (in case rename didn't preserve)
+            set_secure_file_permissions(path)?;
 
-        // Ensure final file has secure permissions (in case rename didn't preserve)
-        set_secure_file_permissions(path)?;
+            Ok(())
+        })();
 
-        Ok(())
+        // Clean up orphaned temp file on failure
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+
+        result
     }
 }
 
@@ -167,10 +177,17 @@ pub trait StorageBackend: Clone + Send + Sync {
 /// let json = storage.serialize(&data).unwrap();
 /// assert!(json.contains("test"));
 /// ```
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct JsonStorage {
     /// Pretty print JSON output
     pretty: bool,
+}
+
+impl Default for JsonStorage {
+    /// Default to pretty-printed JSON (matches `JsonStorage::new()`)
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl JsonStorage {
