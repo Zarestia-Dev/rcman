@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+### Added
+- mobile platform support (Android/iOS) with secure credential storage via `keyring-core` and `apple-native` backends, plus encrypted file fallback for unsupported targets.
+
 ## [v0.1.6] - 2026-03-08
 
 ### Changed

@@ -1,8 +1,9 @@
-//! OS Keychain backend using keyring crate
+//! OS Keychain backend using keyring-core (via keyring v4+)
 
 use super::CredentialBackend;
 use crate::error::{Error, Result};
-use keyring::Entry;
+use keyring::{use_native_store};
+use keyring_core::{Entry, Error as KeyringError};
 use log::{debug, warn};
 use std::sync::RwLock;
 
@@ -16,6 +17,12 @@ pub struct KeychainBackend {
 impl KeychainBackend {
     /// Create a new keychain backend
     pub fn new(service_name: impl Into<String>) -> Self {
+        // Initialize the keyring default store for the current platform.
+        // On unsupported platforms, keyring falls back to the sample store.
+        if let Err(e) = use_native_store(false) {
+            warn!("Failed to initialize native keyring store: {e}");
+        }
+
         Self {
             service_name: service_name.into(),
             known_keys: RwLock::new(Vec::new()),
@@ -65,7 +72,7 @@ impl CredentialBackend for KeychainBackend {
                 debug!("Credential retrieved from keychain: {key}");
                 Ok(Some(password))
             }
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(KeyringError::NoEntry) => Ok(None),
             Err(e) => {
                 warn!("Failed to retrieve credential from keychain: {e}");
                 Err(Error::Credential(format!(
@@ -84,7 +91,7 @@ impl CredentialBackend for KeychainBackend {
                 debug!("Credential removed from keychain: {key}");
                 Ok(())
             }
-            Err(keyring::Error::NoEntry) => {
+            Err(KeyringError::NoEntry) => {
                 self.untrack_key(key);
                 Ok(()) // Already gone
             }

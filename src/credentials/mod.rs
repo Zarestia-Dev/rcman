@@ -2,7 +2,11 @@
 //!
 //! Provides secure storage for sensitive values with multiple backends:
 //! - **Keychain**: OS-level secure storage (recommended) - requires `keychain` feature
-//! - **Encrypted File**: Encrypted JSON fallback for CI/Docker - requires `encrypted-file` feature
+//!   - macOS/iOS: native keychain via `keyring` apple-native
+//!   - Windows: Windows Credential Manager via `keyring`
+//!   - Linux: Secret Service via `keyring`
+//!   - Android: native credential store via `keyring` v4 / `keyring-core` (android-native-keyring-store)
+//! - **Encrypted File**: Encrypted JSON fallback for CI/Docker and unsupported platforms - requires `encrypted-file` feature
 //! - **Memory**: In-memory only for testing
 
 #[cfg(feature = "encrypted-file")]

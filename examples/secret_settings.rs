@@ -83,8 +83,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🔑 Secrets are stored in your OS keychain:");
     #[cfg(target_os = "macos")]
     println!("   macOS: Keychain Access app");
+    #[cfg(target_os = "ios")]
+    println!("   iOS: Keychain");
     #[cfg(target_os = "linux")]
     println!("   Linux: GNOME Keyring / KWallet");
+    #[cfg(target_os = "android")]
+    println!("   Android: platform-specific keychain is not available in keyring; use encrypted-file or memory backend");
     #[cfg(target_os = "windows")]
     println!("   Windows: Credential Manager");
 

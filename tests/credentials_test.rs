@@ -233,6 +233,25 @@ fn test_credentials_not_available_when_disabled() {
     assert!(manager.credentials().is_none());
 }
 
+#[cfg(all(feature = "keychain", any(target_os = "android", target_os = "ios")))]
+#[test]
+fn test_mobile_keychain_store_retrieve_remove() {
+    let (_temp_dir, manager) = create_manager_with_credentials();
+
+    // Store a secret value
+    manager
+        .save_setting("api", "key", &json!("mobile_secret_123"))
+        .unwrap();
+
+    // Retrieve via metadata
+    let metadata = manager.metadata().unwrap();
+    assert_eq!(metadata.get("api.key").unwrap().value, Some(json!("mobile_secret_123")));
+
+    // Remove secret
+    let reset_val = manager.reset_setting("api", "key").unwrap();
+    assert!(reset_val == json!("") || reset_val.is_null());
+}
+
 // =============================================================================
 // Persistence Across Sessions
 // =============================================================================

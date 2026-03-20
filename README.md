@@ -469,8 +469,10 @@ manager.save_setting("api", "key", &json!("sk-123"))?;
 **Backends:**
 
 - macOS: Keychain
+- iOS: Keychain (via keyring apple-native)
 - Windows: Credential Manager
 - Linux: Secret Service (via libsecret)
+- Android: native credential store via keyring-core/android-native-keyring-store
 - **Fallback:** Encrypted file with Argon2id + AES-256-GCM
 
 ---

@@ -81,8 +81,20 @@ ci-macos-cross:
 	cargo clippy --all-features --target x86_64-apple-darwin -- -D warnings
 	cargo clippy --all-features --target aarch64-apple-darwin -- -D warnings
 
+ci-android-cross:
+	rustup target add aarch64-linux-android
+	cargo check --all --all-features --target aarch64-linux-android
+	cargo clippy --all-features --target aarch64-linux-android -- -D warnings
+
+ci-ios-cross:
+    rustup target add aarch64-apple-ios
+    cargo check --all --all-features --target aarch64-apple-ios
+    cargo clippy --all-features --target aarch64-apple-ios -- -D warnings
+
 # Full local preflight on Linux: Ubuntu-native gates + cross-target smoke
 ci-local:
 	{{just}} ci-ubuntu
 	{{just}} ci-windows-cross
 	{{just}} ci-macos-cross
+	{{just}} ci-android-cross
+	{{just}} ci-ios-cross
