@@ -66,6 +66,10 @@ serde_yaml = { version = "0.9", optional = true }
 keyring = { version = "4.0.0-rc.3", optional = true }
 keyring-core = { version = "0.7.2", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-acl = "0.3" # Need to be change as windows.acl is not maintained anymore, but it is the only option for ACL management on Windows for now.
+winapi =  "0.3"
+
 [dev-dependencies]
 tempfile = "3.26"
 env_logger = "0.11"
