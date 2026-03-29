@@ -30,52 +30,40 @@ derive = ["dep:rcman-derive"]
 profiles = []
 
 [dependencies]
-# Core (always included)
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 thiserror = "2.0"
 log = "0.4"
 time = { version = "0.3", features = ["serde", "serde-well-known", "formatting", "macros"] }
 regex = "1.12"
 dirs = "6.0"
 lru = "0.16"
-
-# JSON (always included for now, required for settings)
-serde_json = "1.0"
-
-# Derive macro (optional) - use local path for workspace development
 rcman-derive = { path = "rcman-derive", version = "0.1.7", optional = true }
-
-# Backup (optional, default)
 zip = { version = "8.2", default-features = false, features = ["deflate", "time", "aes-crypto"], optional = true }
-sha2 = { version = "0.10", optional = true }
+sha2 = { version = "0.11", optional = true }
 tempfile = { version = "3.26", optional = true }
-
-# Encrypted file (optional)
 aes-gcm = { version = "0.10", optional = true }
 rand = { version = "0.10", optional = true }
 base64 = { version = "0.22", optional = true }
 argon2 = { version = "0.5", features = ["std"], optional = true }
-
-# TOML storage (optional)
 toml = { version = "1.0", optional = true }
-
-# YAML storage (optional)
 serde_yaml = { version = "0.9", optional = true }
-
-# Keyring dependency (cross-platform with platform drivers via keyring-core)
 keyring = { version = "4.0.0-rc.3", optional = true }
-keyring-core = { version = "0.7.2", optional = true }
+keyring-core = { version = "0.7", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-acl = "0.3" # Need to be change as windows.acl is not maintained anymore, but it is the only option for ACL management on Windows for now.
-winapi =  "0.3"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile = "3.26"
 env_logger = "0.11"
 eframe = "0.33"
 
-# Example declarations with required features
 [[example]]
 name = "derive_usage"
 required-features = ["derive"]

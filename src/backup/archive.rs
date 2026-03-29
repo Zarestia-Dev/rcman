@@ -116,7 +116,12 @@ fn add_directory_to_zip<W: Write + std::io::Seek>(
             .strip_prefix(base_dir)
             .map_err(|e| Error::Archive(e.to_string()))?;
 
-        let name = relative_path.to_string_lossy();
+        // Zip uses '/' as directory separator independent of host platform.
+        let name = relative_path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
 
         if path.is_dir() {
             // Add directory entry
@@ -127,7 +132,7 @@ fn add_directory_to_zip<W: Write + std::io::Seek>(
             add_directory_to_zip(zip, base_dir, &path, options)?;
         } else {
             // Add file
-            zip.start_file(name.to_string(), *options)
+            zip.start_file(name.clone(), *options)
                 .map_err(|e| Error::Archive(e.to_string()))?;
 
             let mut file = File::open(&path).map_err(|e| Error::FileRead {
@@ -271,7 +276,14 @@ pub fn calculate_file_hash(path: &Path) -> Result<(String, u64)> {
         hasher.update(&buffer[..bytes_read]);
     }
 
-    let hash = format!("{:x}", hasher.finalize());
+    let raw_hash = hasher.finalize();
+    let hash = raw_hash
+        .iter()
+        .fold(String::with_capacity(raw_hash.len() * 2), |mut s, &b| {
+            s.push(std::char::from_digit(u32::from(b >> 4), 16).unwrap());
+            s.push(std::char::from_digit(u32::from(b & 0x0F), 16).unwrap());
+            s
+        });
     Ok((hash, total_size))
 }
 

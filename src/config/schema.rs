@@ -122,27 +122,37 @@
 //! The derive macro generates metadata using the dynamic API:
 //!
 //! ```rust,no_run
-//! use rcman::{DeriveSettingsSchema, SettingsSchema};
-//! use serde::{Serialize, Deserialize};
+//! #[cfg(feature = "derive")]
+//! fn derive_schema_example() {
+//!     use rcman::{DeriveSettingsSchema, SettingsSchema};
+//!     use serde::{Serialize, Deserialize};
 //!
-//! #[derive(DeriveSettingsSchema, Serialize, Deserialize, Default)]
-//! #[schema(category = "appearance")]
-//! struct UiSettings {
-//!     // Constraints handled by derive
-//!     #[setting(min = 8, max = 32)]
-//!     font_size: u32,
-//!     
-//!     // Simple toggle
-//!     dark_mode: bool,
+//!     #[derive(DeriveSettingsSchema, Serialize, Deserialize, Default)]
+//!     #[schema(category = "appearance")]
+//!     struct UiSettings {
+//!         // Constraints handled by derive
+//!         #[setting(min = 8, max = 32)]
+//!         font_size: u32,
+//!
+//!         // Simple toggle
+//!         dark_mode: bool,
+//!     }
+//!
+//!     // Add UI metadata manually after generation if needed:
+//!     let mut metadata = UiSettings::get_metadata();
+//!     if let Some(setting) = metadata.get_mut("appearance.dark_mode") {
+//!         *setting = setting.clone()
+//!             .meta_str("label", "Dark Mode")
+//!             .meta_str("description", "Enable dark theme");
+//!     }
 //! }
 //!
-//! // Add UI metadata manually after generation if needed:
-//! let mut metadata = UiSettings::get_metadata();
-//! if let Some(setting) = metadata.get_mut("appearance.dark_mode") {
-//!     *setting = setting.clone()
-//!         .meta_str("label", "Dark Mode")
-//!         .meta_str("description", "Enable dark theme");
+//! #[cfg(not(feature = "derive"))]
+//! fn derive_schema_example() {
+//!     // Derive-based schema examples are only available when the `derive` feature is enabled.
 //! }
+//!
+//! derive_schema_example();
 //! ```
 
 use serde::{Deserialize, Serialize};

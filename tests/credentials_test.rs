@@ -245,7 +245,10 @@ fn test_mobile_keychain_store_retrieve_remove() {
 
     // Retrieve via metadata
     let metadata = manager.metadata().unwrap();
-    assert_eq!(metadata.get("api.key").unwrap().value, Some(json!("mobile_secret_123")));
+    assert_eq!(
+        metadata.get("api.key").unwrap().value,
+        Some(json!("mobile_secret_123"))
+    );
 
     // Remove secret
     let reset_val = manager.reset_setting("api", "key").unwrap();

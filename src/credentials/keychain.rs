@@ -2,7 +2,7 @@
 
 use super::CredentialBackend;
 use crate::error::{Error, Result};
-use keyring::{use_native_store};
+use keyring::use_native_store;
 use keyring_core::{Entry, Error as KeyringError};
 use log::{debug, warn};
 use std::sync::RwLock;

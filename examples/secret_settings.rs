@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
     println!("   Linux: GNOME Keyring / KWallet");
     #[cfg(target_os = "android")]
-    println!("   Android: platform-specific keychain is not available in keyring; use encrypted-file or memory backend");
+    println!("   Android: EncryptedSharedPreferences (or Keystore on older versions)");
     #[cfg(target_os = "windows")]
     println!("   Windows: Credential Manager");
 
