@@ -11,6 +11,7 @@
 //! - **Strict Verification**: The macro prevents contradictory constraints at compile time (e.g. `min > max` or `options` on `bool`).
 //! - **Dynamic UI Metadata**: Every unknown attribute literal (e.g., `label = "Server"`) is automatically injected into the schema as customizable metadata.
 //! - **`#[cfg]` Forwarding**: Safely obeys macro feature flags attached to struct fields.
+//! - **Typed Accessors**: Generates snapshot accessors on the schema struct and a `<SchemaName>ManagerAccessors` trait for typed manager access.
 //!
 //! # Usage
 //!
@@ -93,7 +94,7 @@
 //! - Unknown/Unsupported types missing `#[setting(skip)]` (e.g. `Duration` or `HashMap`) so that you never accidentally leak invalid config metadata to the UI.
 
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{Attribute, Data, DeriveInput, Expr, Field, Fields, Lit, Meta, Type, parse_macro_input};
 
 /// Derive macro for generating `SettingsSchema` implementations. See the crate-level documentation for full attribute reference.
@@ -138,14 +139,114 @@ fn derive_settings_schema_impl(
             ));
         }
     };
+    let (metadata_entries, snapshot_methods, manager_trait_methods, manager_impl_methods) =
+        build_metadata_and_accessors(fields, &container_attrs)?;
 
+    let manager_trait_name = format_ident!("{}ManagerAccessors", name);
+
+    Ok(quote! {
+        impl rcman::SettingsSchema for #name {
+            fn get_metadata() -> std::collections::HashMap<String, rcman::SettingMetadata> {
+                let defaults = <#name as Default>::default();
+                let mut map = std::collections::HashMap::new();
+                #(#metadata_entries)*
+                map
+            }
+        }
+
+        impl #name {
+            #(#snapshot_methods)*
+        }
+
+        pub trait #manager_trait_name {
+            #(#manager_trait_methods)*
+        }
+
+        impl<S: rcman::StorageBackend + 'static> #manager_trait_name for rcman::SettingsManager<S, #name> {
+            #(#manager_impl_methods)*
+        }
+    })
+}
+
+// Alias to reduce signature complexity for the helper that returns generated pieces
+type AccessorCollections = (
+    Vec<proc_macro2::TokenStream>,
+    Vec<proc_macro2::TokenStream>,
+    Vec<proc_macro2::TokenStream>,
+    Vec<proc_macro2::TokenStream>,
+);
+
+fn build_metadata_and_accessors(
+    fields: &syn::punctuated::Punctuated<Field, syn::token::Comma>,
+    container_attrs: &ContainerAttrs,
+) -> Result<AccessorCollections, syn::Error> {
     let mut metadata_entries = Vec::new();
+    let mut snapshot_methods = Vec::new();
+    let mut manager_trait_methods = Vec::new();
+    let mut manager_impl_methods = Vec::new();
+    let mut used_method_names = std::collections::HashMap::<String, proc_macro2::Span>::new();
     let mut errors = None::<syn::Error>;
 
     for field in fields {
-        match process_single_field(field, &container_attrs) {
-            Ok(Some(entry)) => metadata_entries.push(entry),
-            Ok(None) => {} // Skipped
+        let attrs = match parse_field_attrs(&field.attrs) {
+            Ok(attrs) => attrs,
+            Err(e) => {
+                if let Some(ref mut combined) = errors {
+                    combined.combine(e);
+                } else {
+                    errors = Some(e);
+                }
+                continue;
+            }
+        };
+
+        if attrs.skip {
+            continue;
+        }
+
+        let cfg_attrs: Vec<_> = field
+            .attrs
+            .iter()
+            .filter(|attr| attr.path().is_ident("cfg"))
+            .cloned()
+            .collect();
+
+        match process_field(field, &attrs, container_attrs) {
+            Ok(entry) => {
+                if cfg_attrs.is_empty() {
+                    metadata_entries.push(entry);
+                } else {
+                    metadata_entries.push(quote! {
+                        #(#cfg_attrs)*
+                        {
+                            #entry
+                        }
+                    });
+                }
+            }
+            Err(e) => {
+                if let Some(ref mut combined) = errors {
+                    combined.combine(e);
+                } else {
+                    errors = Some(e);
+                }
+                continue;
+            }
+        }
+
+        match generate_accessor_methods(
+            field,
+            &attrs,
+            container_attrs,
+            &cfg_attrs,
+            &mut used_method_names,
+        ) {
+            Ok(Some((snapshot_method, manager_trait_method, manager_impl_method))) => {
+                snapshot_methods.push(snapshot_method);
+                manager_trait_methods.push(manager_trait_method);
+                manager_impl_methods.push(manager_impl_method);
+            }
+            Ok(None) => {}
             Err(e) => {
                 if let Some(ref mut combined) = errors {
                     combined.combine(e);
@@ -160,46 +261,185 @@ fn derive_settings_schema_impl(
         return Err(err);
     }
 
-    Ok(quote! {
-        impl rcman::SettingsSchema for #name {
-            fn get_metadata() -> std::collections::HashMap<String, rcman::SettingMetadata> {
-                let defaults = <#name as Default>::default();
-                let mut map = std::collections::HashMap::new();
-                #(#metadata_entries)*
-                map
-            }
-        }
-    })
+    Ok((
+        metadata_entries,
+        snapshot_methods,
+        manager_trait_methods,
+        manager_impl_methods,
+    ))
 }
 
-fn process_single_field(
+fn generate_accessor_methods(
     field: &Field,
+    attrs: &FieldAttrs,
     container_attrs: &ContainerAttrs,
-) -> Result<Option<proc_macro2::TokenStream>, syn::Error> {
-    let attrs = parse_field_attrs(&field.attrs)?;
-    if attrs.skip {
+    cfg_attrs: &[Attribute],
+    used_method_names: &mut std::collections::HashMap<String, proc_macro2::Span>,
+) -> Result<
+    Option<(
+        proc_macro2::TokenStream,
+        proc_macro2::TokenStream,
+        proc_macro2::TokenStream,
+    )>,
+    syn::Error,
+> {
+    let Some(field_name) = &field.ident else {
+        return Err(syn::Error::new_spanned(
+            field,
+            "Field must have a name (internal error: expected named field)",
+        ));
+    };
+
+    if attrs.nested || is_nested_struct(&field.ty) {
         return Ok(None);
     }
 
-    let mut cfg_attrs = Vec::new();
-    for attr in &field.attrs {
-        if attr.path().is_ident("cfg") {
-            cfg_attrs.push(attr);
+    let category = resolve_field_category(field, attrs, container_attrs)?;
+    let key_name = attrs
+        .rename
+        .clone()
+        .unwrap_or_else(|| field_name.to_string());
+
+    let getter_name_str = if category.is_empty() {
+        sanitize_ident_component(&field_name.to_string())
+    } else {
+        format!(
+            "{}_{}",
+            sanitize_ident_component(&category),
+            sanitize_ident_component(&field_name.to_string())
+        )
+    };
+
+    register_method_name(used_method_names, &getter_name_str, field_name.span())?;
+
+    let setter_name_str = format!("set_{getter_name_str}");
+    register_method_name(used_method_names, &setter_name_str, field_name.span())?;
+
+    let getter_name = format_ident!("{getter_name_str}");
+    let setter_name = format_ident!("{setter_name_str}");
+    let field_type = &field.ty;
+    let full_key = if category.is_empty() {
+        key_name.clone()
+    } else {
+        format!("{category}.{key_name}")
+    };
+
+    let snapshot_method = if cfg_attrs.is_empty() {
+        quote! {
+            pub fn #getter_name(&self) -> &#field_type {
+                &self.#field_name
+            }
+
+            pub fn #setter_name(&mut self, value: #field_type) {
+                self.#field_name = value;
+            }
+        }
+    } else {
+        quote! {
+            #(#cfg_attrs)*
+            pub fn #getter_name(&self) -> &#field_type {
+                &self.#field_name
+            }
+
+            #(#cfg_attrs)*
+            pub fn #setter_name(&mut self, value: #field_type) {
+                self.#field_name = value;
+            }
+        }
+    };
+
+    // Empty-category schemas are valid in rcman (for flat key maps such as
+    // sub-settings schemas). Manager accessors cannot be generated for them
+    // because save_setting() requires category/key split.
+    if category.is_empty() {
+        return Ok(Some((snapshot_method, quote! {}, quote! {})));
+    }
+
+    let manager_trait_method = if cfg_attrs.is_empty() {
+        quote! {
+            fn #getter_name(&self) -> rcman::Result<#field_type>;
+            fn #setter_name(&self, value: #field_type) -> rcman::Result<()>;
+        }
+    } else {
+        quote! {
+            #(#cfg_attrs)*
+            fn #getter_name(&self) -> rcman::Result<#field_type>;
+            #(#cfg_attrs)*
+            fn #setter_name(&self, value: #field_type) -> rcman::Result<()>;
+        }
+    };
+
+    let manager_impl_method = if cfg_attrs.is_empty() {
+        quote! {
+            fn #getter_name(&self) -> rcman::Result<#field_type> {
+                self.get::<#field_type>(#full_key)
+            }
+
+            fn #setter_name(&self, value: #field_type) -> rcman::Result<()> {
+                self.save_setting(#category, #key_name, &rcman::serde_json::json!(value))
+            }
+        }
+    } else {
+        quote! {
+            #(#cfg_attrs)*
+            fn #getter_name(&self) -> rcman::Result<#field_type> {
+                self.get::<#field_type>(#full_key)
+            }
+
+            #(#cfg_attrs)*
+            fn #setter_name(&self, value: #field_type) -> rcman::Result<()> {
+                self.save_setting(#category, #key_name, &rcman::serde_json::json!(value))
+            }
+        }
+    };
+
+    Ok(Some((
+        snapshot_method,
+        manager_trait_method,
+        manager_impl_method,
+    )))
+}
+
+fn register_method_name(
+    used_method_names: &mut std::collections::HashMap<String, proc_macro2::Span>,
+    method_name: &str,
+    span: proc_macro2::Span,
+) -> Result<(), syn::Error> {
+    if let Some(existing_span) = used_method_names.get(method_name) {
+        let mut err = syn::Error::new(
+            span,
+            format!("Duplicate generated accessor method name `{method_name}` detected"),
+        );
+        err.combine(syn::Error::new(
+            *existing_span,
+            "First conflicting field is here",
+        ));
+        return Err(err);
+    }
+    used_method_names.insert(method_name.to_string(), span);
+    Ok(())
+}
+
+fn sanitize_ident_component(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    for c in value.chars() {
+        if c.is_ascii_alphanumeric() {
+            output.push(c.to_ascii_lowercase());
+        } else {
+            output.push('_');
         }
     }
 
-    let entry = process_field(field, &attrs, container_attrs)?;
-
-    if cfg_attrs.is_empty() {
-        Ok(Some(entry))
-    } else {
-        Ok(Some(quote! {
-            #(#cfg_attrs)*
-            {
-                #entry
-            }
-        }))
+    let starts_with_digit = output.chars().next().is_some_and(|c| c.is_ascii_digit());
+    if starts_with_digit {
+        output.insert(0, '_');
     }
+
+    if output.is_empty() {
+        output.push('_');
+    }
+
+    output
 }
 
 fn process_field(

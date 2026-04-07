@@ -16,4 +16,14 @@ struct BasicSettings {
 
 fn main() {
     let _map = BasicSettings::get_metadata();
+
+    let mut settings = BasicSettings::default();
+    let _ = settings.test_cat_port();
+    let _ = settings.test_cat_name();
+    let _ = settings.test_cat_enabled();
+    settings.set_test_cat_port(42);
+    settings.set_test_cat_name("demo".to_string());
+    settings.set_test_cat_enabled(true);
+
+    fn _assert_manager_trait<T: BasicSettingsManagerAccessors>(_manager: &T) {}
 }

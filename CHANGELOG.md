@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 ### Added
 - mobile platform support (Android/iOS) with secure credential storage via `keyring-core` and `apple-native` backends, plus encrypted file fallback for unsupported targets.
+- **Type-Safe Setting Accessors via Derive Macro**
+    - `#[derive(DeriveSettingsSchema)]` now generates typed snapshot accessors (for example `ui_theme()` and `set_ui_theme(...)`) for non-nested fields.
+    - Derive now also generates schema-specific manager extension traits (`<SchemaName>ManagerAccessors`) so `SettingsManager` can use typed getter/setter methods without string keys.
+    - Existing string-key API (`get("category.key")` / `save_setting(...)`) remains fully supported for backward compatibility.
+- **Feature-Gated Hot Reload (MVP)**
+    - New optional `hot-reload` feature flag with watcher runtime support based on `notify`.
+    - Added `HotReloadConfig` and `HotReloadBackend` (`Auto` / `Poll`) plus builder opt-ins (`with_hot_reload`, `with_hot_reload_config`).
+    - Added `HotReloadRuntime` and `HotReloadEvent` exports, with main settings file watching, debounce, cache refresh, and start/stop lifecycle.
+    - Hot reload scope is intentionally limited to the main settings file; sub-settings categories are not watched.
 
 ## [v0.1.6] - 2026-03-08
 

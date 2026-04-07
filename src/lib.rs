@@ -12,6 +12,7 @@
 //! - **Profiles**: Named configurations for switching between different setups (e.g., "work", "home")
 //! - **Schema Validation**: Regex patterns, numeric ranges, and option constraints
 //! - **Performance**: In-memory caching for fast access
+//! - **Hot Reload**: Optional file watcher runtime for external settings updates (requires `hot-reload` feature)
 //!
 //! ## Quick Start
 //!
@@ -218,6 +219,40 @@
 //! // Alternative: prelude for common types
 //! use rcman::prelude::*;
 //! ```
+//!
+//! ## Hot Reload (Feature-Gated)
+//!
+//! Enable with:
+//! `rcman = { version = "0.1", features = ["hot-reload"] }`
+//!
+//! ```rust,no_run
+//! use rcman::{HotReloadConfig, HotReloadRuntime, SettingsManager};
+//! use std::sync::Arc;
+//!
+//! # fn demo() -> rcman::Result<()> {
+//! let manager = Arc::new(
+//!     SettingsManager::builder("my-app", "1.0.0")
+//!         .with_hot_reload()
+//!         .build()?,
+//! );
+//!
+//! let mut runtime = HotReloadRuntime::start(
+//!     Arc::clone(&manager),
+//!     HotReloadConfig::default(),
+//!     |event| {
+//!         println!("hot-reload event: {event:?}");
+//!     },
+//! )?;
+//!
+//! // ... app loop
+//! runtime.stop();
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Scope note:
+//! - Hot reload currently watches only the active main settings file.
+//! - Sub-settings (single-file and multi-file categories) are not watched.
 
 // =============================================================================
 // INTERNAL MODULES (private implementation details)
@@ -255,17 +290,26 @@ pub use config::{
     TextConstraints, meta, opt,
 };
 
+#[cfg(feature = "hot-reload")]
+pub use config::{HotReloadBackend, HotReloadConfig};
+
 /// Documentation generation utilities.
 pub use config::{DocsConfig, generate_docs, generate_docs_from_metadata};
 
 /// Error types for the library.
 pub use error::{Error, Result};
 
+/// Re-exported `serde_json` for macro-generated integrations.
+pub use serde_json;
+
 /// Event system for reactive settings changes.
 pub use manager::EventManager;
 
 /// Main settings manager and builder.
 pub use manager::{SettingsManager, SettingsManagerBuilder};
+
+#[cfg(feature = "hot-reload")]
+pub use manager::{HotReloadEvent, HotReloadRuntime};
 
 /// Sub-settings for per-entity configuration.
 pub use sub_settings::{SubSettings, SubSettingsAction, SubSettingsConfig, SubSettingsMode};
@@ -345,6 +389,11 @@ pub use credentials::CredentialManager;
 ///
 /// Use this to reduce boilerplate when defining settings structs.
 ///
+/// The derive also generates:
+/// - Snapshot accessors on the settings struct (`ui_theme()`, `set_ui_theme(...)`)
+/// - A manager extension trait named `<SchemaName>ManagerAccessors`
+///   for typed manager reads/writes (`manager.ui_theme()?`, `manager.set_ui_theme(...)`)
+///
 /// # Example
 ///
 /// ```rust,ignore
@@ -408,4 +457,8 @@ pub mod prelude {
     // Derive
     #[cfg(feature = "derive")]
     pub use super::DeriveSettingsSchema;
+
+    // Hot reload
+    #[cfg(feature = "hot-reload")]
+    pub use super::{HotReloadBackend, HotReloadConfig, HotReloadEvent, HotReloadRuntime};
 }

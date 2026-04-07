@@ -53,6 +53,7 @@ cargo add rcman
 | `keychain`       | OS keychain support               | ❌       |
 | `encrypted-file` | AES-256 encrypted file            | ❌       |
 | `profiles`       | Multiple named configurations     | ❌       |
+| `hot-reload`     | File watcher based live reload    | ❌       |
 | `full`           | All features                      | ❌       |
 
 **Examples:**
@@ -66,6 +67,9 @@ cargo add rcman --no-default-features --features json
 
 # With OS keychain support
 cargo add rcman --features keychain
+
+# With hot-reload
+cargo add rcman --features hot-reload
 
 # Everything
 cargo add rcman --features full
@@ -230,6 +234,18 @@ struct GeneralSettings {
     #[setting(label = "Theme", options(("light", "Light"), ("dark", "Dark")))]
     theme: String,
 }
+
+// Snapshot accessors generated on the struct
+let mut snapshot = GeneralSettings::default();
+let _ = snapshot.general_theme();
+snapshot.set_general_theme("dark".to_string());
+
+// Manager accessors generated as <SchemaName>ManagerAccessors trait
+let manager = rcman::SettingsManager::builder("my-app", "1.0.0")
+    .with_schema::<GeneralSettings>()
+    .build()?;
+manager.set_general_theme("light".to_string())?;
+let theme = manager.general_theme()?;
 ```
 
 **Available field attributes:**
@@ -264,6 +280,46 @@ let gdrive_config = remotes.get::<serde_json::Value>("gdrive")?;
 let all_remotes = remotes.list()?;
 remotes.delete("onedrive")?;
 ```
+
+### 3. Hot Reload (Optional Feature)
+
+Enable hot reload when you want external file edits to refresh manager state.
+
+```toml
+rcman = { version = "0.1", features = ["hot-reload"] }
+```
+
+```rust,no_run
+use rcman::{HotReloadBackend, HotReloadConfig, HotReloadRuntime, SettingsManager};
+use std::sync::Arc;
+
+# fn example() -> rcman::Result<()> {
+let manager = Arc::new(
+    SettingsManager::builder("my-app", "1.0.0")
+        .with_hot_reload_config(HotReloadConfig {
+            debounce_ms: 200,
+            poll_interval_ms: 1000,
+            backend: HotReloadBackend::Auto,
+        })
+        .build()?,
+);
+
+let mut runtime = HotReloadRuntime::start(Arc::clone(&manager), HotReloadConfig::default(), |event| {
+    println!("hot-reload event: {event:?}");
+})?;
+
+// ... app runs
+runtime.stop();
+# Ok(())
+# }
+```
+
+Notes:
+- The watcher is OS-triggered by default (`HotReloadBackend::Auto`), with optional polling mode.
+- Debounce prevents reload storms for bursty writes.
+- Current scope watches only the main settings file.
+- Sub-settings (single-file or multi-file categories) are intentionally not watched by hot reload.
+- Sub-settings are expected to be updated through manager APIs for large/dynamic config groups.
 
 Optional schema validation (same metadata model as main settings):
 

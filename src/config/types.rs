@@ -74,6 +74,40 @@ impl EnvSource for DefaultEnvSource {
     }
 }
 
+/// Backend strategy for file watching in hot-reload mode.
+#[cfg(feature = "hot-reload")]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum HotReloadBackend {
+    /// Use the OS-native watcher backend when available.
+    #[default]
+    Auto,
+    /// Force polling mode with `poll_interval_ms`.
+    Poll,
+}
+
+/// Configuration for hot-reload behavior.
+#[cfg(feature = "hot-reload")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HotReloadConfig {
+    /// Debounce window for coalescing bursty filesystem events.
+    pub debounce_ms: u64,
+    /// Polling interval used when backend is `Poll`.
+    pub poll_interval_ms: u64,
+    /// Filesystem watching backend strategy.
+    pub backend: HotReloadBackend,
+}
+
+#[cfg(feature = "hot-reload")]
+impl Default for HotReloadConfig {
+    fn default() -> Self {
+        Self {
+            debounce_ms: 200,
+            poll_interval_ms: 1000,
+            backend: HotReloadBackend::Auto,
+        }
+    }
+}
+
 /// Configuration for initializing the `SettingsManager`
 pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchema = ()> {
     /// Directory where settings files will be stored
@@ -126,6 +160,10 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchem
 
     /// Source for environment variables (defaults to `std::env`)
     pub env_source: std::sync::Arc<dyn EnvSource>,
+
+    /// Hot-reload configuration (when enabled).
+    #[cfg(feature = "hot-reload")]
+    pub hot_reload: Option<HotReloadConfig>,
 }
 
 impl Default for SettingsConfig {
@@ -150,6 +188,8 @@ impl Default for SettingsConfig {
             profile_migrator: crate::profiles::ProfileMigrator::default(),
             _schema: PhantomData,
             env_source: std::sync::Arc::new(DefaultEnvSource),
+            #[cfg(feature = "hot-reload")]
+            hot_reload: None,
         }
     }
 }
@@ -244,6 +284,8 @@ struct BuilderConfigFlags {
     pretty_json: bool,
     #[cfg(feature = "profiles")]
     profiles_enabled: bool,
+    #[cfg(feature = "hot-reload")]
+    hot_reload: Option<HotReloadConfig>,
 }
 
 #[derive(Clone, Debug)]
@@ -505,6 +547,22 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         self
     }
 
+    /// Enable hot-reload with default configuration.
+    #[cfg(feature = "hot-reload")]
+    #[must_use]
+    pub fn with_hot_reload(mut self) -> Self {
+        self.options.config.hot_reload = Some(HotReloadConfig::default());
+        self
+    }
+
+    /// Enable hot-reload with a custom configuration.
+    #[cfg(feature = "hot-reload")]
+    #[must_use]
+    pub fn with_hot_reload_config(mut self, config: HotReloadConfig) -> Self {
+        self.options.config.hot_reload = Some(config);
+        self
+    }
+
     /// Enable profiles for main settings
     ///
     /// When enabled, the main settings file is stored per-profile, allowing
@@ -655,6 +713,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             env_source: self
                 .env_source
                 .unwrap_or_else(|| std::sync::Arc::new(DefaultEnvSource)),
+            #[cfg(feature = "hot-reload")]
+            hot_reload: self.options.config.hot_reload,
         }
     }
 }

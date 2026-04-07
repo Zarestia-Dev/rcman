@@ -106,6 +106,16 @@ pub struct AppSettings {
     pub network: NetworkSettings,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, DeriveSettingsSchema)]
+#[schema(category = "ui")]
+pub struct AccessorDemoSettings {
+    #[setting(label = "Theme")]
+    pub theme: String,
+
+    #[setting(label = "Compact Layout")]
+    pub compact_layout: bool,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📦 rcman Derive Macro Example\n");
 
@@ -154,6 +164,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "\n💾 Config location: {:?}",
         manager.config().settings_path().display()
     );
+
+    println!("\n🧪 Type-safe derive accessors:");
+
+    let accessor_manager = SettingsManager::builder("derive-accessor-example", "1.0.0")
+        .with_config_dir("./example_config/accessor_demo")
+        .with_schema::<AccessorDemoSettings>()
+        .build()?;
+
+    accessor_manager.set_ui_theme("dark".to_string())?;
+    accessor_manager.set_ui_compact_layout(true)?;
+
+    println!("manager.ui_theme() => {:?}", accessor_manager.ui_theme()?);
+    println!(
+        "manager.ui_compact_layout() => {:?}",
+        accessor_manager.ui_compact_layout()?
+    );
+
+    let mut snapshot = accessor_manager.get_all()?;
+    snapshot.set_ui_theme("light".to_string());
+    println!("snapshot.ui_theme() => {:?}", snapshot.ui_theme());
 
     Ok(())
 }

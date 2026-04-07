@@ -2,7 +2,7 @@
 //!
 //! Tests the `#[derive(DeriveSettingsSchema)]` macro with various attribute combinations.
 
-use rcman::{DeriveSettingsSchema, SettingsSchema};
+use rcman::{DeriveSettingsSchema, SettingsManager, SettingsSchema};
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
@@ -429,4 +429,83 @@ fn test_fully_qualified_paths() {
     let path = metadata.get("fqn.path").unwrap();
     assert_eq!(path.get_meta_str("label"), Some("Resource Path"));
     assert_eq!(path.setting_type, rcman::SettingType::Text);
+}
+
+// =============================================================================
+// Type-Safe Accessor Tests
+// =============================================================================
+
+#[test]
+fn test_snapshot_accessors() {
+    let mut settings = BasicSettings {
+        enabled: false,
+        name: "Alice".to_string(),
+        count: 3,
+    };
+
+    assert!(!*settings.general_enabled());
+    assert_eq!(settings.general_name(), "Alice");
+    assert_eq!(*settings.general_count(), 3);
+
+    settings.set_general_enabled(true);
+    settings.set_general_name("Bob".to_string());
+    settings.set_general_count(9);
+
+    assert!(*settings.general_enabled());
+    assert_eq!(settings.general_name(), "Bob");
+    assert_eq!(*settings.general_count(), 9);
+}
+
+#[test]
+fn test_manager_accessors() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let manager = SettingsManager::builder("derive-accessor-test", "1.0.0")
+        .with_config_dir(temp.path())
+        .with_schema::<BasicSettings>()
+        .build()
+        .unwrap();
+
+    // Typed setters/getters
+    manager.set_general_enabled(true).unwrap();
+    manager.set_general_name("Charlie".to_string()).unwrap();
+    manager.set_general_count(12).unwrap();
+
+    assert!(manager.general_enabled().unwrap());
+    assert_eq!(manager.general_name().unwrap(), "Charlie");
+    assert_eq!(manager.general_count().unwrap(), 12);
+
+    // String API remains available and in parity
+    let enabled: bool = manager.get("general.enabled").unwrap();
+    let name: String = manager.get("general.name").unwrap();
+    let count: u32 = manager.get("general.count").unwrap();
+
+    assert!(enabled);
+    assert_eq!(name, "Charlie");
+    assert_eq!(count, 12);
+}
+
+#[derive(Default, Serialize, Deserialize, DeriveSettingsSchema)]
+#[schema(category = "ui")]
+struct RenamedAccessorSettings {
+    #[setting(rename = "theme-name")]
+    theme: String,
+}
+
+#[test]
+fn test_renamed_field_accessor() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let manager = SettingsManager::builder("derive-accessor-rename-test", "1.0.0")
+        .with_config_dir(temp.path())
+        .with_schema::<RenamedAccessorSettings>()
+        .build()
+        .unwrap();
+
+    manager.set_ui_theme("light".to_string()).unwrap();
+    assert_eq!(manager.ui_theme().unwrap(), "light");
+
+    // String API reads the renamed key path and remains compatible.
+    let theme: String = manager.get("ui.theme-name").unwrap();
+    assert_eq!(theme, "light");
 }

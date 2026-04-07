@@ -21,3 +21,6 @@ pub use docs::{DocsConfig, generate_docs, generate_docs_from_metadata};
 pub use types::{
     CredentialConfig, DefaultEnvSource, EnvSource, SettingsConfig, SettingsConfigBuilder,
 };
+
+#[cfg(feature = "hot-reload")]
+pub use types::{HotReloadBackend, HotReloadConfig};

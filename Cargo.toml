@@ -19,7 +19,7 @@ all-features = true
 
 [features]
 default = ["json", "backup"]
-full = ["json", "toml", "yaml", "backup", "keychain", "encrypted-file", "derive", "profiles"]
+full = ["json", "toml", "yaml", "backup", "keychain", "encrypted-file", "derive", "profiles", "hot-reload"]
 json = []
 toml = ["dep:toml"]
 yaml = ["dep:serde_yaml"]
@@ -28,6 +28,7 @@ keychain = ["dep:keyring", "dep:keyring-core"]
 encrypted-file = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2"]
 derive = ["dep:rcman-derive"]
 profiles = []
+hot-reload = ["dep:notify"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -50,6 +51,7 @@ toml = { version = "1.0", optional = true }
 serde_yaml = { version = "0.9", optional = true }
 keyring = { version = "4.0.0-rc.3", optional = true }
 keyring-core = { version = "0.7", optional = true }
+notify = { version = "6.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -103,3 +105,7 @@ required-features = ["toml"]
 [[test]]
 name = "yaml_integration_test"
 required-features = ["yaml"]
+
+[[test]]
+name = "hot_reload_test"
+required-features = ["hot-reload"]

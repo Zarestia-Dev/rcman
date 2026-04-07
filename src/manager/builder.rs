@@ -147,6 +147,22 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         self
     }
 
+    /// Enable hot-reload with default watcher configuration.
+    #[cfg(feature = "hot-reload")]
+    #[must_use]
+    pub fn with_hot_reload(mut self) -> Self {
+        self.config_builder = self.config_builder.with_hot_reload();
+        self
+    }
+
+    /// Enable hot-reload with a custom watcher configuration.
+    #[cfg(feature = "hot-reload")]
+    #[must_use]
+    pub fn with_hot_reload_config(mut self, config: crate::config::HotReloadConfig) -> Self {
+        self.config_builder = self.config_builder.with_hot_reload_config(config);
+        self
+    }
+
     /// Register an external configuration file for backup.
     ///
     /// External configs are files managed outside of rcman (like rclone.conf)
