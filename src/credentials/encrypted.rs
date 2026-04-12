@@ -4,6 +4,7 @@
 //! where OS keychain is not available.
 
 use super::CredentialBackend;
+use super::types::SecretPasswordSource;
 use crate::error::{Error, Result};
 use crate::utils::sync::RwLockExt;
 use aes_gcm::{
@@ -56,7 +57,7 @@ impl EncryptedFileBackend {
     ///
     /// # Errors
     /// Returns an error if the key length is invalid.
-    pub fn new(path: PathBuf, key: &[u8; 32], salt: [u8; 16]) -> Result<Self> {
+    pub(crate) fn new(path: PathBuf, key: &[u8; 32], salt: [u8; 16]) -> Result<Self> {
         Ok(Self {
             path,
             cipher: Aes256Gcm::new_from_slice(key)
@@ -64,6 +65,19 @@ impl EncryptedFileBackend {
             salt,
             cache: RwLock::new(HashMap::new()),
         })
+    }
+
+    /// Create an encrypted file backend from a password source
+    ///
+    /// This handles salt reading/generation and key derivation automatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the password source fails to resolve (e.g., missing environment variable)
+    /// or if the encrypted file exists but is corrupted.
+    pub fn with_source(path: PathBuf, source: &SecretPasswordSource) -> Result<Self> {
+        let password = source.resolve()?;
+        Self::with_password(path, &password)
     }
 
     /// Create an encrypted file backend from a password

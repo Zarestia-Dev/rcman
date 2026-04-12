@@ -158,15 +158,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, RwLock};
 
 // =============================================================================
 // Regex Cache for Pattern Validation
 // =============================================================================
 
 /// Global cache for compiled regex patterns to avoid re-compilation on every validation
-static REGEX_CACHE: LazyLock<Mutex<HashMap<String, regex::Regex>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static REGEX_CACHE: LazyLock<RwLock<HashMap<String, Arc<regex::Regex>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 // =============================================================================
 // Well-known Metadata Keys
@@ -610,16 +610,30 @@ impl SettingMetadata {
 
             // Use cached compiled regex for performance
             let re = {
-                let mut cache = REGEX_CACHE
-                    .lock()
+                // Try read lock first
+                let read_cache = REGEX_CACHE
+                    .read()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(cached) = cache.get(pattern) {
-                    cached.clone()
+                if let Some(cached) = read_cache.get(pattern) {
+                    Arc::clone(cached)
                 } else {
-                    let compiled = regex::Regex::new(pattern)
-                        .map_err(|e| format!("Invalid regex pattern: {e}"))?;
-                    cache.insert(pattern.clone(), compiled.clone());
-                    compiled
+                    // Drop read lock and acquire write lock for compilation
+                    drop(read_cache);
+                    let mut write_cache = REGEX_CACHE
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+                    // Double-check after acquiring write lock
+                    if let Some(cached) = write_cache.get(pattern) {
+                        Arc::clone(cached)
+                    } else {
+                        let compiled = Arc::new(
+                            regex::Regex::new(pattern)
+                                .map_err(|e| format!("Invalid regex pattern: {e}"))?,
+                        );
+                        write_cache.insert(pattern.clone(), Arc::clone(&compiled));
+                        compiled
+                    }
                 }
             };
 

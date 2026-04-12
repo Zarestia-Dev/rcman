@@ -14,8 +14,8 @@
 
 use eframe::egui;
 use rcman::{
-    BackupOptions, RestoreOptions, SecretBackupPolicy, SettingMetadata, SettingsConfig,
-    SettingsManager, SettingsSchema, SubSettingsConfig, opt, settings,
+    BackupOptions, CredentialConfig, RestoreOptions, SecretBackupPolicy, SettingMetadata,
+    SettingsConfig, SettingsManager, SettingsSchema, SubSettingsConfig, opt, settings,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 const EXTERNAL_CONFIG_ID: &str = "gui_demo_external";
 const EXTERNAL_CONFIG_REL_PATH: &str = "./example_config/external_gui_demo.conf";
+const GUI_SECRET_ENV_VAR: &str = "RCMAN_GUI_SECRET";
 
 // ============================================================================
 // SETTINGS SCHEMA - Define your settings here
@@ -178,6 +179,7 @@ struct DemoUiState {
     current_json: String,
     show_api_key: bool,
     show_db_password: bool,
+    show_security_panel: bool,
 }
 
 impl Default for DemoUiState {
@@ -188,6 +190,32 @@ impl Default for DemoUiState {
             current_json: String::new(),
             show_api_key: false,
             show_db_password: false,
+            show_security_panel: true,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum PasswordSourceType {
+    Environment,
+    Manual,
+    None,
+}
+
+struct SecurityState {
+    source_type: PasswordSourceType,
+    manual_password: String,
+    resolved_password_preview: String,
+    config: CredentialConfig,
+}
+
+impl Default for SecurityState {
+    fn default() -> Self {
+        Self {
+            source_type: PasswordSourceType::None,
+            manual_password: String::new(),
+            resolved_password_preview: String::new(),
+            config: CredentialConfig::Disabled,
         }
     }
 }
@@ -294,6 +322,7 @@ struct DemoApp {
     ui: DemoUiState,
     backup: BackupState,
     remotes: RemotesState,
+    security: SecurityState,
 }
 
 impl DemoApp {
@@ -330,8 +359,7 @@ impl DemoApp {
         // Initialize settings manager
         let external_file_path = PathBuf::from(EXTERNAL_CONFIG_REL_PATH);
         let external_content = Self::ensure_external_file(&external_file_path);
-
-        let config_builder = SettingsConfig::builder("rcman-gui-demo", "1.0.0")
+        let mut config_builder = SettingsConfig::builder("rcman-gui-demo", "1.0.0")
             .with_schema::<DemoSettings>()
             .with_config_dir("./example_config")
             .with_external_config(rcman::backup::ExternalConfig::new(
@@ -339,11 +367,44 @@ impl DemoApp {
                 &external_file_path,
             ));
 
-        // Enable credentials if keychain feature is available
-        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        let config = config_builder.with_credentials().build();
-        #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+        // Use our new encrypted fallback API if features enabled
+        let mut security_state = SecurityState::default();
+
+        #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+        {
+            let fallback_path = std::path::PathBuf::from("./example_config/credentials.enc.json");
+
+            // Check for environment variable
+            if let Ok(env_pass) = std::env::var(GUI_SECRET_ENV_VAR) {
+                security_state.source_type = PasswordSourceType::Environment;
+                security_state.resolved_password_preview = format!(
+                    "{}***{}",
+                    &env_pass[..1.min(env_pass.len())],
+                    &env_pass[env_pass.len().saturating_sub(1)..]
+                );
+                config_builder = config_builder.with_encrypted_fallback(
+                    fallback_path,
+                    SecretPasswordSource::Environment(GUI_SECRET_ENV_VAR.to_string()),
+                );
+            } else {
+                security_state.source_type = PasswordSourceType::Manual;
+                // Default to empty manual password if not set
+                config_builder = config_builder.with_encrypted_fallback(
+                    fallback_path,
+                    SecretPasswordSource::Provided(String::new()),
+                );
+            }
+        }
+        #[cfg(all(
+            not(all(feature = "keychain", feature = "encrypted-file")),
+            any(feature = "keychain", feature = "encrypted-file")
+        ))]
+        {
+            config_builder = config_builder.with_credentials();
+        }
+
         let config = config_builder.build();
+        security_state.config = config.credential_config.clone();
 
         let manager = Arc::new(SettingsManager::new(config).expect("Failed to create manager"));
 
@@ -357,6 +418,7 @@ impl DemoApp {
             ui: DemoUiState::default(),
             backup: BackupState::default(),
             remotes: RemotesState::default(),
+            security: security_state,
         };
 
         // Load initial settings
@@ -729,6 +791,52 @@ impl DemoApp {
             self.external_file_path.display()
         );
     }
+
+    fn reinitialize_manager(&mut self) {
+        let mut config_builder = SettingsConfig::builder("rcman-gui-demo", "1.0.0")
+            .with_schema::<DemoSettings>()
+            .with_config_dir("./example_config")
+            .with_external_config(rcman::backup::ExternalConfig::new(
+                EXTERNAL_CONFIG_ID,
+                &self.external_file_path,
+            ));
+
+        #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+        {
+            let fallback_path = std::path::PathBuf::from("./example_config/credentials.enc.json");
+            let source = match self.security.source_type {
+                PasswordSourceType::Environment => {
+                    SecretPasswordSource::Environment(GUI_SECRET_ENV_VAR.to_string())
+                }
+                PasswordSourceType::Manual => {
+                    SecretPasswordSource::Provided(self.security.manual_password.clone())
+                }
+                PasswordSourceType::None => {
+                    // Fallback to disabled or default if No source selected
+                    self.manager = Arc::new(
+                        SettingsManager::new(config_builder.build()).expect("Failed to rebuild"),
+                    );
+                    return;
+                }
+            };
+            config_builder = config_builder.with_encrypted_fallback(fallback_path, source);
+        }
+
+        let config = config_builder.build();
+        self.security.config = config.credential_config.clone();
+
+        match SettingsManager::new(config) {
+            Ok(mgr) => {
+                self.manager = Arc::new(mgr);
+                self.ui.status_message =
+                    "✅ Manager re-initialized with new security config".to_string();
+                self.load_settings_values();
+            }
+            Err(e) => {
+                self.ui.status_message = format!("❌ Failed to re-initialize: {e}");
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -749,6 +857,8 @@ impl eframe::App for DemoApp {
             ui.label("Interactive demonstration of the rcman settings library");
 
             self.ui_status_status(ui);
+            ui.add_space(8.0);
+            self.ui_security_panel(ui);
             ui.add_space(8.0);
 
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -819,6 +929,144 @@ impl eframe::App for DemoApp {
 
 // UI Helper Methods
 impl DemoApp {
+    fn ui_security_panel(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("🔐 Security Configuration")
+            .default_open(self.ui.show_security_panel)
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new("Demonstrating SecretPasswordSource resolution")
+                            .small()
+                            .weak(),
+                    );
+
+                    ui.group(|ui| {
+                        ui.label(egui::RichText::new("Current Strategy").strong());
+                        ui.label(format!("{:?}", self.security.config));
+
+                        #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+                        {
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.label("Password Source:");
+                                ui.radio_value(
+                                    &mut self.security.source_type,
+                                    PasswordSourceType::Environment,
+                                    "Environment",
+                                );
+                                ui.radio_value(
+                                    &mut self.security.source_type,
+                                    PasswordSourceType::Manual,
+                                    "Manual (Provided)",
+                                );
+                            });
+
+                            match self.security.source_type {
+                                PasswordSourceType::Environment => {
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("Looking for: {}", GUI_SECRET_ENV_VAR));
+                                        if !self.security.resolved_password_preview.is_empty() {
+                                            ui.label(
+                                                egui::RichText::new("✅ Found")
+                                                    .color(egui::Color32::from_rgb(0, 180, 0)),
+                                            );
+                                            ui.label(format!(
+                                                "(Value: {})",
+                                                self.security.resolved_password_preview
+                                            ));
+                                        } else {
+                                            ui.label(
+                                                egui::RichText::new("⚠️ Not set")
+                                                    .color(egui::Color32::GOLD),
+                                            );
+                                        }
+                                    });
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "Tip: Run with 'RCMAN_GUI_SECRET=mypass cargo run...'",
+                                        )
+                                        .small()
+                                        .weak(),
+                                    );
+                                }
+                                PasswordSourceType::Manual => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Master Password:");
+                                        ui.add(
+                                            egui::TextEdit::singleline(
+                                                &mut self.security.manual_password,
+                                            )
+                                            .password(true),
+                                        );
+                                    });
+                                }
+                                _ => {}
+                            }
+
+                            if ui.button("Apply & Re-initialize Manager").clicked() {
+                                self.reinitialize_manager();
+                            }
+                        }
+                    });
+
+                    ui.add_space(4.0);
+                    ui.group(|ui| {
+                        ui.label(egui::RichText::new("Encrypted Backend Status").strong());
+                        ui.label(&self.encrypted_backend_status);
+
+                        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                        {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Primary (Keychain):");
+                                if self.keychain_enabled {
+                                    if self
+                                        .manager
+                                        .credentials()
+                                        .is_some_and(|c| c.is_primary_failed())
+                                    {
+                                        ui.label(
+                                            egui::RichText::new(
+                                                "⚠️ Failed (Sticky Fallback Active)",
+                                            )
+                                            .color(egui::Color32::GOLD),
+                                        );
+                                    } else {
+                                        ui.label(
+                                            egui::RichText::new("✅ Live")
+                                                .color(egui::Color32::from_rgb(0, 180, 0)),
+                                        );
+                                    }
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new("Disabled").color(egui::Color32::GRAY),
+                                    );
+                                }
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label("Volatile Emergency:");
+                                if self
+                                    .manager
+                                    .credentials()
+                                    .is_some_and(|c| c.is_volatile_active())
+                                {
+                                    ui.label(
+                                        egui::RichText::new("⚠️ Active (Secrets won't persist)")
+                                            .color(egui::Color32::RED),
+                                    );
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new("Inactive").color(egui::Color32::GRAY),
+                                    );
+                                }
+                            });
+                        }
+                    });
+                });
+            });
+    }
+
     fn ui_status_status(&mut self, ui: &mut egui::Ui) {
         // Keychain status
         if self.keychain_enabled {

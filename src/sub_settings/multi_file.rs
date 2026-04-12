@@ -6,13 +6,19 @@ use crate::utils::sync::RwLockExt;
 use log::debug;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 type SubSettingsMigrator = Arc<dyn Fn(Value) -> Value + Send + Sync>;
 
+enum CacheType {
+    Full(HashMap<String, Value>),
+    Lru(lru::LruCache<String, Value>),
+}
+
 struct MultiFileStoreState {
-    cache: Option<HashMap<String, Value>>,
+    cache: Option<CacheType>,
     loaded_from_dir: bool,
 }
 
@@ -68,7 +74,14 @@ impl<S: StorageBackend> MultiFileStore<S> {
             return Ok(());
         }
 
-        state.cache = Some(HashMap::new());
+        state.cache = Some(match self.cache_strategy {
+            CacheStrategy::Full => CacheType::Full(HashMap::new()),
+            CacheStrategy::Lru(size) => {
+                let cap = NonZeroUsize::new(size).unwrap_or(NonZeroUsize::new(100).unwrap());
+                CacheType::Lru(lru::LruCache::new(cap))
+            }
+            CacheStrategy::None => unreachable!(),
+        });
         Ok(())
     }
 
@@ -86,9 +99,18 @@ impl<S: StorageBackend> MultiFileStore<S> {
             return Ok(());
         }
 
-        // Make sure cache map exists
+        // Make sure cache exists
         if state.cache.is_none() {
-            state.cache = Some(HashMap::new());
+            state.cache = Some(match self.cache_strategy {
+                CacheStrategy::Full => CacheType::Full(HashMap::new()),
+                CacheStrategy::Lru(size) => {
+                    let cap = NonZeroUsize::new(size).unwrap_or(NonZeroUsize::new(100).unwrap());
+                    CacheType::Lru(lru::LruCache::new(cap))
+                }
+                CacheStrategy::None => {
+                    unreachable!("Cache should not be initialized if strategy is None")
+                }
+            });
         }
 
         if !self.base_dir.exists() {
@@ -97,24 +119,51 @@ impl<S: StorageBackend> MultiFileStore<S> {
         }
 
         let ext = format!(".{}", self.extension);
-        if let Some(cache) = &mut state.cache {
-            for entry in std::fs::read_dir(&self.base_dir).map_err(|e| Error::DirectoryRead {
-                path: self.base_dir.clone(),
-                source: e,
-            })? {
-                let entry = entry.map_err(|e| Error::DirectoryRead {
-                    path: self.base_dir.clone(),
-                    source: e,
-                })?;
+        match &mut state.cache {
+            Some(CacheType::Full(cache)) => {
+                for entry in
+                    std::fs::read_dir(&self.base_dir).map_err(|e| Error::DirectoryRead {
+                        path: self.base_dir.clone(),
+                        source: e,
+                    })?
+                {
+                    let entry = entry.map_err(|e| Error::DirectoryRead {
+                        path: self.base_dir.clone(),
+                        source: e,
+                    })?;
 
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.ends_with(&ext) {
-                    let key = name.trim_end_matches(&ext).to_string();
-                    // Insert a null placeholder to indicate the file exists,
-                    // without eagerly reading the contents from disk
-                    cache.entry(key).or_insert(Value::Null);
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.ends_with(&ext) {
+                        let key = name.trim_end_matches(&ext).to_string();
+                        cache.entry(key).or_insert(Value::Null);
+                    }
                 }
             }
+            Some(CacheType::Lru(cache)) => {
+                for entry in
+                    std::fs::read_dir(&self.base_dir).map_err(|e| Error::DirectoryRead {
+                        path: self.base_dir.clone(),
+                        source: e,
+                    })?
+                {
+                    let entry = entry.map_err(|e| Error::DirectoryRead {
+                        path: self.base_dir.clone(),
+                        source: e,
+                    })?;
+
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.ends_with(&ext) {
+                        let key = name.trim_end_matches(&ext).to_string();
+                        // For LRU, we don't want to pollute with all keys if we have thousands,
+                        // but list() needs them. For now, we follow the same pattern
+                        // but these will be evicted if many are added.
+                        if !cache.contains(&key) {
+                            cache.put(key, Value::Null);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
 
         state.loaded_from_dir = true;
@@ -128,12 +177,22 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
 
         // Check cache first
         {
-            let state = self.state.read_recovered()?;
-            if let Some(cache) = &state.cache
-                && let Some(val) = cache.get(key)
-            {
-                // If it's not a null placeholder, return it immediately
-                if !val.is_null() {
+            // For Full strategy, we can use a read lock
+            if matches!(self.cache_strategy, CacheStrategy::Full) {
+                let state = self.state.read_recovered()?;
+                if let Some(CacheType::Full(cache)) = &state.cache
+                    && let Some(val) = cache.get(key)
+                    && !val.is_null()
+                {
+                    return Ok(val.clone());
+                }
+            } else if matches!(self.cache_strategy, CacheStrategy::Lru(_)) {
+                // For LRU, we MUST use a write lock to update use order
+                let mut state = self.state.write_recovered()?;
+                if let Some(CacheType::Lru(cache)) = &mut state.cache
+                    && let Some(val) = cache.get(key)
+                    && !val.is_null()
+                {
                     return Ok(val.clone());
                 }
             }
@@ -142,11 +201,17 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         // Read from disk
         let path = self.file_path(key);
         if !path.exists() {
-            // Remove null placeholder if it incorrectly existed
             if let Ok(mut state) = self.state.write_recovered()
                 && let Some(cache) = &mut state.cache
             {
-                cache.remove(key);
+                match cache {
+                    CacheType::Full(c) => {
+                        c.remove(key);
+                    }
+                    CacheType::Lru(c) => {
+                        c.pop(key);
+                    }
+                }
             }
             return Err(Error::SubSettingsEntryNotFound(format!(
                 "{}/{}",
@@ -169,8 +234,14 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         // Update cache
         if !matches!(self.cache_strategy, CacheStrategy::None) {
             let mut state = self.state.write_recovered()?;
-            if let Some(cache) = &mut state.cache {
-                cache.insert(key.to_string(), value.clone());
+            match &mut state.cache {
+                Some(CacheType::Full(cache)) => {
+                    cache.insert(key.to_string(), value.clone());
+                }
+                Some(CacheType::Lru(cache)) => {
+                    cache.put(key.to_string(), value.clone());
+                }
+                _ => {}
             }
         }
 
@@ -195,12 +266,28 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         // Update cache
         if !matches!(self.cache_strategy, CacheStrategy::None) {
             let mut state = self.state.write_recovered()?;
-            // Initialize cache if needed (though set usually implies we want consistency)
+            // Initialize cache if needed
             if state.cache.is_none() {
-                state.cache = Some(HashMap::new());
+                state.cache = Some(match self.cache_strategy {
+                    CacheStrategy::Full => CacheType::Full(HashMap::new()),
+                    CacheStrategy::Lru(size) => {
+                        let cap =
+                            NonZeroUsize::new(size).unwrap_or(NonZeroUsize::new(100).unwrap());
+                        CacheType::Lru(lru::LruCache::new(cap))
+                    }
+                    CacheStrategy::None => {
+                        unreachable!("Cache should not be initialized if strategy is None")
+                    }
+                });
             }
-            if let Some(cache) = &mut state.cache {
-                cache.insert(key.to_string(), value);
+            match &mut state.cache {
+                Some(CacheType::Full(cache)) => {
+                    cache.insert(key.to_string(), value);
+                }
+                Some(CacheType::Lru(cache)) => {
+                    cache.put(key.to_string(), value);
+                }
+                _ => {}
             }
         }
 
@@ -216,8 +303,14 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
 
         // Remove from cache
         let mut state = self.state.write_recovered()?;
-        if let Some(cache) = &mut state.cache {
-            cache.remove(key);
+        match &mut state.cache {
+            Some(CacheType::Full(cache)) => {
+                cache.remove(key);
+            }
+            Some(CacheType::Lru(cache)) => {
+                cache.pop(key);
+            }
+            _ => {}
         }
 
         Ok(())
@@ -254,12 +347,18 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         self.load_directory_into_cache_keys()?;
 
         let state = self.state.read_recovered()?;
-        if let Some(cache) = &state.cache {
-            let mut keys: Vec<String> = cache.keys().cloned().collect();
-            keys.sort();
-            Ok(keys)
-        } else {
-            Ok(Vec::new())
+        match &state.cache {
+            Some(CacheType::Full(cache)) => {
+                let mut keys: Vec<String> = cache.keys().cloned().collect();
+                keys.sort();
+                Ok(keys)
+            }
+            Some(CacheType::Lru(cache)) => {
+                let mut keys: Vec<String> = cache.iter().map(|(k, _)| k.clone()).collect();
+                keys.sort();
+                Ok(keys)
+            }
+            _ => Ok(Vec::new()),
         }
     }
 
@@ -371,5 +470,45 @@ mod tests {
         // 4. Get the second entity (should read 1 file from disk, total = 2)
         let _ = store.get("remote2").unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn test_multifile_lru_eviction() {
+        let dir = tempfile::tempdir().unwrap();
+        let writes = Arc::new(AtomicUsize::new(0));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let storage = CountingStorage::new(writes.clone(), reads.clone());
+
+        let store = MultiFileStore::new(
+            "remotes".to_string(),
+            dir.path().to_path_buf(),
+            "json".to_string(),
+            storage,
+            None,
+            CacheStrategy::Lru(2), // Capacity of 2
+        );
+
+        // 1. Set 3 items
+        store.set("a", json!(1)).unwrap();
+        store.set("b", json!(2)).unwrap();
+        store.set("c", json!(3)).unwrap(); // "a" should be evicted from cache
+
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+
+        // 2. Get "c" (should be in cache)
+        store.get("c").unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+
+        // 3. Get "b" (should be in cache)
+        store.get("b").unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+
+        // 4. Get "a" (should NOT be in cache, requires disk read)
+        store.get("a").unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+
+        // 5. Getting "a" again should now be cached (evicting "c" or "b" - specifically "c" as "b" was used last)
+        store.get("a").unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
     }
 }

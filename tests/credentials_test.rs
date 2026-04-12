@@ -326,3 +326,69 @@ fn test_secret_has_correct_metadata() {
     let theme_meta = metadata.get("ui.theme").unwrap();
     assert!(!theme_meta.is_secret());
 }
+
+// =============================================================================
+// Encrypted Fallback Tests
+// =============================================================================
+
+#[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_encrypted_fallback_with_env_password() {
+    use rcman::SecretPasswordSource;
+    let temp_dir = TempDir::new().unwrap();
+    let app_name = unique_app_name();
+    let fallback_path = temp_dir.path().join("secrets.enc.json");
+
+    // Set env var for test
+    let env_var = format!("PASS_{}", unique_app_name().replace("-", "_"));
+    unsafe { std::env::set_var(&env_var, "super-secure-password") };
+
+    let config = SettingsConfig::builder(&app_name, "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
+        .with_encrypted_fallback(
+            &fallback_path,
+            SecretPasswordSource::Environment(env_var.clone()),
+        )
+        .build();
+
+    let manager = SettingsManager::new(config).unwrap();
+
+    // Store a secret - this might hit keychain OR fallback depending on CI env
+    manager
+        .save_setting("api", "key", &json!("secret-value"))
+        .unwrap();
+
+    // Verify it can be retrieved
+    let val = manager.get_value("api.key").unwrap();
+    assert_eq!(val, json!("secret-value"));
+
+    unsafe { std::env::remove_var(&env_var) };
+}
+
+#[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_encrypted_fallback_with_file_password() {
+    use rcman::SecretPasswordSource;
+    let temp_dir = TempDir::new().unwrap();
+    let app_name = unique_app_name();
+    let fallback_path = temp_dir.path().join("secrets.enc.json");
+    let password_path = temp_dir.path().join("password.txt");
+
+    std::fs::write(&password_path, "file-password-123").unwrap();
+
+    let config = SettingsConfig::builder(&app_name, "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
+        .with_encrypted_fallback(&fallback_path, SecretPasswordSource::File(password_path))
+        .build();
+
+    let manager = SettingsManager::new(config).unwrap();
+
+    manager
+        .save_setting("api", "key", &json!("secret-value"))
+        .unwrap();
+
+    let val = manager.get_value("api.key").unwrap();
+    assert_eq!(val, json!("secret-value"));
+}

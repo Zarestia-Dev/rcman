@@ -161,9 +161,6 @@ fn run_reload_loop<S, Schema>(
 
         match fs_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
-                if Instant::now() < suppress_until {
-                    continue;
-                }
                 if event_touches_file(&event, watched_file) {
                     pending_reload = true;
                     last_change = Instant::now();
@@ -178,7 +175,10 @@ fn run_reload_loop<S, Schema>(
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        if pending_reload && Instant::now().duration_since(last_change) >= debounce_window {
+        if pending_reload
+            && Instant::now() >= suppress_until
+            && Instant::now().duration_since(last_change) >= debounce_window
+        {
             manager.invalidate_cache();
 
             match manager.ensure_cache_populated() {

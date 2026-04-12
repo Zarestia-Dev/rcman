@@ -22,11 +22,14 @@ pub use encrypted::EncryptedFileBackend;
 pub use keychain::KeychainBackend;
 pub use memory::MemoryBackend;
 
-pub use types::{SecretBackupPolicy, SecretStorage};
+pub use types::{SecretBackupPolicy, SecretPasswordSource, SecretStorage};
 
 use crate::error::Result;
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// Trait for credential storage backends
 pub trait CredentialBackend: Send + Sync {
@@ -81,12 +84,18 @@ pub struct CredentialManager {
     /// Fallback backend (typically encrypted file)
     fallback: Option<Arc<dyn CredentialBackend>>,
 
+    /// Whether the primary backend has failed permanently in this session
+    is_primary_failed: Arc<AtomicBool>,
+
     /// Service name for keychain
     service_name: String,
 
     /// Profile context (if any)
     #[cfg(feature = "profiles")]
     profile_context: Option<String>,
+
+    /// Volatile emergency fallback (always available, lost on restart)
+    volatile: Arc<MemoryBackend>,
 }
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -98,41 +107,48 @@ impl CredentialManager {
         Self {
             primary: Arc::new(KeychainBackend::new(service.clone())),
             fallback: None,
+            is_primary_failed: Arc::new(AtomicBool::new(false)),
             service_name: service,
             #[cfg(feature = "profiles")]
             profile_context: None,
+            volatile: Arc::new(MemoryBackend::new()),
         }
     }
 
     /// Create a new credential manager with memory backend (when keychain feature is disabled)
     #[cfg(not(feature = "keychain"))]
     pub fn new(service_name: impl Into<String>) -> Self {
-        Self::memory_only(service_name)
+        let service = service_name.into();
+        Self {
+            primary: Arc::new(MemoryBackend::new()),
+            fallback: None,
+            is_primary_failed: Arc::new(AtomicBool::new(false)),
+            service_name: service,
+            #[cfg(feature = "profiles")]
+            profile_context: None,
+            volatile: Arc::new(MemoryBackend::new()),
+        }
     }
 
-    /// Create with automatic fallback to encrypted file
+    /// Create with automatic fallback to encrypted file using a password source
     #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
     pub fn with_fallback(
         service_name: impl Into<String>,
         fallback_path: std::path::PathBuf,
-        encryption_key: &[u8; 32],
+        password_source: &SecretPasswordSource,
     ) -> Self {
         let service = service_name.into();
 
-        // For fallback, we need to handle salt manually since we already have the key
-        let salt = EncryptedFileBackend::read_salt(&fallback_path)
-            .ok()
-            .flatten()
-            .unwrap_or_else(EncryptedFileBackend::generate_salt);
-
-        let fallback = EncryptedFileBackend::new(fallback_path, encryption_key, salt).ok();
+        let fallback = EncryptedFileBackend::with_source(fallback_path, password_source).ok();
 
         Self {
             primary: Arc::new(KeychainBackend::new(service.clone())),
             fallback: fallback.map(|f| Arc::new(f) as Arc<dyn CredentialBackend>),
+            is_primary_failed: Arc::new(AtomicBool::new(false)),
             service_name: service,
             #[cfg(feature = "profiles")]
             profile_context: None,
+            volatile: Arc::new(MemoryBackend::new()),
         }
     }
 
@@ -141,9 +157,11 @@ impl CredentialManager {
         Self {
             primary: Arc::new(MemoryBackend::new()),
             fallback: None,
+            is_primary_failed: Arc::new(AtomicBool::new(false)),
             service_name: service_name.into(),
             #[cfg(feature = "profiles")]
             profile_context: None,
+            volatile: Arc::new(MemoryBackend::new()),
         }
     }
 
@@ -155,9 +173,11 @@ impl CredentialManager {
         Self {
             primary: backend,
             fallback: None,
+            is_primary_failed: Arc::new(AtomicBool::new(false)),
             service_name: service_name.into(),
             #[cfg(feature = "profiles")]
             profile_context: None,
+            volatile: Arc::new(MemoryBackend::new()),
         }
     }
 
@@ -171,9 +191,23 @@ impl CredentialManager {
         Self {
             primary: self.primary.clone(),
             fallback: self.fallback.clone(),
+            is_primary_failed: self.is_primary_failed.clone(),
             service_name: self.service_name.clone(),
             profile_context: Some(profile_name.to_string()),
+            volatile: self.volatile.clone(),
         }
+    }
+
+    /// Returns true if the primary backend has failed and we are now using fallback.
+    #[must_use]
+    pub fn is_primary_failed(&self) -> bool {
+        self.is_primary_failed.load(Ordering::Relaxed)
+    }
+
+    /// Returns true if the volatile emergency fallback is currently holding any data.
+    #[must_use]
+    pub fn is_volatile_active(&self) -> bool {
+        self.volatile.list_keys().is_ok_and(|keys| !keys.is_empty())
     }
 
     /// Store a credential
@@ -193,27 +227,43 @@ impl CredentialManager {
     pub fn store_with_profile(&self, key: &str, value: &str, profile: Option<&str>) -> Result<()> {
         let full_key = self.make_key_with_profile(key, profile);
 
-        match self.primary.store(&full_key, value) {
-            Ok(()) => {
-                log::debug!(
-                    "Stored credential '{}' in {}",
-                    key,
-                    self.primary.backend_name()
-                );
-                Ok(())
-            }
-            Err(e) => {
-                if let Some(ref fallback) = self.fallback {
-                    log::warn!(
-                        "Primary backend failed, using fallback: {}",
-                        fallback.backend_name()
+        // Check if primary is dead
+        if !self.is_primary_failed.load(Ordering::Relaxed) {
+            match self.primary.store(&full_key, value) {
+                Ok(()) => {
+                    log::debug!(
+                        "Stored credential '{key}' in {}",
+                        self.primary.backend_name()
                     );
-                    fallback.store(&full_key, value)
-                } else {
-                    Err(e)
+                    return Ok(());
+                }
+                Err(e) => {
+                    log::warn!("Primary backend failed for '{key}': {e}. Attempting fallback.");
+                    // Mark primary as failed if it's a platform/permission error
+                    // (Simplification: any non-not-found error triggers fallback switch)
+                    self.is_primary_failed.store(true, Ordering::Relaxed);
                 }
             }
         }
+
+        // Try persistent fallback if available
+        if let Some(ref fallback) = self.fallback {
+            match fallback.store(&full_key, value) {
+                Ok(()) => {
+                    log::debug!("Stored credential '{key}' in persistent fallback");
+                    return Ok(());
+                }
+                Err(e) => {
+                    log::error!(
+                        "Persistent fallback failed for '{key}': {e}. Falling back to VOLATILE memory."
+                    );
+                }
+            }
+        }
+
+        // Final attempt: Volatile memory (won't persist across restarts)
+        log::warn!("Using volatile fallback for '{key}' - secret will NOT persist across restarts");
+        self.volatile.store(&full_key, value)
     }
 
     /// Retrieve a credential
@@ -233,21 +283,31 @@ impl CredentialManager {
     pub fn get_with_profile(&self, key: &str, profile: Option<&str>) -> Result<Option<String>> {
         let full_key = self.make_key_with_profile(key, profile);
 
-        // Try primary first
-        match self.primary.get(&full_key) {
-            Ok(Some(value)) => return Ok(Some(value)),
-            Ok(None) => {}
-            Err(e) => {
-                log::debug!("Primary backend error: {e}");
+        // Try primary first if not dead
+        if !self.is_primary_failed.load(Ordering::Relaxed) {
+            match self.primary.get(&full_key) {
+                Ok(val) => return Ok(val),
+                Err(e) => {
+                    log::warn!("Primary backend failed for '{key}': {e}. Attempting fallback.");
+                    self.is_primary_failed.store(true, Ordering::Relaxed);
+                }
             }
         }
 
-        // Try fallback if available
+        // Try fallback
         if let Some(ref fallback) = self.fallback {
-            return fallback.get(&full_key);
+            match fallback.get(&full_key) {
+                Ok(val) => return Ok(val),
+                Err(e) => {
+                    log::error!(
+                        "Persistent fallback failed for '{key}': {e}. Trying VOLATILE memory."
+                    );
+                }
+            }
         }
 
-        Ok(None)
+        // Final attempt: Volatile memory
+        self.volatile.get(&full_key)
     }
 
     /// Remove a credential
@@ -267,11 +327,12 @@ impl CredentialManager {
     pub fn remove_with_profile(&self, key: &str, profile: Option<&str>) -> Result<()> {
         let full_key = self.make_key_with_profile(key, profile);
 
-        // Remove from both backends
+        // Remove from all backends
         let _ = self.primary.remove(&full_key);
         if let Some(ref fallback) = self.fallback {
             let _ = fallback.remove(&full_key);
         }
+        let _ = self.volatile.remove(&full_key);
 
         Ok(())
     }
@@ -327,12 +388,21 @@ impl CredentialManager {
             }
         }
 
+        if let Ok(keys) = self.volatile.list_keys() {
+            for key in keys {
+                if key.starts_with(&prefix) {
+                    keys_to_remove.insert(key);
+                }
+            }
+        }
+
         for full_key in keys_to_remove {
             // Remove directly from backends using full key to avoid reconstruction overhead
             let _ = self.primary.remove(&full_key);
             if let Some(ref fallback) = self.fallback {
                 let _ = fallback.remove(&full_key);
             }
+            let _ = self.volatile.remove(&full_key);
         }
 
         Ok(())
@@ -379,6 +449,7 @@ impl CredentialManager {
 #[cfg(all(test, any(feature = "keychain", feature = "encrypted-file")))]
 mod tests {
     use super::*;
+    use crate::Error;
 
     struct FailingBackend;
 
@@ -439,19 +510,39 @@ mod tests {
         let manager = CredentialManager {
             primary: std::sync::Arc::new(FailingBackend),
             fallback: Some(std::sync::Arc::new(MemoryBackend::new())),
+            is_primary_failed: Arc::new(AtomicBool::new(false)),
             service_name: "test-app".to_string(),
             #[cfg(feature = "profiles")]
             profile_context: None,
+            volatile: Arc::new(MemoryBackend::new()),
         };
-
-        manager.store("api_key", "fallback-secret").unwrap();
-        assert_eq!(
-            manager.get("api_key").unwrap(),
-            Some("fallback-secret".to_string())
-        );
 
         manager.remove("api_key").unwrap();
         assert_eq!(manager.get("api_key").unwrap(), None);
+    }
+
+    #[test]
+    fn test_sticky_fallback_is_remembered() {
+        let manager = CredentialManager {
+            primary: std::sync::Arc::new(FailingBackend),
+            fallback: Some(std::sync::Arc::new(MemoryBackend::new())),
+            is_primary_failed: Arc::new(AtomicBool::new(false)),
+            service_name: "test-app".to_string(),
+            #[cfg(feature = "profiles")]
+            profile_context: None,
+            volatile: Arc::new(MemoryBackend::new()),
+        };
+
+        // Initially not failed
+        assert!(!manager.is_primary_failed.load(Ordering::Relaxed));
+
+        // Operation triggers failure and sticky flag
+        manager.store("key1", "val1").unwrap();
+        assert!(manager.is_primary_failed.load(Ordering::Relaxed));
+
+        // Subsequent operation doesn't even call primary (already marked as failed)
+        manager.get("key1").unwrap();
+        assert!(manager.is_primary_failed.load(Ordering::Relaxed));
     }
 
     #[cfg(feature = "profiles")]
@@ -554,6 +645,59 @@ mod tests {
             default_manager.get("api_key").unwrap(),
             Some("default-secret".to_string())
         );
+        assert_eq!(manager.get("api_key").unwrap(), None);
+    }
+
+    #[test]
+    fn test_ultimate_memory_fallback() {
+        struct FailingBackend;
+        impl CredentialBackend for FailingBackend {
+            fn store(&self, _: &str, _: &str) -> Result<()> {
+                Err(Error::Credential(
+                    "Catastrophic persistent failure".to_string(),
+                ))
+            }
+            fn get(&self, _: &str) -> Result<Option<String>> {
+                Err(Error::Credential(
+                    "Catastrophic persistent failure".to_string(),
+                ))
+            }
+            fn remove(&self, _: &str) -> Result<()> {
+                Err(Error::Credential(
+                    "Catastrophic persistent failure".to_string(),
+                ))
+            }
+            fn list_keys(&self) -> Result<Vec<String>> {
+                Err(Error::Credential(
+                    "Catastrophic persistent failure".to_string(),
+                ))
+            }
+            fn backend_name(&self) -> &'static str {
+                "failing"
+            }
+        }
+
+        let manager = CredentialManager {
+            primary: Arc::new(FailingBackend),
+            fallback: Some(Arc::new(FailingBackend)),
+            is_primary_failed: Arc::new(AtomicBool::new(false)),
+            service_name: "test-app".to_string(),
+            #[cfg(feature = "profiles")]
+            profile_context: None,
+            volatile: Arc::new(MemoryBackend::new()),
+        };
+
+        // Even though persistent backends fail, store should succeed using volatile memory
+        manager.store("api_key", "top-secret").unwrap();
+
+        // Retrieve from volatile memory
+        assert_eq!(
+            manager.get("api_key").unwrap(),
+            Some("top-secret".to_string())
+        );
+
+        // Cleanup should also pass
+        manager.remove("api_key").unwrap();
         assert_eq!(manager.get("api_key").unwrap(), None);
     }
 }

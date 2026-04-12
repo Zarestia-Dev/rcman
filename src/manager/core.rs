@@ -137,13 +137,16 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
             CredentialConfig::WithFallback {
                 fallback_path,
-                encryption_key,
+                password,
             } => {
                 info!("Credential management enabled with keychain and encrypted file fallback");
+                let path = fallback_path
+                    .clone()
+                    .unwrap_or_else(|| config.config_dir.join("secrets.enc"));
                 Some(CredentialManager::with_fallback(
                     &config.app_name,
-                    fallback_path.clone(),
-                    encryption_key,
+                    path,
+                    password,
                 ))
             }
             CredentialConfig::Custom(backend) => {

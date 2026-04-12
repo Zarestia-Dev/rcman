@@ -27,7 +27,7 @@ impl<T> RwLockExt<T> for RwLock<T> {
         match self.read() {
             Ok(guard) => Ok(guard),
             Err(poisoned) => {
-                log::warn!("RwLock was poisoned (read), recovering");
+                log::error!("RwLock was poisoned (read), recovering; state may be inconsistent");
                 Ok(poisoned.into_inner())
             }
         }
@@ -37,7 +37,7 @@ impl<T> RwLockExt<T> for RwLock<T> {
         match self.write() {
             Ok(guard) => Ok(guard),
             Err(poisoned) => {
-                log::warn!("RwLock was poisoned (write), recovering");
+                log::error!("RwLock was poisoned (write), recovering; state may be inconsistent");
                 Ok(poisoned.into_inner())
             }
         }

@@ -18,14 +18,14 @@ pub enum CredentialConfig {
     Disabled,
     /// Use the default backend (Keychain if enabled, otherwise Memory)
     Default,
-    /// Use Keychain with an `EncryptedFile` fallback (requires password/key for encryption)
+    /// Use Keychain with an `EncryptedFile` fallback (requires password source for encryption)
     /// This is useful for environments where the OS keychain might be unavailable (e.g., CI/Docker).
     #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
     WithFallback {
-        /// Path to the encrypted JSON file
-        fallback_path: std::path::PathBuf,
-        /// 32-byte encryption key (derive from password using `EncryptedFileBackend::derive_key`)
-        encryption_key: [u8; 32],
+        /// Path to the encrypted JSON file (None = use default in `config_dir`)
+        fallback_path: Option<std::path::PathBuf>,
+        /// Source for the master password to unlock the file
+        password: crate::credentials::SecretPasswordSource,
     },
     /// Provide a custom backend implementation
     Custom(Arc<dyn CredentialBackend>),
@@ -38,10 +38,13 @@ impl std::fmt::Debug for CredentialConfig {
             Self::Disabled => write!(f, "Disabled"),
             Self::Default => write!(f, "Default"),
             #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
-            Self::WithFallback { fallback_path, .. } => f
+            Self::WithFallback {
+                fallback_path,
+                password,
+            } => f
                 .debug_struct("WithFallback")
                 .field("fallback_path", fallback_path)
-                .field("encryption_key", &"<REDACTED>")
+                .field("password", password)
                 .finish(),
             Self::Custom(_) => f
                 .debug_tuple("Custom")
@@ -424,18 +427,133 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     ///
     /// # Example
     /// ```rust,ignore
-    /// use rcman::{SettingsConfig, CredentialConfig};
+    /// use rcman::{SettingsConfig, CredentialConfig, SecretPasswordSource};
     ///
     /// let config = SettingsConfig::builder("my-app", "1.0.0")
     ///     .with_credential_config(CredentialConfig::WithFallback {
     ///         fallback_path: "/tmp/secrets.enc.json".into(),
-    ///         encryption_key: [0u8; 32], // Use a derived key in reality
+    ///         password: SecretPasswordSource::Environment("APP_KEY".into()),
     ///     })
     ///     .build();
     /// ```
     #[must_use]
     pub fn with_credential_config(mut self, config: CredentialConfig) -> Self {
         self.options.security.credential_config = config;
+        self
+    }
+
+    /// Enable credential management with an encrypted file fallback triggered by a password source.
+    ///
+    /// This is the recommended way to support CI/Docker environments securely.
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    #[must_use]
+    pub fn with_encrypted_fallback(
+        mut self,
+        path: impl Into<std::path::PathBuf>,
+        password_source: crate::credentials::SecretPasswordSource,
+    ) -> Self {
+        self.options.security.credential_config = CredentialConfig::WithFallback {
+            fallback_path: Some(path.into()),
+            password: password_source,
+        };
+        self
+    }
+
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    #[must_use]
+    pub fn with_env_credentials(mut self) -> Self {
+        let base_name = self.app_name.to_uppercase().replace(['-', '.'], "_");
+        let secret_var = format!("{}_SECRET", base_name);
+        let path_var = format!("{}_SECRET_PATH", base_name);
+        let secret_file_var = format!("{}_SECRET_FILE", base_name);
+
+        let secret_env_is_set = std::env::var(&secret_var).is_ok_and(|v| !v.is_empty());
+
+        // If secret-file variable is set, use it as password file source.
+        if let Ok(secret_file) = std::env::var(&secret_file_var)
+            && !secret_file.is_empty()
+        {
+            self.options.security.credential_config = CredentialConfig::WithFallback {
+                fallback_path: None,
+                password: crate::credentials::SecretPasswordSource::File(std::path::PathBuf::from(
+                    secret_file,
+                )),
+            };
+            return self;
+        }
+
+        // If path variable is set, prefer explicit master password env for backward compatibility.
+        if let Ok(path) = std::env::var(&path_var)
+            && !path.is_empty()
+        {
+            let path_buf = std::path::PathBuf::from(path);
+
+            if secret_env_is_set {
+                self.options.security.credential_config = CredentialConfig::WithFallback {
+                    fallback_path: Some(path_buf),
+                    password: crate::credentials::SecretPasswordSource::Environment(secret_var),
+                };
+                return self;
+            }
+
+            // Container convenience: if *_SECRET_PATH points to an existing file and
+            // *_SECRET is not set, treat it as password file source.
+            if path_buf.is_file() {
+                self.options.security.credential_config = CredentialConfig::WithFallback {
+                    fallback_path: None,
+                    password: crate::credentials::SecretPasswordSource::File(path_buf),
+                };
+                return self;
+            }
+
+            // Keep legacy behavior when path doesn't exist yet: use it as fallback file path.
+            self.options.security.credential_config = CredentialConfig::WithFallback {
+                fallback_path: Some(path_buf),
+                password: crate::credentials::SecretPasswordSource::Environment(secret_var),
+            };
+            return self;
+        }
+
+        // Default behavior: use smart derived secret var and default path
+        self.with_custom_env_credentials(secret_var)
+    }
+
+    /// Enable credentials with a custom environment variable password source (Keychain + Encrypted File fallback).
+    ///
+    /// The fallback file will be stored at the default path in the config directory.
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    #[must_use]
+    pub fn with_custom_env_credentials(mut self, var_name: impl Into<String>) -> Self {
+        self.options.security.credential_config = CredentialConfig::WithFallback {
+            fallback_path: None,
+            password: crate::credentials::SecretPasswordSource::Environment(var_name.into()),
+        };
+        self
+    }
+
+    /// Enable credentials with file password source (Keychain + Encrypted File fallback).
+    ///
+    /// The fallback file will be stored at the default path in the config directory.
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    #[must_use]
+    pub fn with_file_credentials(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.options.security.credential_config = CredentialConfig::WithFallback {
+            fallback_path: None,
+            password: crate::credentials::SecretPasswordSource::File(path.into()),
+        };
+        self
+    }
+
+    /// Enable credentials with provided password string (Keychain + Encrypted File fallback).
+    ///
+    /// The fallback file will be stored at the default path in the config directory.
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    #[must_use]
+    pub fn with_password_credentials(mut self, password: impl Into<String>) -> Self {
+        self.options.security.credential_config = CredentialConfig::WithFallback {
+            fallback_path: None,
+            password: crate::credentials::SecretPasswordSource::Provided(password.into()),
+        };
         self
     }
 
@@ -693,13 +811,30 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             .settings_file
             .unwrap_or_else(|| format!("settings.{}", storage.extension()));
 
+        #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+        let mut credential_config = self.options.security.credential_config;
+        #[cfg(not(all(feature = "keychain", feature = "encrypted-file")))]
+        let credential_config = self.options.security.credential_config;
+
+        #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+        {
+            if let CredentialConfig::WithFallback {
+                ref mut fallback_path,
+                ..
+            } = credential_config
+                && fallback_path.is_none()
+            {
+                *fallback_path = Some(config_dir.join("secrets.enc"));
+            }
+        }
+
         SettingsConfig {
             config_dir,
             settings_file,
             app_name: self.app_name,
             app_version: self.app_version,
             storage,
-            credential_config: self.options.security.credential_config,
+            credential_config,
             env_prefix: self.env_prefix,
             env_overrides_secrets: self.options.security.env_overrides_secrets,
             #[cfg(feature = "backup")]
@@ -741,5 +876,79 @@ mod tests {
 
         assert_eq!(config.config_dir, PathBuf::from("/tmp/my-app"));
         assert_eq!(config.settings_file, "config.json");
+    }
+
+    #[test]
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    fn test_builder_credentials_auto_path() {
+        let config = SettingsConfig::builder("my-app", "1.0.0")
+            .with_config_dir("/tmp/my-app")
+            .with_custom_env_credentials("MYAPP_KEY")
+            .build();
+
+        if let CredentialConfig::WithFallback {
+            fallback_path,
+            password,
+        } = config.credential_config
+        {
+            assert_eq!(
+                fallback_path,
+                Some(PathBuf::from("/tmp/my-app/secrets.enc"))
+            );
+            assert_eq!(
+                password,
+                crate::credentials::SecretPasswordSource::Environment("MYAPP_KEY".into())
+            );
+        } else {
+            panic!("Expected CredentialConfig::WithFallback");
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    fn test_builder_credentials_default_name() {
+        let config = SettingsConfig::builder("my-app", "1.0.0")
+            .with_env_credentials()
+            .build();
+
+        if let CredentialConfig::WithFallback { password, .. } = config.credential_config {
+            assert_eq!(
+                password,
+                crate::credentials::SecretPasswordSource::Environment("MY_APP_SECRET".to_string())
+            );
+        } else {
+            panic!("Expected CredentialConfig::WithFallback");
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    fn test_builder_credentials_automated_path() {
+        unsafe {
+            std::env::set_var("MY_APP_SECRET_PATH", "/tmp/mystic_path.enc");
+        }
+        let config = SettingsConfig::builder("my-app", "1.0.0")
+            .with_env_credentials()
+            .build();
+
+        if let CredentialConfig::WithFallback {
+            fallback_path,
+            password,
+        } = config.credential_config
+        {
+            assert_eq!(
+                fallback_path,
+                Some(std::path::PathBuf::from("/tmp/mystic_path.enc"))
+            );
+            assert_eq!(
+                password,
+                crate::credentials::SecretPasswordSource::Environment("MY_APP_SECRET".to_string())
+            );
+        } else {
+            panic!("Expected CredentialConfig::WithFallback");
+        }
+        unsafe {
+            std::env::remove_var("MY_APP_SECRET_PATH");
+        }
     }
 }

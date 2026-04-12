@@ -1,6 +1,5 @@
-//! Credential types
-
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Where to store secret values
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,4 +37,37 @@ pub enum SecretBackupPolicy {
     /// Secrets will be included in plaintext if backup is not encrypted.
     /// Use with caution.
     Include,
+}
+
+/// Source for the master password used to unlock encrypted credential files
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretPasswordSource {
+    /// Read password from an environment variable
+    Environment(String),
+    /// Read password from a file (e.g. Docker secrets /run/secrets/...)
+    File(PathBuf),
+    /// Provided directly by the application at runtime (e.g. from UI)
+    Provided(String),
+}
+
+impl SecretPasswordSource {
+    /// Resolve the password string from the configured source
+    ///
+    /// # Errors
+    /// Returns error if environment variable is missing or file cannot be read.
+    pub fn resolve(&self) -> crate::Result<String> {
+        match self {
+            Self::Environment(var) => std::env::var(var).map_err(|_| {
+                crate::Error::Credential(format!("Environment variable '{var}' not found"))
+            }),
+            Self::File(path) => std::fs::read_to_string(path)
+                .map(|s| s.trim().to_string())
+                .map_err(|e| crate::Error::FileRead {
+                    path: path.clone(),
+                    source: e,
+                }),
+            Self::Provided(pass) => Ok(pass.clone()),
+        }
+    }
 }

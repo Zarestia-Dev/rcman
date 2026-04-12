@@ -508,28 +508,51 @@ let backends_config = SubSettingsConfig::singlefile("backends")
 
 ### 4. Secret Settings (Automatic Keychain Storage)
 
-Settings marked with `.secret()` are automatically stored in the OS keychain:
+Settings marked with `.secret()` are automatically stored in the most secure backend available on the platform:
 
 ```rust
-// In schema
+// 1. In your schema
 "api.key" => SettingMetadata::text("")
     .meta_str("label", "API Key")
     .meta_str("input_type", "password")
     .secret(),
 
-// Usage - automatically routes to keychain!
+// 2. Configure the manager with zero boilerplate!
+let manager = SettingsManager::builder("my-app", "1.0.0")
+    .with_env_credentials() // Resolve MY_APP_SECRET and MY_APP_SECRET_PATH
+    .build()?;
+
+// 3. Usage - automatically routes to secure storage!
 manager.save_setting("api", "key", &json!("sk-123"))?;
-// → Stored in OS keychain, NOT in settings.json
+// → Stored in OS keychain or encrypted file
+// → Default fallback path: config_dir/secrets.enc
+// → Custom fallback path: From MY_APP_SECRET_PATH
 ```
 
-**Backends:**
+#### Three-Tier Security Hierarchy
 
-- macOS: Keychain
-- iOS: Keychain (via keyring apple-native)
-- Windows: Credential Manager
-- Linux: Secret Service (via libsecret)
-- Android: native credential store via keyring-core/android-native-keyring-store
-- **Fallback:** Encrypted file with Argon2id + AES-256-GCM
+rcman implements a cascading fallback system to guarantee that secret operations never fail:
+
+| Tier | Backend | Persistence | Use Case |
+| :--- | :--- | :--- | :--- |
+| **1. Primary** | **OS Keychain** | ✅ Yes | Desktop/Mobile apps with native keyring support. |
+| **2. Fallback** | **Encrypted File** | ✅ Yes | Headless servers, Docker, or limited permission environments. |
+| **3. Emergency** | **Volatile Memory**| ❌ No | Extreme cases where all persistent storage is unavailable. |
+
+**Sticky Fallback:** If the Primary backend fails (e.g., "locked keychain" or "missing dbus" on Linux), the manager permanently switches to the Fallback tier for the remainder of the session to avoid repeated platform timeouts.
+
+#### Platform Support
+- **macOS/iOS**: Apple Keychain
+- **Windows**: Credential Manager
+- **Linux**: Secret Service (libsecret/KWallet)
+- **Android**: Biometric/Keystore integration
+- **Cross-Platform Fallback**: AES-256-GCM (Argon2id KDF)
+
+#### Master Password Resolution (`SecretPasswordSource`)
+The secondary "Encrypted File" tier requires a master password. To avoid hardcoding, you can resolve it at runtime:
+- `SecretPasswordSource::Env("VAR_NAME")`: Load from an environment variable.
+- `SecretPasswordSource::File(path)`: Read from a secure file (e.g., a Docker secret).
+- `SecretPasswordSource::Provided(string)`: Manually provided by the user.
 
 ---
 

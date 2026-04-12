@@ -4,18 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.1.7] - 2026-04-12
+
 ### Added
-- mobile platform support (Android/iOS) with secure credential storage via `keyring-core` and `apple-native` backends, plus encrypted file fallback for unsupported targets.
+- **Major Security Overhaul: Secure Runtime Credentials**
+    - High-level **Developer Friendly API**: Added intent-based methods (`with_env_credentials`, `with_file_credentials`, `with_password_credentials`) to the builder for easier configuration.
+    - Automatic **Fallback Path Management**: Fallback encrypted files are now automatically placed in the app's config directory if no path is provided.
+    - Replaced build-time hardcoded keys with a runtime-resolved `SecretPasswordSource` (Environment, File, or Provided).
+    - Implemented a **Three-Tier Security Hierarchy**:
+        1. **OS Keychain**: Native persistent storage (Primary).
+        2. **Encrypted File**: Argon2id + AES-256-GCM persistent storage (Fallback).
+        3. **Volatile Memory**: Emergency non-persistent storage (Emergency).
+    - **Sticky Fallback Mechanism**: Automatically and permanently switches to the fallback backend if the platform keychain is unavailable (e.g., in Docker/Headless), significantly improving performance by avoiding repeated platform timeouts.
+    - **Security Diagnostics**: Added `is_primary_failed()` and `is_volatile_active()` getters to `CredentialManager` for app health monitoring.
+    - **GUI Demo Enhancements**: Added an interactive "Security Configuration" panel to visualize resolution and fallback status in real-time.
+- mobile platform support (Android/iOS) with secure credential storage via `keyring-core` and `apple-native` backends.
 - **Type-Safe Setting Accessors via Derive Macro**
-    - `#[derive(DeriveSettingsSchema)]` now generates typed snapshot accessors (for example `ui_theme()` and `set_ui_theme(...)`) for non-nested fields.
-    - Derive now also generates schema-specific manager extension traits (`<SchemaName>ManagerAccessors`) so `SettingsManager` can use typed getter/setter methods without string keys.
-    - Existing string-key API (`get("category.key")` / `save_setting(...)`) remains fully supported for backward compatibility.
+    - `#[derive(DeriveSettingsSchema)]` now generates typed snapshot accessors (for example `ui_theme()` and `set_ui_theme(...)`).
+    - Derive now generates schema-specific manager extension traits (`<SchemaName>ManagerAccessors`) for type-safe manager interactions.
+- Added `with_encrypted_fallback` and `with_credentials_source` builder methods for easier configuration.
 - **Feature-Gated Hot Reload (MVP)**
     - New optional `hot-reload` feature flag with watcher runtime support based on `notify`.
-    - Added `HotReloadConfig` and `HotReloadBackend` (`Auto` / `Poll`) plus builder opt-ins (`with_hot_reload`, `with_hot_reload_config`).
-    - Added `HotReloadRuntime` and `HotReloadEvent` exports, with main settings file watching, debounce, cache refresh, and start/stop lifecycle.
-    - Hot reload scope is intentionally limited to the main settings file; sub-settings categories are not watched.
+    - Added `HotReloadConfig` and `HotReloadBackend` (`Auto` / `Poll`).
+    - Added `HotReloadRuntime` and `HotReloadEvent` exports.
 
 ## [v0.1.6] - 2026-03-08
 

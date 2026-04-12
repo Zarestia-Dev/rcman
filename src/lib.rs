@@ -285,9 +285,9 @@ mod credentials;
 
 /// Core configuration types and traits for settings management.
 pub use config::{
-    DefaultEnvSource, EnvSource, NumberConstraints, SettingConstraints, SettingMetadata,
-    SettingOption, SettingType, SettingsConfig, SettingsConfigBuilder, SettingsSchema,
-    TextConstraints, meta, opt,
+    CredentialConfig, DefaultEnvSource, EnvSource, NumberConstraints, SettingConstraints,
+    SettingMetadata, SettingOption, SettingType, SettingsConfig, SettingsConfigBuilder,
+    SettingsSchema, TextConstraints, meta, opt,
 };
 
 #[cfg(feature = "hot-reload")]
@@ -366,7 +366,9 @@ pub use profiles::{
 // -----------------------------------------------------------------------------
 
 /// Credential storage backend trait and types.
-pub use credentials::{CredentialBackend, MemoryBackend, SecretBackupPolicy, SecretStorage};
+pub use credentials::{
+    CredentialBackend, MemoryBackend, SecretBackupPolicy, SecretPasswordSource, SecretStorage,
+};
 
 /// Keychain backend (requires `keychain` feature).
 #[cfg(feature = "keychain")]

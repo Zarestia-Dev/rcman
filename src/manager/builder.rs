@@ -99,6 +99,41 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         self
     }
 
+    /// Enable credentials with a default environment variable password source (Keychain + Encrypted File fallback).
+    ///
+    /// The environment variable name is automatically derived from the app name
+    /// (e.g., "my-app" -> "`MY_APP_SECRET`").
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    #[must_use]
+    pub fn with_env_credentials(mut self) -> Self {
+        self.config_builder = self.config_builder.with_env_credentials();
+        self
+    }
+
+    /// Enable credentials with a custom environment variable password source (Keychain + Encrypted File fallback).
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    #[must_use]
+    pub fn with_custom_env_credentials(mut self, var_name: impl Into<String>) -> Self {
+        self.config_builder = self.config_builder.with_custom_env_credentials(var_name);
+        self
+    }
+
+    /// Enable credentials with file password source (Keychain + Encrypted File fallback).
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    #[must_use]
+    pub fn with_file_credentials(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.config_builder = self.config_builder.with_file_credentials(path);
+        self
+    }
+
+    /// Enable credentials with provided password string (Keychain + Encrypted File fallback).
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    #[must_use]
+    pub fn with_password_credentials(mut self, password: impl Into<String>) -> Self {
+        self.config_builder = self.config_builder.with_password_credentials(password);
+        self
+    }
+
     /// Enable environment variable overrides.
     ///
     /// When set, settings can be overridden by environment variables.

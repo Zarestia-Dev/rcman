@@ -12,7 +12,7 @@ use crate::manager::SettingsManager;
 use crate::storage::StorageBackend;
 use crate::utils::sync::RwLockExt;
 use crate::{BackupOptions, ExportType};
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::fs;
 use std::path::{Path, PathBuf};
 use time::{OffsetDateTime, macros::format_description};
@@ -856,7 +856,10 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             }
 
             if !seen_config_ids.insert(config.id.clone()) {
-                debug!("Skipping duplicate external config id: {}", config.id);
+                warn!(
+                    "Skipping duplicate external config id: {} (keeping first occurrence)",
+                    config.id
+                );
                 continue;
             }
 
