@@ -372,6 +372,7 @@ impl DemoApp {
 
         #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
         {
+            use rcman::SecretPasswordSource;
             let fallback_path = std::path::PathBuf::from("./example_config/credentials.enc.json");
 
             // Check for environment variable
@@ -803,6 +804,7 @@ impl DemoApp {
 
         #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
         {
+            use rcman::SecretPasswordSource;
             let fallback_path = std::path::PathBuf::from("./example_config/credentials.enc.json");
             let source = match self.security.source_type {
                 PasswordSourceType::Environment => {

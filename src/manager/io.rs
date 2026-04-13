@@ -176,26 +176,20 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let path = self.settings_path()?;
         let full_key = format!("{category}.{key}");
 
-        // Validate the value before saving
+        // Run user-registered validators
         self.events
             .validate(&full_key, value)
             .map_err(|msg| Error::InvalidSettingValue {
-                key: key.to_string(),
+                key: full_key.clone(),
                 reason: msg,
             })?;
 
-        // Get metadata for this schema (needed for secret checking and validation)
-        // Note: For performance-critical apps with many settings, consider implementing
-        // a caching layer in your SettingsSchema implementation
         let metadata = &self.schema_metadata;
 
-        // Handle secret settings separately
+        // Route secret settings to the credential backend
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        if let Some(setting_metadata) = metadata
-            .get(&full_key)
-            .filter(|setting_metadata| setting_metadata.is_secret())
-        {
-            self.save_secret_setting(&full_key, value, setting_metadata)?;
+        if let Some(setting_meta) = metadata.get(&full_key).filter(|m| m.is_secret()) {
+            self.save_secret_setting(&full_key, value, setting_meta)?;
             return Ok(());
         }
 
@@ -204,7 +198,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .lock()
             .map_err(|_| Error::Config("Settings write lock poisoned".into()))?;
 
-        // Load current settings from cache or disk
         self.ensure_cache_populated()?;
 
         let mut stored = self
@@ -212,77 +205,64 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .get_stored()?
             .unwrap_or_else(|| json!({}));
 
-        // Get default value from metadata
-        let metadata_key = format!("{category}.{key}");
-        let validator = metadata.get(&metadata_key);
+        // Validate against schema and get metadata
+        let setting_meta = metadata
+            .get(&full_key)
+            .ok_or_else(|| Error::SettingNotFound(full_key.clone()))?;
 
-        // Ensure setting exists in schema
-        if validator.is_none() {
-            return Err(Error::SettingNotFound(format!("{category}.{key}")));
-        }
-
-        let default_value = validator.map_or(Value::Null, |m| m.default.clone());
-
-        // Validate value
-        if let Some(m) = validator
-            && let Err(e) = m.validate(value)
-        {
+        if let Err(e) = setting_meta.validate(value) {
             return Err(Error::Config(format!(
-                "Validation failed for {category}.{key}: {e}"
+                "Validation failed for {full_key}: {e}"
             )));
         }
 
-        // Get old value for change notification
+        let default_value = setting_meta.default.clone();
+
         let old_value = stored
             .get(category)
             .and_then(|cat| cat.get(key))
             .cloned()
             .unwrap_or_else(|| default_value.clone());
 
-        // Skip if value unchanged
         if old_value == *value {
-            debug!("Setting {category}.{key} unchanged, skipping save");
+            debug!("Setting {full_key} unchanged, skipping save");
             return Ok(());
         }
 
-        // Ensure stored is an object
         let stored_obj = stored
             .as_object_mut()
             .ok_or_else(|| Error::Parse("Settings root is not an object".into()))?;
 
-        // Ensure category exists
-        if !stored_obj.contains_key(category) {
-            stored_obj.insert(category.to_string(), json!({}));
-        }
+        {
+            let category_obj = stored_obj
+                .entry(category.to_string())
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .ok_or_else(|| Error::Parse(format!("Category {category} is not an object")))?;
 
-        let category_obj = stored_obj
-            .get_mut(category)
-            .and_then(|v| v.as_object_mut())
-            .ok_or_else(|| Error::Parse(format!("Category {category} is not an object")))?;
-
-        // If value equals default, remove it (keep settings file minimal)
-        if *value == default_value {
-            category_obj.remove(key);
-            debug!("Setting {category}.{key} set to default, removed from store");
-        } else {
-            category_obj.insert(key.to_string(), value.clone());
-            debug!("Saved setting {category}.{key}");
-        }
+            // If value equals default, remove it to keep the file minimal
+            if *value == default_value {
+                category_obj.remove(key);
+                debug!("Setting {full_key} set to default, removed from store");
+            } else {
+                category_obj.insert(key.to_string(), value.clone());
+                debug!("Saved setting {full_key}");
+            }
+        } // category_obj borrow ends
 
         // Remove empty categories
-        if category_obj.is_empty() {
+        if stored_obj
+            .get(category)
+            .and_then(|v| v.as_object())
+            .is_some_and(serde_json::Map::is_empty)
+        {
             stored_obj.remove(category);
         }
 
-        // Save to file
         self.storage.write(&path, &stored)?;
-
-        // Update cache
         self.settings_cache.update_stored(stored)?;
 
-        info!("Setting {category}.{key} saved");
-
-        // Notify change listeners
+        info!("Setting {full_key} saved");
         self.events.notify(&full_key, &old_value, value);
 
         Ok(())
@@ -394,7 +374,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     /// Load settings from disk, applying migrations if needed
     pub(crate) fn load_from_disk(&self) -> Result<CachedSettings> {
-        // Read from file
         let settings_path = self.settings_path()?;
         let mut value: Value = match self.storage.read(&settings_path) {
             Ok(v) => v,

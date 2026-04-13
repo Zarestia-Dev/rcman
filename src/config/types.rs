@@ -463,9 +463,9 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[must_use]
     pub fn with_env_credentials(mut self) -> Self {
         let base_name = self.app_name.to_uppercase().replace(['-', '.'], "_");
-        let secret_var = format!("{}_SECRET", base_name);
-        let path_var = format!("{}_SECRET_PATH", base_name);
-        let secret_file_var = format!("{}_SECRET_FILE", base_name);
+        let secret_var = format!("{base_name}_SECRET");
+        let path_var = format!("{base_name}_SECRET_PATH");
+        let secret_file_var = format!("{base_name}_SECRET_FILE");
 
         let secret_env_is_set = std::env::var(&secret_var).is_ok_and(|v| !v.is_empty());
 
