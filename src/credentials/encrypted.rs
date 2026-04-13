@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 /// Encrypted credential entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,7 +46,19 @@ pub struct EncryptedFileBackend {
     cipher: Aes256Gcm,
     /// Salt used for key derivation (stored in file for decryption on restart)
     salt: [u8; 16],
+    /// Plaintext read-cache.
+    ///
+    /// Populated lazily on `get()` and kept in sync on `store()`/`remove()`.
     cache: RwLock<HashMap<String, String>>,
+    /// Serializes all mutations to the encrypted file.
+    ///
+    /// BUG FIX: without this lock, two concurrent `store()` / `remove()` calls
+    /// both read the file into separate in-memory copies, modify their own copy,
+    /// and write back.  The second write silently drops the first writer's change.
+    /// Holding this mutex across the entire read-modify-write cycle prevents the
+    /// TOCTOU race.  The read cache (`self.cache`) is updated while the mutex is
+    /// still held, so cache and disk are always consistent.
+    write_lock: Mutex<()>,
 }
 
 impl EncryptedFileBackend {
@@ -66,6 +78,7 @@ impl EncryptedFileBackend {
                 .map_err(|_| Error::Credential("Invalid encryption key length".into()))?,
             salt,
             cache: RwLock::new(HashMap::new()),
+            write_lock: Mutex::new(()),
         })
     }
 
@@ -311,20 +324,27 @@ impl EncryptedFileBackend {
 
 impl CredentialBackend for EncryptedFileBackend {
     fn store(&self, key: &str, value: &str) -> Result<()> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| Error::Credential("Encrypted file write lock poisoned".into()))?;
+
         let mut store = self.load_store()?;
         let encrypted = self.encrypt(value)?;
         store.entries.insert(key.to_string(), encrypted);
         self.save_store(store.entries)?;
 
-        let mut cache = self.cache.write_recovered()?;
-        cache.insert(key.to_string(), value.to_string());
+        // Update cache while write_lock is held so cache and disk are always consistent.
+        self.cache
+            .write_recovered()?
+            .insert(key.to_string(), value.to_string());
 
         debug!("Credential stored in encrypted file: {key}");
         Ok(())
     }
 
     fn get(&self, key: &str) -> Result<Option<String>> {
-        // Check cache first
+        // Check cache first (no write_lock needed for reads)
         {
             let cache = self.cache.read_recovered()?;
             if let Some(value) = cache.get(key) {
@@ -349,6 +369,11 @@ impl CredentialBackend for EncryptedFileBackend {
     }
 
     fn remove(&self, key: &str) -> Result<()> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| Error::Credential("Encrypted file write lock poisoned".into()))?;
+
         let mut store = self.load_store()?;
         store.entries.remove(key);
         self.save_store(store.entries)?;
@@ -458,5 +483,29 @@ mod tests {
         let salt2 = EncryptedFileBackend::generate_salt();
         let key4 = EncryptedFileBackend::derive_key("password123", &salt2).unwrap();
         assert_ne!(key1, key4);
+    }
+
+    /// Regression test for the concurrent write TOCTOU bug.
+    /// Two threads writing different keys must both survive.
+    #[test]
+    fn test_concurrent_store_no_lost_writes() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("credentials.enc.json");
+        let backend = Arc::new(EncryptedFileBackend::with_password(path, "password").unwrap());
+
+        let b1 = Arc::clone(&backend);
+        let b2 = Arc::clone(&backend);
+
+        let t1 = thread::spawn(move || b1.store("key_a", "value_a").unwrap());
+        let t2 = thread::spawn(move || b2.store("key_b", "value_b").unwrap());
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        assert_eq!(backend.get("key_a").unwrap(), Some("value_a".to_string()));
+        assert_eq!(backend.get("key_b").unwrap(), Some("value_b".to_string()));
     }
 }

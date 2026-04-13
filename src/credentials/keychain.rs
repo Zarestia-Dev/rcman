@@ -2,7 +2,6 @@
 
 use super::CredentialBackend;
 use crate::error::{Error, Result};
-// Removed: use keyring::use_native_store;
 use keyring_core::{Entry, Error as KeyringError};
 use log::{debug, warn};
 use std::collections::HashSet;
@@ -13,7 +12,7 @@ static NATIVE_STORE_INIT: OnceLock<()> = OnceLock::new();
 /// OS Keychain backend for secure credential storage
 pub struct KeychainBackend {
     service_name: String,
-    /// Cache of known keys (keychain doesn't support listing)
+    /// Cache of known keys (keychain doesn't support listing).
     known_keys: RwLock<HashSet<String>>,
 }
 
@@ -88,6 +87,7 @@ impl CredentialBackend for KeychainBackend {
     fn get(&self, key: &str) -> Result<Option<String>> {
         match self.get_entry(key)?.get_password() {
             Ok(password) => {
+                self.track_key(key);
                 debug!("Credential retrieved from keychain: {key}");
                 Ok(Some(password))
             }

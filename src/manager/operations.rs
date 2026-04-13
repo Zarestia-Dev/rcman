@@ -35,35 +35,38 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         &self,
         key: &str,
         metadata: &SettingMetadata,
-    ) -> Result<Option<Value>> {
+    ) -> Result<Option<(Value, bool)>> {
         // For secrets, check keyring first
         if metadata.is_secret() {
             // Check env var override for secrets if enabled
             if self.config.env_overrides_secrets
                 && let Some(env_value) = self.get_env_override(key)
             {
-                return Ok(Some(env_value));
+                return Ok(Some((env_value, true)));
             }
 
             // Try retrieving from keyring
             if let Ok(Some(secret_value)) = self.get_credential_with_profile(key) {
-                return Ok(Some(Value::String(secret_value)));
+                return Ok(Some((Value::String(secret_value), false)));
             }
 
             // Secret not found, use default
-            return Ok(Some(metadata.default.clone()));
+            return Ok(Some((metadata.default.clone(), false)));
         }
 
         // Not a secret - check cache (with env override support)
         if let Some(env_value) = self.get_env_override(key) {
-            return Ok(Some(env_value));
+            return Ok(Some((env_value, true)));
         }
 
         let Some((category, setting_name)) = Self::parse_setting_key(key) else {
             return Ok(None);
         };
 
-        self.settings_cache.get_value(category, setting_name, key)
+        Ok(self
+            .settings_cache
+            .get_value(category, setting_name, key)?
+            .map(|v| (v, false)))
     }
 
     /// Helper to get a setting value (non-credential version)
@@ -72,18 +75,22 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         &self,
         key: &str,
         _metadata: &SettingMetadata,
-    ) -> Result<Option<Value>> {
+    ) -> Result<Option<(Value, bool)>> {
         // Check env override first
         if let Some(env_value) = self.get_env_override(key) {
-            return Ok(Some(env_value));
+            return Ok(Some((env_value, true)));
         }
 
         let Some((category, setting_name)) = Self::parse_setting_key(key) else {
             return Ok(None);
         };
 
-        self.settings_cache.get_value(category, setting_name, key)
+        Ok(self
+            .settings_cache
+            .get_value(category, setting_name, key)?
+            .map(|v| (v, false)))
     }
+
     /// Check if a setting value is overridden by an environment variable
     ///
     /// Returns the parsed value if env var is set and successfully parsed.
@@ -113,20 +120,24 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         for (key, option) in &mut metadata {
             if Self::parse_setting_key(key).is_some() {
-                // Use the helper method to get value (handles secrets and env overrides)
-                if let Ok(Some(value)) = self.get_value_with_secret_support(key, option) {
-                    option.value = Some(value);
-
-                    // Mark as env-overridden if applicable
-                    if self.get_env_override(key).is_some() {
-                        option
-                            .metadata
-                            .insert("env_override".to_string(), Value::Bool(true));
-                        debug!("Setting {key} overridden by env var");
+                match self.get_value_with_secret_support(key, option) {
+                    Ok(Some((value, env_overridden))) => {
+                        option.value = Some(value);
+                        if env_overridden {
+                            option
+                                .metadata
+                                .insert("env_override".to_string(), Value::Bool(true));
+                            debug!("Setting {key} overridden by env var");
+                        }
                     }
-                } else {
-                    // Fallback to default if helper returns None
-                    option.value = Some(option.default.clone());
+                    Ok(None) => {
+                        // Fallback to default if helper returns None
+                        option.value = Some(option.default.clone());
+                    }
+                    Err(e) => {
+                        debug!("Failed to read value for {key}: {e}");
+                        option.value = Some(option.default.clone());
+                    }
                 }
             }
         }
@@ -189,8 +200,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .get(key)
             .ok_or_else(|| Error::SettingNotFound(format!("{category}.{setting_name}")))?;
 
-        // Use the helper that handles both secrets and regular settings
+        // Use the helper that handles both secrets and regular settings.
         self.get_value_with_secret_support(key, setting_metadata)?
+            .map(|(v, _)| v)
             .ok_or_else(|| Error::SettingNotFound(format!("{category}.{setting_name}")))
     }
 
@@ -374,7 +386,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         for sub_type in sub_types {
             categories.push(ExportCategory {
                 id: sub_type.clone(),
-                name: sub_type.clone(), // Could be enhanced with display names
+                name: sub_type.clone(),
                 category_type: ExportCategoryType::SubSettings,
                 optional: false,
                 description: None,
