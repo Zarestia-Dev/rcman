@@ -209,6 +209,7 @@ fn format_type(t: &SettingType) -> &'static str {
         SettingType::Select => "Select",
         SettingType::Info => "Info (Read-only)",
         SettingType::List => "List (Strings)",
+        SettingType::Object => "Object (JSON)",
     }
 }
 

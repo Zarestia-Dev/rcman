@@ -4,9 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] - 2026-04-18
+
+### Added
+
+- Added native support for `serde_json::Value` fields in `SettingsSchema` macro generation. It creates a new `SettingType::Object` that safely bypasses strict schema validation constraints, allowing developers to embed untyped, dynamic JSON structures directly inside their schemas while automatically resolving to the appropriate table format in storage backends (e.g. TOML/JSON).
+
 ## [v0.1.7] - 2026-04-12
 
 ### Added
+
 - **Major Security Overhaul: Secure Runtime Credentials**
     - High-level **Developer Friendly API**: Added intent-based methods (`with_env_credentials`, `with_file_credentials`, `with_password_credentials`) to the builder for easier configuration.
     - Automatic **Fallback Path Management**: Fallback encrypted files are now automatically placed in the app's config directory if no path is provided.

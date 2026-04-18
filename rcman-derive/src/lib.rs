@@ -595,6 +595,26 @@ fn validate_field_type_constraints(
                 ));
             }
         }
+        TypeInfo::Object => {
+            if attrs.min.is_some() || attrs.max.is_some() || attrs.step.is_some() {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "`min/max/step` are only valid for numeric settings, not objects",
+                ));
+            }
+            if attrs.pattern.is_some() {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "`pattern` is only valid for text settings, not objects",
+                ));
+            }
+            if !attrs.options.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "`options` are only valid for text/number settings, not objects",
+                ));
+            }
+        }
         TypeInfo::Unknown => unreachable!(),
     }
     Ok(())
@@ -970,6 +990,7 @@ enum TypeInfo {
     Path,    // PathBuf
     Number,  // i8, i16, i32, u32, f32, f64, etc.
     List,    // Vec<T>
+    Object,  // serde_json::Value
     Unknown, // Everything else (may be nested struct or std type we don't handle)
 }
 
@@ -998,6 +1019,8 @@ fn classify_type(ty: &Type) -> TypeInfo {
             | "u128" | "usize" | "f32" | "f64" => return TypeInfo::Number,
             // Check for Vec specifically
             "Vec" => return TypeInfo::List,
+            // Check for serde_json::Value
+            "Value" => return TypeInfo::Object,
             // Other std types that are NOT nested structs
             "str" | "char" | "OsString" | "CString" | "Duration" | "Instant" | "SystemTime"
             | "Box" | "Rc" | "Arc" | "Cow" | "VecDeque" | "HashMap" | "HashSet" | "BTreeMap"
@@ -1106,6 +1129,13 @@ fn generate_setting_type(
                         .map(|it| it.to_string())
                         .collect::<Vec<String>>())[..]
                 )
+            }
+        }
+        TypeInfo::Object => {
+            if is_option {
+                quote! { rcman::SettingMetadata::object(defaults.#field_name.clone().unwrap_or_default()) }
+            } else {
+                quote! { rcman::SettingMetadata::object(defaults.#field_name.clone()) }
             }
         }
         TypeInfo::Unknown => {

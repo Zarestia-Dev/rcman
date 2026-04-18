@@ -217,6 +217,8 @@ pub enum SettingType {
     Info,
     /// List of strings
     List,
+    /// Arbitrary JSON Object / Value
+    Object,
 }
 
 // =============================================================================
@@ -419,6 +421,16 @@ impl SettingMetadata {
         }
     }
 
+    /// Create an arbitrary JSON object setting (`serde_json::Value`)
+    #[must_use]
+    pub fn object(default: Value) -> Self {
+        Self {
+            setting_type: SettingType::Object,
+            default,
+            ..Default::default()
+        }
+    }
+
     // =========================================================================
     // Dynamic metadata methods
     // =========================================================================
@@ -575,7 +587,7 @@ impl SettingMetadata {
             SettingType::Text => self.validate_text(value),
             SettingType::Select => self.validate_select(value),
             SettingType::List => self.validate_list(value),
-            SettingType::Info => Ok(()), // Read-only, no validation needed
+            SettingType::Info | SettingType::Object => Ok(()), // Read-only / untyped JSON, no validation needed
         }
     }
 
