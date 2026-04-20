@@ -294,7 +294,7 @@ fn generate_accessor_methods(
         return Ok(None);
     }
 
-    let category = resolve_field_category(field, attrs, container_attrs)?;
+    let category = resolve_field_category(attrs, container_attrs)?;
     let key_name = attrs
         .rename
         .clone()
@@ -455,25 +455,23 @@ fn process_field(
     };
     let field_type = &field.ty;
 
-    // Check if this is a nested struct (not a primitive type)
-    if attrs.nested || is_nested_struct(field_type) {
+    // Check if this is a nested struct.
+    // We auto-detect simple structs, but allow explicit `nested` or explicit `object` override.
+    if !attrs.object && (attrs.nested || is_nested_struct(field_type)) {
         return Ok(generate_nested_field_constructor(field_name, field_type));
     }
 
     let inner_ty = extract_inner_type_from_option(field_type).unwrap_or(field_type);
-    let type_info = classify_type(inner_ty);
+    let mut type_info = classify_type(inner_ty);
 
-    // If it's classified as Unknown and we didn't catch it as a nested struct, it is unsupported
+    // If it's classified as Unknown and we didn't catch it as a nested struct, map it to Object dynamically
     if let TypeInfo::Unknown = type_info {
-        return Err(syn::Error::new_spanned(
-            field_type,
-            "Unsupported type for SettingsSchema. Use `#[setting(skip)]` to ignore it, or `#[setting(nested)]` if it is a custom schema struct.",
-        ));
+        type_info = TypeInfo::Object;
     }
 
     validate_field_type_constraints(field, type_info, attrs)?;
 
-    let category_str = resolve_field_category(field, attrs, container_attrs)?;
+    let category_str = resolve_field_category(attrs, container_attrs)?;
     let final_field_name = attrs
         .rename
         .clone()
@@ -621,21 +619,15 @@ fn validate_field_type_constraints(
 }
 
 fn resolve_field_category(
-    field: &Field,
     attrs: &FieldAttrs,
     container_attrs: &ContainerAttrs,
 ) -> Result<String, syn::Error> {
-    attrs
+    Ok(attrs
         .category
         .as_ref()
         .or(container_attrs.category.as_ref())
         .cloned()
-        .ok_or_else(|| {
-            syn::Error::new_spanned(
-                field,
-                "Category is required. Add #[schema(category = \"name\")] to the struct or #[setting(category = \"name\")] to this field",
-            )
-        })
+        .unwrap_or_default())
 }
 
 fn generate_field_constructor(
@@ -726,6 +718,8 @@ fn parse_single_field_attr(meta: Meta, result: &mut FieldAttrs) -> Result<(), sy
                 result.skip = true;
             } else if path.is_ident("nested") {
                 result.nested = true;
+            } else if path.is_ident("object") {
+                result.object = true;
             }
         }
         Meta::NameValue(nv) => {
@@ -805,6 +799,7 @@ struct FieldAttrs {
     secret: bool,
     skip: bool,
     nested: bool, // Explicit marker for nested structs
+    object: bool, // Explicit marker to treat as a single object (disables auto-nesting)
     rename: Option<String>,
     // Dynamic metadata: any key=value that isn't a known constraint
     metadata_str: Vec<(String, String)>,
@@ -1132,11 +1127,7 @@ fn generate_setting_type(
             }
         }
         TypeInfo::Object => {
-            if is_option {
-                quote! { rcman::SettingMetadata::object(defaults.#field_name.clone().unwrap_or_default()) }
-            } else {
-                quote! { rcman::SettingMetadata::object(defaults.#field_name.clone()) }
-            }
+            quote! { rcman::SettingMetadata::object(rcman::serde_json::json!(&defaults.#field_name)) }
         }
         TypeInfo::Unknown => {
             unreachable!("Unknown types are rejected in process_field")
