@@ -14,6 +14,9 @@ pub struct KeychainBackend {
     service_name: String,
     /// Cache of known keys (keychain doesn't support listing).
     known_keys: RwLock<HashSet<String>>,
+    /// Global lock to serialize keychain access on Linux to prevent zbus panics
+    #[cfg(target_os = "linux")]
+    lock: std::sync::Mutex<()>,
 }
 
 impl KeychainBackend {
@@ -51,6 +54,8 @@ impl KeychainBackend {
         Self {
             service_name: service_name.into(),
             known_keys: RwLock::new(HashSet::new()),
+            #[cfg(target_os = "linux")]
+            lock: std::sync::Mutex::new(()),
         }
     }
 
@@ -75,6 +80,9 @@ impl KeychainBackend {
 
 impl CredentialBackend for KeychainBackend {
     fn store(&self, key: &str, value: &str) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        let _guard = self.lock.lock().map_err(|_| Error::LockPoisoned)?;
+
         self.get_entry(key)?.set_password(value).map_err(|e| {
             Error::Credential(format!("Failed to store credential {key} in keychain: {e}"))
         })?;
@@ -85,6 +93,9 @@ impl CredentialBackend for KeychainBackend {
     }
 
     fn get(&self, key: &str) -> Result<Option<String>> {
+        #[cfg(target_os = "linux")]
+        let _guard = self.lock.lock().map_err(|_| Error::LockPoisoned)?;
+
         match self.get_entry(key)?.get_password() {
             Ok(password) => {
                 self.track_key(key);
@@ -102,6 +113,9 @@ impl CredentialBackend for KeychainBackend {
     }
 
     fn remove(&self, key: &str) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        let _guard = self.lock.lock().map_err(|_| Error::LockPoisoned)?;
+
         match self.get_entry(key)?.delete_credential() {
             Ok(()) => {
                 self.untrack_key(key);
