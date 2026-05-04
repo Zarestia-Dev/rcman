@@ -509,6 +509,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     fn extract_and_store_secrets(&self, entry_name: &str, value: &mut Value) -> Result<()> {
+        const SECRET_MARKER: &str = "__RC_SECRET__";
+
         let Some(schema) = self.config.schema.as_ref() else {
             return Ok(());
         };
@@ -530,14 +532,23 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         let profile = self.active_secret_profile();
 
         for (path, metadata) in secret_fields {
-            let Some(secret_value) = crate::utils::value::remove_path(value, path) else {
+            // Only extract if the value is explicitly provided in the payload 
+            let Some(secret_value) = crate::utils::value::get_path(value, path).cloned() else {
                 continue;
             };
+
+            // If the incoming value is already our marker, it was loaded but not changed, so skip.
+            if let Value::String(s) = &secret_value {
+                if s == SECRET_MARKER {
+                    continue;
+                }
+            }
 
             let credential_key = self.secret_credential_key(entry_name, path);
 
             if secret_value == metadata.default {
                 creds.remove(&credential_key)?;
+                crate::utils::value::remove_path(value, path);
                 continue;
             }
 
@@ -547,6 +558,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             };
 
             creds.store_with_profile(&credential_key, &value_str, profile.as_deref())?;
+            crate::utils::value::set_path(value, path, Value::String(SECRET_MARKER.to_string()));
         }
 
         Ok(())
@@ -559,6 +571,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     fn inject_secrets_from_store(&self, entry_name: &str, value: &mut Value) -> Result<()> {
+        const SECRET_MARKER: &str = "__RC_SECRET__";
+
         // Secret injection only makes sense for object values. Plain scalars (e.g. a
         // string sentinel like `_active`) must pass through untouched; calling
         // `set_path` on a non-object would silently replace the value with `{}`.
@@ -577,44 +591,30 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         let profile = self.active_secret_profile();
 
         for (path, metadata) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
-            let credential_key = self.secret_credential_key(entry_name, path);
-            let secret = creds.get_with_profile(&credential_key, profile.as_deref())?;
-            let resolved = secret.map_or_else(|| metadata.default.clone(), Value::String);
+            let mut fetch_from_keyring = false;
+            
+            // Check if the JSON explicitly claims to have this secret via the marker
+            if let Some(current_value) = crate::utils::value::get_path(value, path) {
+                if let Value::String(s) = current_value {
+                    if s == SECRET_MARKER {
+                        fetch_from_keyring = true;
+                    }
+                }
+            }
+
+            let resolved = if fetch_from_keyring {
+                let credential_key = self.secret_credential_key(entry_name, path);
+                let secret = creds.get_with_profile(&credential_key, profile.as_deref())?;
+                secret.map_or_else(|| metadata.default.clone(), Value::String)
+            } else {
+                // Return whatever is currently in the object, or default if missing
+                crate::utils::value::get_path(value, path).cloned().unwrap_or_else(|| metadata.default.clone())
+            };
+            
             crate::utils::value::set_path(value, path, resolved);
         }
 
         Ok(())
-    }
-
-    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn has_stored_secret_for_entry(&self, entry_name: &str) -> Result<bool> {
-        let Some(schema) = self.config.schema.as_ref() else {
-            return Ok(false);
-        };
-
-        let Some(creds) = self.credential_manager.as_ref() else {
-            return Ok(false);
-        };
-
-        let profile = self.active_secret_profile();
-
-        for (path, metadata) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
-            let credential_key = self.secret_credential_key(entry_name, path);
-            if creds
-                .get_with_profile(&credential_key, profile.as_deref())?
-                .is_some()
-            {
-                let _ = metadata;
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
-    }
-
-    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
-    fn has_stored_secret_for_entry(&self, _entry_name: &str) -> Result<bool> {
-        Ok(false)
     }
 
     #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
@@ -662,19 +662,6 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         // Try to get the entry from the store
         let mut value = match store.get(name) {
             Ok(v) => v,
-            Err(Error::SubSettingsEntryNotFound(_)) => {
-                // Entry not found in file, but might have secrets in keyring
-                // If at least one secret exists in keyring, reconstruct from keyring + defaults
-                if self.has_stored_secret_for_entry(name)? {
-                    let mut empty_value = serde_json::json!({});
-                    self.inject_secrets_from_store(name, &mut empty_value)?;
-                    return Ok(empty_value);
-                }
-                // No schema or no secrets found, return original error
-                return Err(Error::SubSettingsEntryNotFound(format!(
-                    "Sub-setting entry '{name}' not found"
-                )));
-            }
             Err(e) => return Err(e),
         };
 
