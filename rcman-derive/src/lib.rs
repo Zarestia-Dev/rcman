@@ -211,7 +211,7 @@ fn build_metadata_and_accessors(
             .cloned()
             .collect();
 
-        match process_field(field, &attrs, container_attrs) {
+        match process_field(field, &attrs, container_attrs, &cfg_attrs) {
             Ok(entry) => {
                 if cfg_attrs.is_empty() {
                     metadata_entries.push(entry);
@@ -290,7 +290,7 @@ fn generate_accessor_methods(
         ));
     };
 
-    if attrs.nested || is_nested_struct(&field.ty) {
+    if attrs.nested || attrs.flatten || is_nested_struct(&field.ty) {
         return Ok(None);
     }
 
@@ -446,6 +446,7 @@ fn process_field(
     field: &Field,
     attrs: &FieldAttrs,
     container_attrs: &ContainerAttrs,
+    _cfg_attrs: &[Attribute],
 ) -> Result<proc_macro2::TokenStream, syn::Error> {
     let Some(field_name) = &field.ident else {
         return Err(syn::Error::new_spanned(
@@ -456,9 +457,14 @@ fn process_field(
     let field_type = &field.ty;
 
     // Check if this is a nested struct.
-    // We auto-detect simple structs, but allow explicit `nested` or explicit `object` override.
-    if !attrs.object && (attrs.nested || is_nested_struct(field_type)) {
-        return Ok(generate_nested_field_constructor(field_name, field_type));
+    // We auto-detect simple structs, but allow explicit `nested`, `flatten` or explicit `object` override.
+    if !attrs.object && (attrs.flatten || attrs.nested || is_nested_struct(field_type)) {
+        let prefix = if attrs.flatten {
+            None
+        } else {
+            Some(field_name.to_string())
+        };
+        return Ok(generate_nested_field_constructor(field_type, prefix));
     }
 
     let inner_ty = extract_inner_type_from_option(field_type).unwrap_or(field_type);
@@ -495,19 +501,29 @@ fn process_field(
 }
 
 fn generate_nested_field_constructor(
-    field_name: &syn::Ident,
     field_type: &syn::Type,
+    prefix: Option<String>,
 ) -> proc_macro2::TokenStream {
-    let prefix = field_name.to_string();
-    quote! {
-        // Merge nested struct's metadata with prefix
-        // Keys from nested struct are "category.field_name", we extract just "field_name"
-        for (key, meta) in <#field_type as rcman::SettingsSchema>::get_metadata() {
-            // Extract just the field name (part after last dot)
-            let field_only = key.rsplit('.').next().unwrap_or(&key);
-            let prefixed_key = format!("{}.{}", #prefix, field_only);
-            // Note: Category is structural (in key), not stored in metadata
-            map.insert(prefixed_key, meta);
+    if let Some(p) = prefix {
+        quote! {
+            // Merge nested struct's metadata with prefix
+            // Keys from nested struct are "category.field_name", we extract just "field_name"
+            for (key, meta) in <#field_type as rcman::SettingsSchema>::get_metadata() {
+                // Extract just the field name (part after last dot)
+                let field_only = key.rsplit('.').next().unwrap_or(&key);
+                let prefixed_key = format!("{}.{}", #p, field_only);
+                // Note: Category is structural (in key), not stored in metadata
+                map.insert(prefixed_key, meta);
+            }
+        }
+    } else {
+        quote! {
+            // Merge nested struct's metadata without prefix (flatten)
+            for (key, meta) in <#field_type as rcman::SettingsSchema>::get_metadata() {
+                // Extract just the field name
+                let field_only = key.rsplit('.').next().unwrap_or(&key);
+                map.insert(field_only.to_string(), meta);
+            }
         }
     }
 }
@@ -703,6 +719,31 @@ fn parse_field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs, syn::Error> {
             for meta in nested {
                 parse_single_field_attr(meta, &mut result)?;
             }
+        } else if attr.path().is_ident("serde") {
+            // Respect serde attributes as fallbacks to reduce boilerplate
+            if let Ok(nested) = attr.parse_args_with(
+                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+            ) {
+                for meta in nested {
+                    match meta {
+                        Meta::Path(path) => {
+                            if path.is_ident("flatten") {
+                                result.flatten = true;
+                            } else if path.is_ident("skip") {
+                                result.skip = true;
+                            }
+                        }
+                        Meta::NameValue(nv) => {
+                            if nv.path.is_ident("rename") && result.rename.is_none() {
+                                if let Ok(s) = parse_lit_str(&nv.value, "rename") {
+                                    result.rename = Some(s);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 
@@ -720,6 +761,8 @@ fn parse_single_field_attr(meta: Meta, result: &mut FieldAttrs) -> Result<(), sy
                 result.nested = true;
             } else if path.is_ident("object") {
                 result.object = true;
+            } else if path.is_ident("flatten") {
+                result.flatten = true;
             }
         }
         Meta::NameValue(nv) => {
@@ -798,6 +841,7 @@ struct FieldAttrs {
     reserved: Vec<String>,
     secret: bool,
     skip: bool,
+    flatten: bool,
     nested: bool, // Explicit marker for nested structs
     object: bool, // Explicit marker to treat as a single object (disables auto-nesting)
     rename: Option<String>,

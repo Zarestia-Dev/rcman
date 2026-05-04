@@ -206,18 +206,24 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .ok_or_else(|| Error::SettingNotFound(format!("{category}.{setting_name}")))
     }
 
+    /// Get merged settings as raw JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if settings cannot be read.
+    pub fn get_all_data(&self) -> Result<Value> {
+        self.ensure_cache_populated()?;
+        self.settings_cache
+            .get_or_compute_merged(|stored| Self::merge_with_defaults(stored))
+    }
+
     /// Get merged settings struct with caching.
     ///
     /// # Errors
     ///
     /// Returns an error if settings cannot be read or parsed.
     pub fn get_all(&self) -> Result<Schema> {
-        // Ensure cache is populated
-        self.ensure_cache_populated()?;
-
-        let merged = self
-            .settings_cache
-            .get_or_compute_merged(|stored| Self::merge_with_defaults(stored))?;
+        let merged = self.get_all_data()?;
 
         // Deserialize to concrete type
         serde_json::from_value(merged).map_err(|e| Error::Parse(e.to_string()))

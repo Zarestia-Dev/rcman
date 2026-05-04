@@ -213,12 +213,15 @@ impl TestFixture {
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");
 
-        // Register sub-settings manually
+        // Register sub-settings manually (without schema validation for test flexibility)
         manager
             .register_sub_settings(SubSettingsConfig::new("remotes"))
             .unwrap();
         manager
             .register_sub_settings(SubSettingsConfig::singlefile("backends"))
+            .unwrap();
+        manager
+            .register_sub_settings(SubSettingsConfig::singlefile("connections"))
             .unwrap();
 
         Self {

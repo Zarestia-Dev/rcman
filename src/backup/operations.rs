@@ -459,10 +459,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
         };
 
-        let mut value = serde_json::Value::Object(serde_json::Map::new());
-        if matches!(value, serde_json::Value::Object(ref map) if map.is_empty()) {
-            return Ok(None);
-        }
+        // Build merged settings from manager (merge stored + defaults)
+        let mut value = self.manager.get_all_data()?;
 
         self.inject_or_remove_secrets(
             &mut value,
@@ -535,21 +533,24 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
             let relative_key = if prefix.is_empty() {
                 full_key.as_str()
-            } else if let Some(rest) = full_key.strip_prefix(prefix) {
-                if let Some(stripped) = rest.strip_prefix('.') {
-                    stripped
-                } else {
-                    continue;
-                }
             } else {
-                continue;
+                // For sub-settings, full_key is already relative to the entry
+                // (not prefixed with the parent path)
+                full_key.as_str()
             };
 
             if should_include {
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
                 if let Some(creds) = creds_opt {
+                    // Build the full credential key (prefix.field or just field if prefix is empty)
+                    let credential_key = if prefix.is_empty() {
+                        full_key.to_string()
+                    } else {
+                        format!("{}.{}", prefix, full_key)
+                    };
+
                     // Try to get the secret
-                    match creds.get_with_profile(full_key, credential_profile) {
+                    match creds.get_with_profile(&credential_key, credential_profile) {
                         Ok(Some(secret)) => {
                             crate::utils::value::set_path(
                                 value,
@@ -560,7 +561,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                         Ok(None) => {}
                         Err(err) => {
                             debug!(
-                                "Failed to fetch secret {full_key} while building backup payload: {err}"
+                                "Failed to fetch secret '{}' (credential_key: '{}'): {err}",
+                                relative_key, credential_key
                             );
                         }
                     }
@@ -624,9 +626,12 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             if let Some(path) = sub.file_path()
                 && path.exists()
             {
-                crate::error::create_dir(&sub_export_dir)?;
                 let ext = sub.extension();
-                let dest = sub_export_dir.join(format!("{sub_type}.{ext}"));
+                let dest = export_dir.join(format!("{sub_type}.{ext}"));
+
+                if let Some(parent) = dest.parent() {
+                    crate::error::create_dir(parent)?;
+                }
 
                 // Process secrets entry-by-entry with sub-settings schema paths.
                 // Single-file structure is typically: { "entry": { ...fields... } }
@@ -649,10 +654,12 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 };
 
                 if let Some(obj) = root_value.as_object_mut() {
-                    for entry_value in obj.values_mut() {
+                    for (entry_name, entry_value) in obj.iter_mut() {
+                        // Build credential key prefix: "sub.connections.Local"
+                        let credential_key_prefix = format!("sub.{}.{}", sub_type, entry_name);
                         self.inject_or_remove_secrets(
                             entry_value,
-                            "",
+                            &credential_key_prefix,
                             &sub_metadata,
                             should_include_secrets,
                             None,
@@ -691,9 +698,12 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                         crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
                     };
 
+                    // Build credential key prefix: "sub.remotes.Google Drive"
+                    let credential_key_prefix = format!("sub.{}.{}", sub_type, name);
+
                     self.inject_or_remove_secrets(
                         &mut value,
-                        "",
+                        &credential_key_prefix,
                         &sub_metadata,
                         should_include_secrets,
                         None,

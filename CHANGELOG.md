@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Added native support for `serde_json::Value` fields in `SettingsSchema` macro generation. It creates a new `SettingType::Object` that safely bypasses strict schema validation constraints, allowing developers to embed untyped, dynamic JSON structures directly inside their schemas while automatically resolving to the appropriate table format in storage backends (e.g. TOML/JSON).
 
+### Fixed
+
+- Fixed an issue where the cannot export the subsettings secret keys.
+
 ## [v0.1.7] - 2026-04-12
 
 ### Added
