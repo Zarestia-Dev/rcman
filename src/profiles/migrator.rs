@@ -3,10 +3,10 @@
 //! Handles migration from flat configuration structure to profile-based structure.
 //!
 //! The migration strategy is:
-//! 1. Check if the target directory/file exists and is NOT already profiled (no .profiles.json)
-//! 2. Create the "profiles/default" directory structure
-//! 3. Move existing files/contents to the default profile location
-//! 4. Create .profiles.json manifest pointing to "default"
+//! - Check if the target directory/file exists and is NOT already profiled (no .profiles.json)
+//! - Create the "profiles/default" directory structure
+//! - Move existing files/contents to the default profile location
+//! - Create .profiles.json manifest pointing to "default"
 
 use crate::error::{Error, Result};
 use crate::profiles::{DEFAULT_PROFILE, PROFILES_DIR};
@@ -141,11 +141,11 @@ fn run_auto_migration<S: StorageBackend>(
     single_file_mode: bool,
     storage: &S,
 ) -> Result<()> {
-    // 1. Create profiles/default directory
+    // Create profiles/default directory
     let default_profile_dir = root_dir.join(PROFILES_DIR).join(DEFAULT_PROFILE);
     crate::utils::security::ensure_secure_dir(&default_profile_dir)?;
 
-    // 2. Move files
+    // Move files
     if single_file_mode {
         // Single File Migration: Move sibling file into default profile
         let ext = storage.extension();
@@ -195,7 +195,7 @@ fn run_auto_migration<S: StorageBackend>(
         }
     }
 
-    // 3. Create manifest
+    // Create manifest
     let ext = storage.extension();
     let manifest_filename = format!(".profiles.{ext}");
     let manifest = crate::profiles::ProfileManifest::default();
@@ -213,9 +213,9 @@ fn run_auto_migration<S: StorageBackend>(
 /// Rollback profile structure to flat configuration
 ///
 /// Reverts the profile migration by:
-/// 1. Moving all files from the active profile back to the root directory
-/// 2. Removing the profiles/ directory
-/// 3. Deleting the .profiles.json manifest
+/// - Moving all files from the active profile back to the root directory
+/// - Removing the profiles/ directory
+/// - Deleting the .profiles.json manifest
 ///
 /// # Warnings
 ///

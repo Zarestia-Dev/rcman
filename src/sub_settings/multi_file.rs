@@ -454,20 +454,20 @@ mod tests {
         // Clear cache completely (simulate a new instance)
         store.invalidate_cache();
 
-        // 1. List files (should read directory, but NOT read files = 0 file disk reads)
+        // List files (should read directory, but NOT read files = 0 file disk reads)
         let keys = store.list().unwrap();
         assert_eq!(keys.len(), 2);
         assert_eq!(reads.load(Ordering::SeqCst), 0);
 
-        // 2. Get the first entity (should read 1 file from disk)
+        // Get the first entity (should read 1 file from disk)
         let _ = store.get("remote1").unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 1);
 
-        // 3. Get the first entity AGAIN (should serve from cache = 1 file disk read still)
+        // Get the first entity AGAIN (should serve from cache = 1 file disk read still)
         let _ = store.get("remote1").unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 1);
 
-        // 4. Get the second entity (should read 1 file from disk, total = 2)
+        // Get the second entity (should read 1 file from disk, total = 2)
         let _ = store.get("remote2").unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 2);
     }
@@ -488,26 +488,26 @@ mod tests {
             CacheStrategy::Lru(2), // Capacity of 2
         );
 
-        // 1. Set 3 items
+        // Set 3 items
         store.set("a", json!(1)).unwrap();
         store.set("b", json!(2)).unwrap();
         store.set("c", json!(3)).unwrap(); // "a" should be evicted from cache
 
         assert_eq!(reads.load(Ordering::SeqCst), 0);
 
-        // 2. Get "c" (should be in cache)
+        // Get "c" (should be in cache)
         store.get("c").unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 0);
 
-        // 3. Get "b" (should be in cache)
+        // Get "b" (should be in cache)
         store.get("b").unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 0);
 
-        // 4. Get "a" (should NOT be in cache, requires disk read)
+        // Get "a" (should NOT be in cache, requires disk read)
         store.get("a").unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 1);
 
-        // 5. Getting "a" again should now be cached (evicting "c" or "b" - specifically "c" as "b" was used last)
+        // Getting "a" again should now be cached (evicting "c" or "b" - specifically "c" as "b" was used last)
         store.get("a").unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), 1);
     }

@@ -259,7 +259,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         let mut contents = BackupContents::default();
         let mut total_size = 0u64;
 
-        // 1. Main settings
+        // Main settings
         let include_settings = (options.include_settings
             || matches!(options.export_type, ExportType::Full))
             && !matches!(options.export_type, ExportType::Single { .. });
@@ -271,7 +271,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             contents.settings = true;
         }
 
-        // 2. Sub-settings
+        // Sub-settings
         let sub_settings_to_backup = match &options.export_type {
             ExportType::Full => {
                 if options.include_sub_settings.is_empty() {
@@ -326,7 +326,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             }
         }
 
-        // 3. External configs
+        // External configs
         let include_external_configs = matches!(options.export_type, ExportType::Full)
             || !options.include_external_configs.is_empty();
 
@@ -544,9 +544,9 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 if let Some(creds) = creds_opt {
                     // Build the full credential key (prefix.field or just field if prefix is empty)
                     let credential_key = if prefix.is_empty() {
-                        full_key.to_string()
+                        full_key.clone()
                     } else {
-                        format!("{}.{}", prefix, full_key)
+                        format!("{prefix}.{full_key}")
                     };
 
                     // Try to get the secret
@@ -561,8 +561,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                         Ok(None) => {}
                         Err(err) => {
                             debug!(
-                                "Failed to fetch secret '{}' (credential_key: '{}'): {err}",
-                                relative_key, credential_key
+                                "Failed to fetch secret '{relative_key}' (credential_key: '{credential_key}'): {err}"
                             );
                         }
                     }
@@ -656,7 +655,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 if let Some(obj) = root_value.as_object_mut() {
                     for (entry_name, entry_value) in obj.iter_mut() {
                         // Build credential key prefix: "sub.connections.Local"
-                        let credential_key_prefix = format!("sub.{}.{}", sub_type, entry_name);
+                        let credential_key_prefix = format!("sub.{sub_type}.{entry_name}");
                         self.inject_or_remove_secrets(
                             entry_value,
                             &credential_key_prefix,
@@ -699,7 +698,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     };
 
                     // Build credential key prefix: "sub.remotes.Google Drive"
-                    let credential_key_prefix = format!("sub.{}.{}", sub_type, name);
+                    let credential_key_prefix = format!("sub.{sub_type}.{name}");
 
                     self.inject_or_remove_secrets(
                         &mut value,

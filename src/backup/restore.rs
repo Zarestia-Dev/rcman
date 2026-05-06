@@ -119,13 +119,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
             mode_str,
         };
 
-        // 1. Restore main settings
+        // Restore main settings
         ctx.restore_main_settings(&mut result)?;
 
-        // 2. Restore sub-settings
+        // Restore sub-settings
         ctx.restore_sub_settings_entries(&mut result)?;
 
-        // 3. Restore external configs
+        // Restore external configs
         ctx.restore_external_configs_entries(&mut result)?;
 
         info!(
@@ -1036,7 +1036,7 @@ fn load_settings_agnostic<S: StorageBackend>(
     stem: &str,
     storage: &S,
 ) -> Result<Option<(serde_json::Value, String)>> {
-    // 0. Try configured storage extension
+    // Try configured storage extension
     let current_ext = storage.extension();
     let current_path = dir.join(format!("{stem}.{current_ext}"));
     if current_path.exists() {

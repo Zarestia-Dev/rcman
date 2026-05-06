@@ -290,11 +290,17 @@ fn generate_accessor_methods(
         ));
     };
 
-    if attrs.nested || attrs.flatten || is_nested_struct(&field.ty) {
+    let is_structural = match attrs.nesting {
+        Nesting::Flatten | Nesting::Nested => true,
+        Nesting::Object => false,
+        Nesting::Auto => is_nested_struct(&field.ty),
+    };
+
+    if is_structural {
         return Ok(None);
     }
 
-    let category = resolve_field_category(attrs, container_attrs)?;
+    let category = resolve_field_category(attrs, container_attrs);
     let key_name = attrs
         .rename
         .clone()
@@ -324,27 +330,15 @@ fn generate_accessor_methods(
         format!("{category}.{key_name}")
     };
 
-    let snapshot_method = if cfg_attrs.is_empty() {
-        quote! {
-            pub fn #getter_name(&self) -> &#field_type {
-                &self.#field_name
-            }
-
-            pub fn #setter_name(&mut self, value: #field_type) {
-                self.#field_name = value;
-            }
+    let snapshot_method = quote! {
+        #(#cfg_attrs)*
+        pub fn #getter_name(&self) -> &#field_type {
+            &self.#field_name
         }
-    } else {
-        quote! {
-            #(#cfg_attrs)*
-            pub fn #getter_name(&self) -> &#field_type {
-                &self.#field_name
-            }
 
-            #(#cfg_attrs)*
-            pub fn #setter_name(&mut self, value: #field_type) {
-                self.#field_name = value;
-            }
+        #(#cfg_attrs)*
+        pub fn #setter_name(&mut self, value: #field_type) {
+            self.#field_name = value;
         }
     };
 
@@ -355,41 +349,22 @@ fn generate_accessor_methods(
         return Ok(Some((snapshot_method, quote! {}, quote! {})));
     }
 
-    let manager_trait_method = if cfg_attrs.is_empty() {
-        quote! {
-            fn #getter_name(&self) -> rcman::Result<#field_type>;
-            fn #setter_name(&self, value: #field_type) -> rcman::Result<()>;
-        }
-    } else {
-        quote! {
-            #(#cfg_attrs)*
-            fn #getter_name(&self) -> rcman::Result<#field_type>;
-            #(#cfg_attrs)*
-            fn #setter_name(&self, value: #field_type) -> rcman::Result<()>;
-        }
+    let manager_trait_method = quote! {
+        #(#cfg_attrs)*
+        fn #getter_name(&self) -> rcman::Result<#field_type>;
+        #(#cfg_attrs)*
+        fn #setter_name(&self, value: #field_type) -> rcman::Result<()>;
     };
 
-    let manager_impl_method = if cfg_attrs.is_empty() {
-        quote! {
-            fn #getter_name(&self) -> rcman::Result<#field_type> {
-                self.get::<#field_type>(#full_key)
-            }
-
-            fn #setter_name(&self, value: #field_type) -> rcman::Result<()> {
-                self.save_setting(#category, #key_name, &rcman::serde_json::json!(value))
-            }
+    let manager_impl_method = quote! {
+        #(#cfg_attrs)*
+        fn #getter_name(&self) -> rcman::Result<#field_type> {
+            self.get::<#field_type>(#full_key)
         }
-    } else {
-        quote! {
-            #(#cfg_attrs)*
-            fn #getter_name(&self) -> rcman::Result<#field_type> {
-                self.get::<#field_type>(#full_key)
-            }
 
-            #(#cfg_attrs)*
-            fn #setter_name(&self, value: #field_type) -> rcman::Result<()> {
-                self.save_setting(#category, #key_name, &rcman::serde_json::json!(value))
-            }
+        #(#cfg_attrs)*
+        fn #setter_name(&self, value: #field_type) -> rcman::Result<()> {
+            self.save_setting(#category, #key_name, &rcman::serde_json::json!(value))
         }
     };
 
@@ -458,8 +433,14 @@ fn process_field(
 
     // Check if this is a nested struct.
     // We auto-detect simple structs, but allow explicit `nested`, `flatten` or explicit `object` override.
-    if !attrs.object && (attrs.flatten || attrs.nested || is_nested_struct(field_type)) {
-        let prefix = if attrs.flatten {
+    let is_structural = match attrs.nesting {
+        Nesting::Flatten | Nesting::Nested => true,
+        Nesting::Object => false,
+        Nesting::Auto => is_nested_struct(field_type),
+    };
+
+    if is_structural {
+        let prefix = if attrs.nesting == Nesting::Flatten {
             None
         } else {
             Some(field_name.to_string())
@@ -477,7 +458,7 @@ fn process_field(
 
     validate_field_type_constraints(field, type_info, attrs)?;
 
-    let category_str = resolve_field_category(attrs, container_attrs)?;
+    let category_str = resolve_field_category(attrs, container_attrs);
     let final_field_name = attrs
         .rename
         .clone()
@@ -634,16 +615,13 @@ fn validate_field_type_constraints(
     Ok(())
 }
 
-fn resolve_field_category(
-    attrs: &FieldAttrs,
-    container_attrs: &ContainerAttrs,
-) -> Result<String, syn::Error> {
-    Ok(attrs
+fn resolve_field_category(attrs: &FieldAttrs, container_attrs: &ContainerAttrs) -> String {
+    attrs
         .category
         .as_ref()
         .or(container_attrs.category.as_ref())
         .cloned()
-        .unwrap_or_default())
+        .unwrap_or_default()
 }
 
 fn generate_field_constructor(
@@ -728,19 +706,17 @@ fn parse_field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs, syn::Error> {
                     match meta {
                         Meta::Path(path) => {
                             if path.is_ident("flatten") {
-                                result.flatten = true;
+                                result.nesting = Nesting::Flatten;
                             } else if path.is_ident("skip") {
                                 result.skip = true;
                             }
                         }
                         Meta::NameValue(nv) => {
                             if nv.path.is_ident("rename") && result.rename.is_none() {
-                                if let Ok(s) = parse_lit_str(&nv.value, "rename") {
-                                    result.rename = Some(s);
-                                }
+                                result.rename = parse_lit_str(&nv.value, "rename").ok();
                             }
                         }
-                        _ => {}
+                        Meta::List(_) => {}
                     }
                 }
             }
@@ -758,11 +734,11 @@ fn parse_single_field_attr(meta: Meta, result: &mut FieldAttrs) -> Result<(), sy
             } else if path.is_ident("skip") {
                 result.skip = true;
             } else if path.is_ident("nested") {
-                result.nested = true;
+                result.nesting = Nesting::Nested;
             } else if path.is_ident("object") {
-                result.object = true;
+                result.nesting = Nesting::Object;
             } else if path.is_ident("flatten") {
-                result.flatten = true;
+                result.nesting = Nesting::Flatten;
             }
         }
         Meta::NameValue(nv) => {
@@ -829,6 +805,15 @@ struct ContainerAttrs {
     category: Option<String>,
 }
 
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+enum Nesting {
+    #[default]
+    Auto,
+    Flatten,
+    Nested,
+    Object,
+}
+
 /// Field-level attributes from #[setting(...)]
 #[derive(Default)]
 struct FieldAttrs {
@@ -841,9 +826,7 @@ struct FieldAttrs {
     reserved: Vec<String>,
     secret: bool,
     skip: bool,
-    flatten: bool,
-    nested: bool, // Explicit marker for nested structs
-    object: bool, // Explicit marker to treat as a single object (disables auto-nesting)
+    nesting: Nesting,
     rename: Option<String>,
     // Dynamic metadata: any key=value that isn't a known constraint
     metadata_str: Vec<(String, String)>,
@@ -932,9 +915,8 @@ fn parse_metadata_value(
             Ok(())
         }
         Lit::Int(i) => {
-            if let Ok(val) = i.base10_parse::<i64>() {
-                #[allow(clippy::cast_precision_loss)]
-                result.metadata_num.push((key, val as f64));
+            if let Ok(val) = i.base10_parse::<f64>() {
+                result.metadata_num.push((key, val));
             }
             Ok(())
         }

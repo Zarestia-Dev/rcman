@@ -378,7 +378,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         let mut categories = Vec::new();
 
-        // 1. Main settings
+        // Main settings
         categories.push(ExportCategory {
             id: "settings".to_string(),
             name: "Application Settings".to_string(),
@@ -387,7 +387,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             description: Some("Main application settings".to_string()),
         });
 
-        // 2. Sub-settings
+        // Sub-settings
         let sub_types = self.sub_settings_types();
         for sub_type in sub_types {
             categories.push(ExportCategory {
@@ -399,7 +399,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             });
         }
 
-        // 3. External configs
+        // External configs
         for ext in &self.config.external_configs {
             categories.push(ExportCategory {
                 id: ext.id.clone(),
