@@ -116,10 +116,11 @@ pub trait StorageBackend: Clone + Send + Sync {
 
         // Wrap fallible steps so we can clean up the temp file on failure
         let result = (|| -> Result<()> {
-            let mut temp_file = std::fs::File::create(&temp_path).map_err(|e| Error::FileWrite {
-                path: temp_path.clone(),
-                source: e,
-            })?;
+            let mut temp_file =
+                std::fs::File::create(&temp_path).map_err(|e| Error::FileWrite {
+                    path: temp_path.clone(),
+                    source: e,
+                })?;
 
             temp_file
                 .write_all(content.as_bytes())
@@ -159,15 +160,20 @@ pub trait StorageBackend: Clone + Send + Sync {
                 loop {
                     match std::fs::rename(&temp_path, path) {
                         Ok(_) => break,
-                        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && retries < max_retries => {
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::PermissionDenied
+                                && retries < max_retries =>
+                        {
                             retries += 1;
                             std::thread::sleep(std::time::Duration::from_millis(10 * retries));
                             continue;
                         }
-                        Err(e) => return Err(Error::FileWrite {
-                            path: path.to_path_buf(),
-                            source: e,
-                        }),
+                        Err(e) => {
+                            return Err(Error::FileWrite {
+                                path: path.to_path_buf(),
+                                source: e,
+                            });
+                        }
                     }
                 }
             }
