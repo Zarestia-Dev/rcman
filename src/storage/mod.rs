@@ -114,13 +114,13 @@ pub trait StorageBackend: Clone + Send + Sync {
         temp_filename.push(format!(".{now}.tmp"));
         let temp_path = path.with_file_name(temp_filename);
 
-        let mut temp_file = std::fs::File::create(&temp_path).map_err(|e| Error::FileWrite {
-            path: temp_path.clone(),
-            source: e,
-        })?;
-
         // Wrap fallible steps so we can clean up the temp file on failure
         let result = (|| -> Result<()> {
+            let mut temp_file = std::fs::File::create(&temp_path).map_err(|e| Error::FileWrite {
+                path: temp_path.clone(),
+                source: e,
+            })?;
+
             temp_file
                 .write_all(content.as_bytes())
                 .map_err(|e| Error::FileWrite {
@@ -137,10 +137,40 @@ pub trait StorageBackend: Clone + Send + Sync {
             // Set secure permissions on temp file before rename
             set_secure_file_permissions(&temp_path)?;
 
-            std::fs::rename(&temp_path, path).map_err(|e| Error::FileWrite {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
+            // IMPORTANT: Drop the file handle before rename.
+            // On Windows, a file cannot be renamed if it is open.
+            drop(temp_file);
+
+            // Atomic rename
+            #[cfg(not(windows))]
+            {
+                std::fs::rename(&temp_path, path).map_err(|e| Error::FileWrite {
+                    path: path.to_path_buf(),
+                    source: e,
+                })?;
+            }
+
+            #[cfg(windows)]
+            {
+                // On Windows, rename can fail with PermissionDenied if the file is being
+                // indexed or scanned by anti-virus. Retry a few times with backoff.
+                let mut retries = 0;
+                let max_retries = 5;
+                loop {
+                    match std::fs::rename(&temp_path, path) {
+                        Ok(_) => break,
+                        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && retries < max_retries => {
+                            retries += 1;
+                            std::thread::sleep(std::time::Duration::from_millis(10 * retries));
+                            continue;
+                        }
+                        Err(e) => return Err(Error::FileWrite {
+                            path: path.to_path_buf(),
+                            source: e,
+                        }),
+                    }
+                }
+            }
 
             // Ensure final file has secure permissions (in case rename didn't preserve)
             set_secure_file_permissions(path)?;
