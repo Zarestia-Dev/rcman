@@ -15,6 +15,9 @@ pub trait SubSettingsStore: Send + Sync {
     /// List all keys
     fn list(&self) -> Result<Vec<String>>;
 
+    /// Get all entries
+    fn get_all(&self) -> Result<std::collections::HashMap<String, Value>>;
+
     /// Invalidate any internal cache
     fn invalidate_cache(&self);
 

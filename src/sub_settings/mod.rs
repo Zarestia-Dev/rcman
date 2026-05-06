@@ -778,13 +778,15 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if the store cannot be read.
     pub fn get_all_values(&self) -> Result<HashMap<String, Value>> {
-        let keys = self.list()?;
-        let mut result = HashMap::with_capacity(keys.len());
-        for key in keys {
-            if let Ok(value) = self.get_value(&key) {
-                result.insert(key, value);
-            }
+        let mut result = {
+            let store = self.store.read_recovered()?;
+            store.get_all()?
+        };
+
+        for (name, value) in &mut result {
+            let _ = self.inject_secrets_from_store(name, value);
         }
+
         Ok(result)
     }
 

@@ -185,6 +185,17 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
         }
     }
 
+    fn get_all(&self) -> Result<HashMap<String, Value>> {
+        self.ensure_loaded()?;
+
+        let state = self.state.read_recovered()?;
+        if let Some(cache) = &state.cache {
+            Ok(cache.clone())
+        } else {
+            Ok(HashMap::new())
+        }
+    }
+
     fn invalidate_cache(&self) {
         if let Ok(mut state) = self.state.write_recovered() {
             state.loaded_from_disk = false;

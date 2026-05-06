@@ -362,6 +362,19 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         }
     }
 
+    fn get_all(&self) -> Result<HashMap<String, Value>> {
+        let keys = self.list()?;
+        let mut result = HashMap::with_capacity(keys.len());
+
+        for key in keys {
+            if let Ok(value) = self.get(key.as_str()) {
+                result.insert(key, value);
+            }
+        }
+
+        Ok(result)
+    }
+
     fn invalidate_cache(&self) {
         if let Ok(mut state) = self.state.write_recovered() {
             state.cache = None;
