@@ -191,6 +191,7 @@ impl TestFixture {
         let config = SettingsConfig::builder("test-app", "1.0.0")
             .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
+            .with_credentials()
             .with_env_source(env_source.clone() as Arc<dyn EnvSource>)
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");
@@ -209,6 +210,7 @@ impl TestFixture {
         let config = SettingsConfig::builder("test-app", "1.0.0")
             .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
+            .with_credentials()
             .with_env_source(env_source.clone() as Arc<dyn EnvSource>)
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");
@@ -239,6 +241,7 @@ impl TestFixture {
             .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
             .with_env_prefix(prefix)
+            .with_credentials()
             .with_env_source(env_source.clone() as Arc<dyn EnvSource>)
             .build();
         let manager = SettingsManager::new(config).expect("Failed to create manager");
