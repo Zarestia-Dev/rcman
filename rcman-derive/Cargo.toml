@@ -1,6 +1,6 @@
 [package]
 name = "rcman-derive"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 description = "Derive macros for rcman settings library"
 license = "MIT"
