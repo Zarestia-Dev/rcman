@@ -238,7 +238,7 @@ impl CredentialManager {
                     return Ok(());
                 }
                 Err(e) => {
-                    log::warn!("Primary backend failed for '{key}': {e}. Attempting fallback.");
+                    log::error!("=== PRIMARY BACKEND FAILED FOR {}: {:?}", key, e);
                     // Mark primary as failed if it's a platform/permission error
                     // (Simplification: any non-not-found error triggers fallback switch)
                     self.is_primary_failed.store(true, Ordering::Relaxed);
@@ -288,7 +288,7 @@ impl CredentialManager {
             match self.primary.get(&full_key) {
                 Ok(val) => return Ok(val),
                 Err(e) => {
-                    log::warn!("Primary backend failed for '{key}': {e}. Attempting fallback.");
+                    log::error!("=== PRIMARY BACKEND FAILED FOR {}: {:?}", key, e);
                     self.is_primary_failed.store(true, Ordering::Relaxed);
                 }
             }

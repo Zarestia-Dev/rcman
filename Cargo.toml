@@ -3,7 +3,7 @@ members = [".", "rcman-derive"]
 
 [package]
 name = "rcman"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 authors = ["Hakan İSMAİL <hakanismail53@gmail.com>"]
 description = "Framework-agnostic settings management with schema, backup/restore, secrets and derive macro support"
@@ -49,8 +49,8 @@ base64 = { version = "0.22", optional = true }
 argon2 = { version = "0.5", features = ["std"], optional = true }
 toml = { version = "1.0", optional = true }
 serde_yaml = { version = "0.9", optional = true }
-keyring = { version = "4.0.0-rc.3", optional = true }
-keyring-core = { version = "0.7", optional = true }
+keyring = { version = "4", optional = true }
+keyring-core = { version = "1", optional = true }
 notify = { version = "6.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
