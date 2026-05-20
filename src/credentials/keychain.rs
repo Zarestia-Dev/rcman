@@ -24,12 +24,12 @@ impl KeychainBackend {
     pub fn new(service_name: impl Into<String>) -> Self {
         NATIVE_STORE_INIT.get_or_init(|| {
             // v4 requires a config HashMap for initialization, even if empty
-            let config: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+            let _config: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
 
             // Force Secret Service (Seahorse/KWallet) on Linux
             #[cfg(target_os = "linux")]
             {
-                match dbus_secret_service_keyring_store::Store::new_with_configuration(&config) {
+                match dbus_secret_service_keyring_store::Store::new_with_configuration(&_config) {
                     Ok(store) => keyring_core::set_default_store(store),
                     Err(e) => warn!("Failed to initialize Linux Secret Service keyring store: {e}"),
                 }
@@ -38,7 +38,8 @@ impl KeychainBackend {
             // Native Apple Keychain on macOS
             #[cfg(target_os = "macos")]
             {
-                match apple_native_keyring_store::keychain::Store::new_with_configuration(&config) {
+                match apple_native_keyring_store::keychain::Store::new_with_configuration(&_config)
+                {
                     Ok(store) => keyring_core::set_default_store(store),
                     Err(e) => warn!("Failed to initialize macOS Keychain store: {e}"),
                 }
@@ -47,7 +48,7 @@ impl KeychainBackend {
             // Native Windows Credential Manager on Windows
             #[cfg(target_os = "windows")]
             {
-                match windows_native_keyring_store::Store::new_with_configuration(&config) {
+                match windows_native_keyring_store::Store::new_with_configuration(&_config) {
                     Ok(store) => keyring_core::set_default_store(store),
                     Err(e) => warn!("Failed to initialize Windows native store: {e}"),
                 }
