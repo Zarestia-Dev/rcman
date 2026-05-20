@@ -29,13 +29,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        uses: Swatinem/rust-cache@v2
 
       # Format check - Fast, run on Ubuntu only
       - name: Format check
@@ -51,16 +45,14 @@ jobs:
         run: cargo test --all --all-features --quiet
 
       # Checks below this line are run only on Ubuntu to save resources
-      
-      - name: Install cargo-deny
-        if: matrix.os == 'ubuntu-latest'
-        run: cargo install cargo-deny --locked
 
       - name: Cargo deny (licenses and bans)
         if: matrix.os == 'ubuntu-latest'
-        # Note: advisories check disabled until cargo-deny supports CVSS 4.0
-        # https://github.com/EmbarkStudios/cargo-deny/issues/635
-        run: cargo deny check licenses bans
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # Note: advisories check disabled until cargo-deny supports CVSS 4.0
+          # https://github.com/EmbarkStudios/cargo-deny/issues/635
+          command: check licenses bans
 
       - name: Build docs (docsrs cfg)
         if: matrix.os == 'ubuntu-latest'
@@ -71,3 +63,41 @@ jobs:
       - name: Check clippy pedantic (all targets)
         if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --features full -- -W clippy::pedantic
+
+  cross-check:
+    name: Cross-compile (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - aarch64-linux-android
+          - aarch64-apple-ios
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: cross-${{ matrix.target }}
+
+      - name: Check
+        run: cargo check --all --all-features --target ${{ matrix.target }}
+
+      - name: Clippy
+        run: cargo clippy --all-features --target ${{ matrix.target }} -- -D warnings

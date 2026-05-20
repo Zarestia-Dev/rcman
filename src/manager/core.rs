@@ -12,7 +12,6 @@ use crate::manager::env::EnvironmentHandler;
 use crate::storage::StorageBackend;
 use crate::sub_settings::SubSettings;
 
-use log::info;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -51,38 +50,38 @@ pub struct SettingsManager<
     Schema: SettingsSchema = (),
 > {
     /// Configuration
-    pub(crate) config: SettingsConfig<S, Schema>,
+    pub(super) config: SettingsConfig<S, Schema>,
 
     /// Storage backend (defaults to `JsonStorage`)
-    pub(crate) storage: S,
+    pub(super) storage: S,
 
     /// Directory where settings file is located (may change if profiles enabled)
-    pub(crate) settings_dir: RwLock<std::path::PathBuf>,
+    pub(super) settings_dir: RwLock<std::path::PathBuf>,
 
     /// Registered sub-settings handlers
-    pub(crate) sub_settings: RwLock<HashMap<String, Arc<SubSettings<S>>>>,
+    pub(super) sub_settings: RwLock<HashMap<String, Arc<SubSettings<S>>>>,
 
     /// Event manager for change callbacks and validation
-    pub(crate) events: Arc<EventManager>,
+    pub(super) events: Arc<EventManager>,
 
     /// Unified settings cache
-    pub(crate) settings_cache: SettingsCache,
+    pub(super) settings_cache: SettingsCache,
 
     /// Serializes non-secret settings write transactions to avoid read-modify-write races.
-    pub(crate) settings_write_lock: Mutex<()>,
+    pub(super) settings_write_lock: Mutex<()>,
 
     /// Environment variable handler
-    pub(crate) env_handler: EnvironmentHandler,
+    pub(super) env_handler: EnvironmentHandler,
 
     /// Pre-computed schema defaults (shared across cache operations)
-    pub(crate) schema_defaults: Arc<HashMap<String, Value>>,
+    pub(super) schema_defaults: Arc<HashMap<String, Value>>,
 
     /// Cached schema metadata (shared across read paths)
-    pub(crate) schema_metadata: Arc<HashMap<String, SettingMetadata>>,
+    pub(super) schema_metadata: Arc<HashMap<String, SettingMetadata>>,
 
     /// Credential manager for secret settings (optional, requires keychain or encrypted-file feature)
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    pub(crate) credentials: Option<CredentialManager>,
+    pub(super) credentials: Option<CredentialManager>,
 
     /// External config providers for backups
     #[cfg(feature = "backup")]
@@ -90,10 +89,10 @@ pub struct SettingsManager<
 
     /// Profile manager for main settings (when profiles are enabled)
     #[cfg(feature = "profiles")]
-    pub(crate) profile_manager: Option<crate::profiles::ProfileManager<S>>,
+    pub(super) profile_manager: Option<crate::profiles::ProfileManager<S>>,
 
     /// Marker for schema type
-    pub(crate) _schema: PhantomData<Schema>,
+    pub(super) _schema: PhantomData<Schema>,
 }
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Schema> {
@@ -131,7 +130,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let credentials = match &config.credential_config {
             CredentialConfig::Disabled => None,
             CredentialConfig::Default => {
-                info!("Credential management enabled with default backend");
+                log::debug!("Credential management enabled with default backend");
                 Some(CredentialManager::new(&config.app_name))
             }
             #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
@@ -139,7 +138,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 fallback_path,
                 password,
             } => {
-                info!("Credential management enabled with keychain and encrypted file fallback");
+                log::debug!(
+                    "Credential management enabled with keychain and encrypted file fallback"
+                );
                 let path = fallback_path
                     .clone()
                     .unwrap_or_else(|| config.config_dir.join("secrets.enc"));
@@ -150,7 +151,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 ))
             }
             CredentialConfig::Custom(backend) => {
-                info!("Credential management enabled with custom backend");
+                log::debug!("Credential management enabled with custom backend");
                 Some(CredentialManager::with_backend(
                     &config.app_name,
                     backend.clone(),
@@ -183,7 +184,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let env_handler =
             EnvironmentHandler::new(config.env_prefix.clone(), config.env_source.clone());
 
-        info!(
+        log::debug!(
             "Initialized rcman SettingsManager at: {:?}",
             config.config_dir.display()
         );
@@ -257,7 +258,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///     }
     /// });
     /// ```
-    pub fn events(&self) -> &Arc<EventManager> {
+    pub fn events(&self) -> &EventManager {
         &self.events
     }
 
@@ -265,6 +266,15 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub fn credentials(&self) -> Option<&crate::credentials::CredentialManager> {
         self.credentials.as_ref()
+    }
+
+    /// Get reference to the schema metadata map
+    #[cfg(all(
+        feature = "backup",
+        any(feature = "keychain", feature = "encrypted-file")
+    ))]
+    pub(crate) fn schema_metadata(&self) -> &HashMap<String, SettingMetadata> {
+        &self.schema_metadata
     }
 }
 

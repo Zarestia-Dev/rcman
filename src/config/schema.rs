@@ -158,15 +158,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, RwLock};
-
-// =============================================================================
-// Regex Cache for Pattern Validation
-// =============================================================================
-
-/// Global cache for compiled regex patterns to avoid re-compilation on every validation
-static REGEX_CACHE: LazyLock<RwLock<HashMap<String, Arc<regex::Regex>>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 // =============================================================================
 // Well-known Metadata Keys
@@ -542,12 +533,8 @@ impl SettingMetadata {
         self
     }
 
-    // =========================================================================
     // Secret storage (special handling)
-    // =========================================================================
 
-    /// Mark setting as secret (stored in credential manager)
-    ///
     /// Mark setting as secret (stored in credential manager)
     ///
     /// Note: Setting this flag requires credential features to be enabled
@@ -617,38 +604,13 @@ impl SettingMetadata {
     }
 
     fn validate_text(&self, value: &Value) -> Result<(), String> {
+        let text = value
+            .as_str()
+            .ok_or_else(|| "Value must be a string".to_string())?;
+
         if let Some(ref pattern) = self.constraints.text.pattern {
-            let text = value.as_str().unwrap_or_default();
-
-            // Use cached compiled regex for performance
-            let re = {
-                // Try read lock first
-                let read_cache = REGEX_CACHE
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(cached) = read_cache.get(pattern) {
-                    Arc::clone(cached)
-                } else {
-                    // Drop read lock and acquire write lock for compilation
-                    drop(read_cache);
-                    let mut write_cache = REGEX_CACHE
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-                    // Double-check after acquiring write lock
-                    if let Some(cached) = write_cache.get(pattern) {
-                        Arc::clone(cached)
-                    } else {
-                        let compiled = Arc::new(
-                            regex::Regex::new(pattern)
-                                .map_err(|e| format!("Invalid regex pattern: {e}"))?,
-                        );
-                        write_cache.insert(pattern.clone(), Arc::clone(&compiled));
-                        compiled
-                    }
-                }
-            };
-
+            let re =
+                regex::Regex::new(pattern).map_err(|e| format!("Invalid regex pattern: {e}"))?;
             if !re.is_match(text) {
                 return Err(format!("Value does not match pattern: {pattern}"));
             }

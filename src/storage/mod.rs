@@ -238,6 +238,11 @@ impl JsonStorage {
     pub fn compact() -> Self {
         Self { pretty: false }
     }
+
+    /// Set whether to pretty print JSON output
+    pub fn set_pretty(&mut self, pretty: bool) {
+        self.pretty = pretty;
+    }
 }
 
 impl StorageBackend for JsonStorage {

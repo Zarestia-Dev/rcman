@@ -6,7 +6,7 @@ use crate::config::{SettingMetadata, SettingType, SettingsSchema};
 use std::collections::HashMap;
 
 /// Configuration for docs generation
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DocsConfig {
     /// Title for the documentation
     pub title: Option<String>,
@@ -18,14 +18,21 @@ pub struct DocsConfig {
     pub group_by_category: bool,
 }
 
+impl Default for DocsConfig {
+    fn default() -> Self {
+        Self {
+            title: None,
+            description: None,
+            show_advanced: true,
+            group_by_category: true,
+        }
+    }
+}
+
 impl DocsConfig {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            show_advanced: true,
-            group_by_category: true,
-            ..Default::default()
-        }
+        Self::default()
     }
 
     #[must_use]

@@ -29,24 +29,27 @@ impl KeychainBackend {
             // Force Secret Service (Seahorse/KWallet) on Linux
             #[cfg(target_os = "linux")]
             {
-                if let Err(e) = keyring::use_dbus_secret_service_store(&config) {
-                    warn!("Failed to initialize Linux Secret Service keyring store: {e}");
+                match dbus_secret_service_keyring_store::Store::new_with_configuration(&config) {
+                    Ok(store) => keyring_core::set_default_store(store),
+                    Err(e) => warn!("Failed to initialize Linux Secret Service keyring store: {e}"),
                 }
             }
 
             // Native Apple Keychain on macOS
             #[cfg(target_os = "macos")]
             {
-                if let Err(e) = keyring::use_apple_keychain_store(&config) {
-                    warn!("Failed to initialize macOS Keychain store: {e}");
+                match apple_native_keyring_store::keychain::Store::new_with_configuration(&config) {
+                    Ok(store) => keyring_core::set_default_store(store),
+                    Err(e) => warn!("Failed to initialize macOS Keychain store: {e}"),
                 }
             }
 
             // Native Windows Credential Manager on Windows
             #[cfg(target_os = "windows")]
             {
-                if let Err(e) = keyring::use_windows_native_store(&config) {
-                    warn!("Failed to initialize Windows native store: {e}");
+                match windows_native_keyring_store::Store::new_with_configuration(&config) {
+                    Ok(store) => keyring_core::set_default_store(store),
+                    Err(e) => warn!("Failed to initialize Windows native store: {e}"),
                 }
             }
         });
@@ -132,6 +135,15 @@ impl CredentialBackend for KeychainBackend {
         }
     }
 
+    /// List all stored credential keys tracked in the current session.
+    ///
+    /// # Warning
+    ///
+    /// Since the OS keychain does not support listing/enumerating keys,
+    /// this backend only returns keys that have been tracked (created or accessed)
+    /// during the lifetime of this `KeychainBackend` instance.
+    /// Consequently, keys created in previous runs of the application will not
+    /// be returned by this method until they are accessed again.
     fn list_keys(&self) -> Result<Vec<String>> {
         self.known_keys
             .read()

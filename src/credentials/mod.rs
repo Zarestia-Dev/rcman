@@ -238,7 +238,7 @@ impl CredentialManager {
                     return Ok(());
                 }
                 Err(e) => {
-                    log::error!("=== PRIMARY BACKEND FAILED FOR {}: {:?}", key, e);
+                    log::error!("=== PRIMARY BACKEND FAILED FOR {key}: {e:?}");
                     // Mark primary as failed if it's a platform/permission error
                     // (Simplification: any non-not-found error triggers fallback switch)
                     self.is_primary_failed.store(true, Ordering::Relaxed);
@@ -288,7 +288,7 @@ impl CredentialManager {
             match self.primary.get(&full_key) {
                 Ok(val) => return Ok(val),
                 Err(e) => {
-                    log::error!("=== PRIMARY BACKEND FAILED FOR {}: {:?}", key, e);
+                    log::error!("=== PRIMARY BACKEND FAILED FOR {key}: {e:?}");
                     self.is_primary_failed.store(true, Ordering::Relaxed);
                 }
             }
@@ -340,17 +340,19 @@ impl CredentialManager {
     /// Check if a credential exists
     #[must_use]
     pub fn exists(&self, key: &str) -> bool {
-        let full_key = self.make_key(key);
+        let full_key = self.make_key_with_profile(key, None);
 
         if self.primary.exists(&full_key).unwrap_or(false) {
             return true;
         }
 
-        if let Some(ref fallback) = self.fallback {
-            return fallback.exists(&full_key).unwrap_or(false);
+        if let Some(ref fallback) = self.fallback
+            && fallback.exists(&full_key).unwrap_or(false)
+        {
+            return true;
         }
 
-        false
+        self.volatile.exists(&full_key).unwrap_or(false)
     }
 
     /// Clear all credentials for this service
@@ -417,11 +419,15 @@ impl CredentialManager {
     /// Get active backend name
     #[must_use]
     pub fn backend_name(&self) -> &'static str {
-        self.primary.backend_name()
-    }
-
-    fn make_key(&self, key: &str) -> String {
-        self.make_key_with_profile(key, None)
+        if self.is_primary_failed.load(Ordering::Relaxed) {
+            if let Some(ref fallback) = self.fallback {
+                fallback.backend_name()
+            } else {
+                self.volatile.backend_name()
+            }
+        } else {
+            self.primary.backend_name()
+        }
     }
 
     fn make_key_with_profile(&self, key: &str, profile: Option<&str>) -> String {
@@ -449,7 +455,6 @@ impl CredentialManager {
 #[cfg(all(test, any(feature = "keychain", feature = "encrypted-file")))]
 mod tests {
     use super::*;
-    use crate::Error;
 
     struct FailingBackend;
 
@@ -650,33 +655,6 @@ mod tests {
 
     #[test]
     fn test_ultimate_memory_fallback() {
-        struct FailingBackend;
-        impl CredentialBackend for FailingBackend {
-            fn store(&self, _: &str, _: &str) -> Result<()> {
-                Err(Error::Credential(
-                    "Catastrophic persistent failure".to_string(),
-                ))
-            }
-            fn get(&self, _: &str) -> Result<Option<String>> {
-                Err(Error::Credential(
-                    "Catastrophic persistent failure".to_string(),
-                ))
-            }
-            fn remove(&self, _: &str) -> Result<()> {
-                Err(Error::Credential(
-                    "Catastrophic persistent failure".to_string(),
-                ))
-            }
-            fn list_keys(&self) -> Result<Vec<String>> {
-                Err(Error::Credential(
-                    "Catastrophic persistent failure".to_string(),
-                ))
-            }
-            fn backend_name(&self) -> &'static str {
-                "failing"
-            }
-        }
-
         let manager = CredentialManager {
             primary: Arc::new(FailingBackend),
             fallback: Some(Arc::new(FailingBackend)),

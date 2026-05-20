@@ -670,7 +670,7 @@ fn test_sub_settings_invalid_schema_rejected_on_registration() {
 fn test_sub_settings_secret_not_written_to_file_and_restored_on_read() {
     let temp_dir = TempDir::new().unwrap();
 
-    let manager = SettingsManager::builder("test-app", "1.0.0")
+    let manager = SettingsManager::builder("test-app-sub-secret", "1.0.0")
         .with_config_dir(temp_dir.path())
         .with_credentials()
         .with_sub_settings(SubSettingsConfig::new("remotes").with_schema::<SecretRemoteSchema>())
@@ -727,7 +727,7 @@ fn test_sub_settings_secret_requires_credentials_when_present() {
 fn test_exists_recognizes_secret_only_entry_without_file() {
     let temp_dir = TempDir::new().unwrap();
 
-    let manager = SettingsManager::builder("test-app", "1.0.0")
+    let manager = SettingsManager::builder("test-app-sub-exists", "1.0.0")
         .with_config_dir(temp_dir.path())
         .with_credentials()
         .with_sub_settings(SubSettingsConfig::new("remotes").with_schema::<SecretRemoteSchema>())

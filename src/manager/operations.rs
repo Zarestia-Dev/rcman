@@ -26,18 +26,16 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Some((category, setting))
     }
 
-    /// Helper to get a setting value, checking keyring if it's a secret.
+    /// Helper to get a setting value, checking keyring if it's a secret (when feature is enabled).
     ///
     /// This centralizes the logic for retrieving values that may be stored in
     /// the keyring (for secrets) or in the file cache (for normal settings).
-    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     fn get_value_with_secret_support(
         &self,
         key: &str,
         metadata: &SettingMetadata,
     ) -> Result<Option<(Value, bool)>> {
-        // For secrets, check keyring first
-        if metadata.is_secret() {
+        if cfg!(any(feature = "keychain", feature = "encrypted-file")) && metadata.is_secret() {
             // Check env var override for secrets if enabled
             if self.config.env_overrides_secrets
                 && let Some(env_value) = self.get_env_override(key)
@@ -46,6 +44,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
 
             // Try retrieving from keyring
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             if let Ok(Some(secret_value)) = self.get_credential_with_profile(key) {
                 return Ok(Some((Value::String(secret_value), false)));
             }
@@ -54,29 +53,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             return Ok(Some((metadata.default.clone(), false)));
         }
 
-        // Not a secret - check cache (with env override support)
-        if let Some(env_value) = self.get_env_override(key) {
-            return Ok(Some((env_value, true)));
-        }
-
-        let Some((category, setting_name)) = Self::parse_setting_key(key) else {
-            return Ok(None);
-        };
-
-        Ok(self
-            .settings_cache
-            .get_value(category, setting_name, key)?
-            .map(|v| (v, false)))
-    }
-
-    /// Helper to get a setting value (non-credential version)
-    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
-    fn get_value_with_secret_support(
-        &self,
-        key: &str,
-        _metadata: &SettingMetadata,
-    ) -> Result<Option<(Value, bool)>> {
-        // Check env override first
+        // Not a secret (or feature disabled) - check cache (with env override support)
         if let Some(env_value) = self.get_env_override(key) {
             return Ok(Some((env_value, true)));
         }
@@ -142,7 +119,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
         }
 
-        info!("Settings loaded successfully");
+        debug!("Settings loaded successfully");
         Ok(metadata)
     }
 

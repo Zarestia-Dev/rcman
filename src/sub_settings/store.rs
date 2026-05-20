@@ -12,6 +12,9 @@ pub trait SubSettingsStore: Send + Sync {
     /// Remove an entry
     fn remove(&self, key: &str) -> Result<()>;
 
+    /// Check if an entry exists (without reading its content)
+    fn exists(&self, key: &str) -> Result<bool>;
+
     /// List all keys
     fn list(&self) -> Result<Vec<String>>;
 
@@ -21,9 +24,9 @@ pub trait SubSettingsStore: Send + Sync {
     /// Invalidate any internal cache
     fn invalidate_cache(&self);
 
-    /// Get the base path (directory) of the store
-    fn get_base_path(&self) -> std::path::PathBuf;
+    /// Base path (directory) of the store
+    fn base_path(&self) -> std::path::PathBuf;
 
-    /// Get the single file path if applicable (returns None for `MultiFile`)
-    fn get_single_file_path(&self) -> Option<std::path::PathBuf>;
+    /// Single file path if applicable (returns `None` for multi-file stores)
+    fn single_file_path(&self) -> Option<std::path::PathBuf>;
 }

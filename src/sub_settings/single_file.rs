@@ -66,7 +66,6 @@ impl<S: StorageBackend> SingleFileStore<S> {
         let mut file_data = match std::fs::metadata(&path) {
             Ok(_) => self.storage.read::<Value>(&path)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Return empty map on new file
                 state.loaded_from_disk = true;
                 state.cache = Some(HashMap::new());
                 return Ok(());
@@ -74,7 +73,6 @@ impl<S: StorageBackend> SingleFileStore<S> {
             Err(e) => return Err(Error::FileRead { path, source: e }),
         };
 
-        // Migration
         if let Some(migrator) = &self.migrator {
             let original = file_data.clone();
             file_data = migrator(file_data);
@@ -100,15 +98,13 @@ impl<S: StorageBackend> SingleFileStore<S> {
     fn save_to_disk(&self, cache: &HashMap<String, Value>) -> Result<()> {
         let path = self.file_path();
 
-        // Ensure directory exists - base_dir for single file is the config dir itself mostly
         if let Some(parent) = path.parent()
             && !parent.exists()
         {
             crate::utils::security::ensure_secure_dir(parent)?;
         }
 
-        let obj: Value = Value::Object(cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
-        self.storage.write(&path, &obj)?;
+        self.storage.write(&path, cache)?;
         Ok(())
     }
 }
@@ -131,11 +127,10 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     }
 
     fn set(&self, key: &str, value: Value) -> Result<()> {
-        self.ensure_loaded()?; // Load everything first!
+        self.ensure_loaded()?;
 
         let mut state = self.state.write_recovered()?;
 
-        // Initialize cache if something went wrong, though ensure_loaded should handle it
         if state.cache.is_none() {
             state.cache = Some(HashMap::new());
         }
@@ -162,14 +157,23 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
         self.ensure_loaded()?;
 
         let mut state = self.state.write_recovered()?;
-        if let Some(cache) = &mut state.cache {
-            if cache.remove(key).is_some() {
-                self.save_to_disk(cache)?;
-            } else {
-                // Key didn't exist, fine
-            }
+        if let Some(cache) = &mut state.cache
+            && cache.remove(key).is_some()
+        {
+            self.save_to_disk(cache)?;
         }
         Ok(())
+    }
+
+    fn exists(&self, key: &str) -> Result<bool> {
+        self.ensure_loaded()?;
+
+        let state = self.state.read_recovered()?;
+        if let Some(cache) = &state.cache {
+            Ok(cache.contains_key(key))
+        } else {
+            Ok(false)
+        }
     }
 
     fn list(&self) -> Result<Vec<String>> {
@@ -203,11 +207,11 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
         }
     }
 
-    fn get_base_path(&self) -> PathBuf {
+    fn base_path(&self) -> PathBuf {
         self.base_dir.clone()
     }
 
-    fn get_single_file_path(&self) -> Option<PathBuf> {
+    fn single_file_path(&self) -> Option<PathBuf> {
         Some(self.file_path())
     }
 }
@@ -294,8 +298,6 @@ mod tests {
         assert_eq!(writes.load(Ordering::SeqCst), 0);
     }
 
-    /// A plain scalar string (e.g. `_active`) must round-trip through the raw
-    /// store without being promoted to an object.
     #[test]
     fn test_scalar_string_value_round_trips() {
         let dir = tempfile::tempdir().unwrap();
@@ -312,8 +314,6 @@ mod tests {
         assert_eq!(retrieved, json!("Windows"));
     }
 
-    /// A file with a mix of object entries and a scalar sentinel entry must
-    /// load all values correctly.
     #[test]
     fn test_mixed_object_and_scalar_entries_all_preserved() {
         let dir = tempfile::tempdir().unwrap();

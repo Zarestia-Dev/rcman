@@ -463,7 +463,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         for (full_key, meta) in self
             .manager
             .manager
-            .schema_metadata
+            .schema_metadata()
             .iter()
             .filter(|(_, meta)| meta.is_secret())
         {

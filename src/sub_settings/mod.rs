@@ -598,13 +598,12 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
         let profile = self.active_secret_profile();
 
-        for (path, metadata) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
+        for (path, _) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
             let credential_key = self.secret_credential_key(entry_name, path);
             if creds
                 .get_with_profile(&credential_key, profile.as_deref())?
                 .is_some()
             {
-                let _ = metadata;
                 return Ok(true);
             }
         }
@@ -750,8 +749,6 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
         let store = self.store.read_recovered()?;
 
-        // Check if exists first for strict notification accuracy?
-        // Store.remove handles "not found" gracefully usually.
         store.remove(name)?;
         self.clear_secret_fields(name)?;
 
@@ -800,18 +797,23 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if the store cannot be read or if an unexpected error occurs during lookup.
     pub fn exists(&self, name: &str) -> Result<bool> {
-        match self.get_value(name) {
-            Ok(_) => Ok(true),
-            Err(Error::SubSettingsEntryNotFound(_)) => Ok(false),
-            Err(e) => Err(e),
+        let store = self.store.read_recovered()?;
+        if store.exists(name)? {
+            return Ok(true);
         }
+
+        if self.has_stored_secret_for_entry(name)? {
+            return Ok(true);
+        }
+
+        Ok(false)
     }
 
     // Legacy support methods that might need to remain or be refactored differently
     pub fn directory(&self) -> PathBuf {
         self.store
             .read_recovered()
-            .map(|s| s.get_base_path())
+            .map(|s| s.base_path())
             .unwrap_or_default()
     }
 
@@ -819,7 +821,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         self.store
             .read_recovered()
             .ok()
-            .and_then(|s| s.get_single_file_path())
+            .and_then(|s| s.single_file_path())
     }
 }
 

@@ -7,10 +7,32 @@ use crate::manager::core::SettingsManager;
 use crate::storage::StorageBackend;
 use crate::utils::sync::RwLockExt;
 
-use log::{debug, info};
+use log::debug;
 use serde_json::{Value, json};
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Schema> {
+    /// Resolve the active profile name, or `None` if profiles are disabled.
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn active_profile_name(&self) -> Option<String> {
+        #[cfg(feature = "profiles")]
+        {
+            self.profile_manager
+                .as_ref()
+                .and_then(|pm| pm.active().ok())
+        }
+        #[cfg(not(feature = "profiles"))]
+        {
+            None
+        }
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn require_credentials(&self) -> Result<&crate::credentials::CredentialManager> {
+        self.credentials
+            .as_ref()
+            .ok_or(Error::Credential("Credentials not enabled".to_string()))
+    }
+
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     fn save_secret_setting(
         &self,
@@ -37,7 +59,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             if self.credentials.is_some() {
                 self.remove_credential_with_profile(full_key)?;
             }
-            info!("Secret {full_key} set to default, removed from keychain");
+            debug!("Secret {full_key} set to default, removed from keychain");
 
             if old_value != *value {
                 self.events.notify(full_key, &old_value, value);
@@ -51,7 +73,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             _ => value.to_string(),
         };
         self.store_credential_with_profile(full_key, &value_str)?;
-        info!("Secret setting {full_key} stored in keychain");
+        debug!("Secret setting {full_key} stored in keychain");
 
         if old_value != *value {
             self.events.notify(full_key, &old_value, value);
@@ -60,76 +82,36 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(())
     }
 
-    /// Get the current settings file path
+    /// Get the current settings file path.
     ///
-    /// This returns the path where settings.json is stored.
     /// If profiles are enabled, this points to the active profile's directory.
     pub(crate) fn settings_path(&self) -> Result<std::path::PathBuf> {
         let dir = self.settings_dir.read_recovered()?;
         Ok(dir.join(&self.config.settings_file))
     }
 
-    /// Get the credential manager, potentially with profile context
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub(crate) fn get_credential_with_profile(&self, key: &str) -> Result<Option<String>> {
-        let creds = self
-            .credentials
-            .as_ref()
-            .ok_or(Error::Credential("Credentials not enabled".to_string()))?;
-
-        #[cfg(feature = "profiles")]
-        let profile = self
-            .profile_manager
-            .as_ref()
-            .and_then(|pm| pm.active().ok());
-
-        #[cfg(not(feature = "profiles"))]
-        let profile: Option<String> = None;
-
+        let creds = self.require_credentials()?;
+        let profile = self.active_profile_name();
         creds.get_with_profile(key, profile.as_deref())
     }
 
-    /// Store credential with profile context
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub(crate) fn store_credential_with_profile(&self, key: &str, value: &str) -> Result<()> {
-        let creds = self
-            .credentials
-            .as_ref()
-            .ok_or(Error::Credential("Credentials not enabled".to_string()))?;
-
-        #[cfg(feature = "profiles")]
-        let profile = self
-            .profile_manager
-            .as_ref()
-            .and_then(|pm| pm.active().ok());
-
-        #[cfg(not(feature = "profiles"))]
-        let profile: Option<String> = None;
-
+        let creds = self.require_credentials()?;
+        let profile = self.active_profile_name();
         creds.store_with_profile(key, value, profile.as_deref())
     }
 
-    /// Remove credential with profile context
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub(crate) fn remove_credential_with_profile(&self, key: &str) -> Result<()> {
-        let creds = self
-            .credentials
-            .as_ref()
-            .ok_or(Error::Credential("Credentials not enabled".to_string()))?;
-
-        #[cfg(feature = "profiles")]
-        let profile = self
-            .profile_manager
-            .as_ref()
-            .and_then(|pm| pm.active().ok());
-
-        #[cfg(not(feature = "profiles"))]
-        let profile: Option<String> = None;
-
+        let creds = self.require_credentials()?;
+        let profile = self.active_profile_name();
         creds.remove_with_profile(key, profile.as_deref())
     }
 
-    /// Invalidate the settings cache
+    /// Invalidate the settings cache.
     ///
     /// Call this if the settings file was modified externally.
     pub fn invalidate_cache(&self) {
@@ -153,25 +135,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     /// Save a single setting value.
     ///
-    /// This method validates the value, updates the cache, and writes to disk.
-    /// If the setting is marked as `secret: true` and credentials are enabled,
-    /// the value will be stored in the OS keychain instead of the settings file.
-    /// If the value equals the default, it will be removed from storage.
-    /// If the value is unchanged, no I/O occurs.
-    ///
-    /// # Arguments
-    ///
-    /// * `category` - Category name (e.g., "ui", "general")
-    /// * `key` - Setting key within the category (e.g., "theme", "language")
-    /// * `value` - New value as JSON
+    /// Validates the value, updates the cache, and writes to disk.
+    /// Secret settings (when credentials are enabled) are routed to the OS
+    /// keychain instead. Values equal to the default are removed from storage.
+    /// Unchanged values produce no I/O.
     ///
     /// # Errors
     ///
     /// Returns an error if:
-    /// * Validation fails
-    /// * Saving to storage fails
-    /// * Parsing the existing settings fails
-    ///
+    /// - Validation fails
+    /// - Keyring storage or file writing fails
+    /// - Serialization or parsing fails
     pub fn save_setting(&self, category: &str, key: &str, value: &Value) -> Result<()> {
         let path = self.settings_path()?;
         let full_key = format!("{category}.{key}");
@@ -193,12 +167,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             return Ok(());
         }
 
+        self.ensure_cache_populated()?;
+
         let _write_guard = self
             .settings_write_lock
             .lock()
             .map_err(|_| Error::Config("Settings write lock poisoned".into()))?;
-
-        self.ensure_cache_populated()?;
 
         let mut stored = self
             .settings_cache
@@ -246,7 +220,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 debug!("Setting {full_key} set to default, removed from store");
             } else {
                 category_obj.insert(key.to_string(), value.clone());
-                debug!("Saved setting {full_key}");
             }
         } // category_obj borrow ends
 
@@ -262,24 +235,18 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         self.storage.write(&path, &stored)?;
         self.settings_cache.update_stored(stored)?;
 
-        info!("Setting {full_key} saved");
+        debug!("Setting {full_key} saved");
         self.events.notify(&full_key, &old_value, value);
 
         Ok(())
     }
 
-    /// Reset a single setting to default
-    ///
-    /// # Arguments
-    ///
-    /// * `category` - Category of the setting
-    /// * `key` - Key of the setting
+    /// Reset a single setting to its schema default.
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - The setting doesn't exist
-    /// - Writing to storage fails
+    /// Returns an error if the setting key is not found in the schema,
+    /// or if saving the default value fails.
     pub fn reset_setting(&self, category: &str, key: &str) -> Result<Value> {
         let metadata_key = format!("{category}.{key}");
         let default_value = self
@@ -290,11 +257,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         self.save_setting(category, key, &default_value)?;
 
-        info!("Setting {category}.{key} reset to default");
+        debug!("Setting {category}.{key} reset to default");
         Ok(default_value)
     }
 
-    /// Reset all settings to defaults
+    /// Reset all settings to defaults.
+    ///
     /// # Errors
     ///
     /// Returns an error if writing to storage fails or credential clearing fails.
@@ -358,10 +326,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         if let Some(ref creds) = self.credentials {
             creds.clear()?;
-            info!("All credentials cleared");
+            debug!("All credentials cleared");
         }
 
-        info!("All settings reset to defaults");
+        debug!("All settings reset to defaults");
 
         self.invalidate_cache();
 
@@ -372,7 +340,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(())
     }
 
-    /// Load settings from disk, applying migrations if needed
+    /// Load settings from disk, applying migrations if needed.
     pub(crate) fn load_from_disk(&self) -> Result<CachedSettings> {
         let settings_path = self.settings_path()?;
         let mut value: Value = match self.storage.read(&settings_path) {
@@ -389,7 +357,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             let original = value.clone();
             value = migrator(value);
             if value != original {
-                info!("Migrated settings file");
+                debug!("Migrated settings file");
                 self.storage.write(&settings_path, &value)?;
             }
         }
@@ -403,27 +371,21 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         Ok(CachedSettings {
             stored: value,
-            merged: std::sync::OnceLock::new(),
+            merged: None,
             defaults: self.schema_defaults.clone(),
             generation: 0,
         })
     }
 
-    /// Ensure the settings cache is populated
+    /// Ensure the settings cache is populated.
     ///
-    /// This method is thread-safe and safe to call multiple times.
-    /// It uses double-checked locking to avoid unnecessary locks.
+    /// Thread-safe — `populate()` acquires a write lock internally and
+    /// double-checks, so redundant calls are cheap.
     ///
     /// # Errors
     ///
-    /// Returns an error if the settings cannot be loaded from disk.
+    /// Returns an error if loading from disk or parsing fails.
     pub fn ensure_cache_populated(&self) -> Result<()> {
-        if self.settings_cache.is_populated() {
-            return Ok(());
-        }
-
-        self.settings_cache.populate(|| self.load_from_disk())?;
-
-        Ok(())
+        self.settings_cache.populate(|| self.load_from_disk())
     }
 }

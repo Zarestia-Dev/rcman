@@ -3,7 +3,6 @@
 //! Provides reactive callbacks for settings modifications.
 
 use crate::utils::sync::RwLockExt;
-use log::debug;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -49,7 +48,7 @@ impl EventManager {
         if let Ok(mut guard) = self.global_listeners.write_recovered() {
             guard.push(Arc::new(callback));
         } else {
-            debug!("Failed to register global change listener due to lock recovery error");
+            log::warn!("Failed to register global change listener due to lock recovery error");
         }
     }
 
@@ -68,7 +67,9 @@ impl EventManager {
                 .or_default()
                 .push(Arc::new(callback));
         } else {
-            debug!("Failed to register key-specific listener for {key} due to lock recovery error");
+            log::warn!(
+                "Failed to register key-specific listener for {key} due to lock recovery error"
+            );
         }
     }
 
@@ -90,7 +91,7 @@ impl EventManager {
                 .or_default()
                 .push(Arc::new(validator));
         } else {
-            debug!("Failed to register validator for {key} due to lock recovery error");
+            log::warn!("Failed to register validator for {key} due to lock recovery error");
         }
     }
 
@@ -103,7 +104,7 @@ impl EventManager {
     /// Returns the first validation error message if any validator fails.
     pub fn validate(&self, key: &str, value: &Value) -> Result<(), String> {
         let guard = self.validators.read_recovered().map_err(|err| {
-            debug!("Failed to validate {key} due to lock recovery error: {err}");
+            log::warn!("Failed to validate {key} due to lock recovery error: {err}");
             "Internal lock error".to_string()
         })?;
         if let Some(validators) = guard.get(key) {
@@ -127,7 +128,7 @@ impl EventManager {
                 callback(key, old_value, new_value);
             }
         } else {
-            debug!("Failed to read global listeners for {key} due to lock recovery error");
+            log::warn!("Failed to read global listeners for {key} due to lock recovery error");
         }
 
         // Call key-specific listeners
@@ -138,7 +139,9 @@ impl EventManager {
                 }
             }
         } else {
-            debug!("Failed to read key-specific listeners for {key} due to lock recovery error");
+            log::warn!(
+                "Failed to read key-specific listeners for {key} due to lock recovery error"
+            );
         }
     }
 
@@ -147,7 +150,7 @@ impl EventManager {
         if let Ok(mut guard) = self.key_listeners.write_recovered() {
             guard.remove(key);
         } else {
-            debug!("Failed to remove listeners for {key} due to lock recovery error");
+            log::warn!("Failed to remove listeners for {key} due to lock recovery error");
         }
     }
 
@@ -156,12 +159,12 @@ impl EventManager {
         if let Ok(mut guard) = self.global_listeners.write_recovered() {
             guard.clear();
         } else {
-            debug!("Failed to clear global listeners due to lock recovery error");
+            log::warn!("Failed to clear global listeners due to lock recovery error");
         }
         if let Ok(mut guard) = self.key_listeners.write_recovered() {
             guard.clear();
         } else {
-            debug!("Failed to clear key-specific listeners due to lock recovery error");
+            log::warn!("Failed to clear key-specific listeners due to lock recovery error");
         }
     }
 }

@@ -6,7 +6,6 @@
 use super::CredentialBackend;
 use super::types::SecretPasswordSource;
 use crate::error::{Error, Result};
-use crate::utils::sync::RwLockExt;
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit},
@@ -72,14 +71,38 @@ impl EncryptedFileBackend {
     /// # Errors
     /// Returns an error if the key length is invalid.
     pub(crate) fn new(path: PathBuf, key: &[u8; 32], salt: [u8; 16]) -> Result<Self> {
-        Ok(Self {
+        let backend = Self {
             path,
             cipher: Aes256Gcm::new_from_slice(key)
                 .map_err(|_| Error::Credential("Invalid encryption key length".into()))?,
             salt,
             cache: RwLock::new(HashMap::new()),
             write_lock: Mutex::new(()),
-        })
+        };
+        backend.warm_cache()?;
+        Ok(backend)
+    }
+
+    /// Warm the cache by decrypting all stored credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be loaded or if decryption fails.
+    pub fn warm_cache(&self) -> Result<()> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| Error::Credential("Encrypted file write lock poisoned".into()))?;
+
+        let store = self.load_store()?;
+        let mut cache = self.cache.write().map_err(|_| Error::LockPoisoned)?;
+
+        for (key, entry) in &store.entries {
+            let value = self.decrypt(entry)?;
+            cache.insert(key.clone(), value);
+        }
+
+        Ok(())
     }
 
     /// Create an encrypted file backend from a password source
@@ -281,8 +304,6 @@ impl EncryptedFileBackend {
             source: e,
         })?;
 
-        crate::utils::security::set_secure_file_permissions(&self.path)?;
-
         Ok(())
     }
 
@@ -334,9 +355,9 @@ impl CredentialBackend for EncryptedFileBackend {
         store.entries.insert(key.to_string(), encrypted);
         self.save_store(store.entries)?;
 
-        // Update cache while write_lock is held so cache and disk are always consistent.
         self.cache
-            .write_recovered()?
+            .write()
+            .map_err(|_| Error::LockPoisoned)?
             .insert(key.to_string(), value.to_string());
 
         debug!("Credential stored in encrypted file: {key}");
@@ -344,28 +365,8 @@ impl CredentialBackend for EncryptedFileBackend {
     }
 
     fn get(&self, key: &str) -> Result<Option<String>> {
-        // Check cache first (no write_lock needed for reads)
-        {
-            let cache = self.cache.read_recovered()?;
-            if let Some(value) = cache.get(key) {
-                return Ok(Some(value.clone()));
-            }
-        }
-
-        let store = self.load_store()?;
-
-        let Some(entry) = store.entries.get(key) else {
-            return Ok(None);
-        };
-
-        let value = self.decrypt(entry)?;
-
-        self.cache
-            .write_recovered()?
-            .insert(key.to_string(), value.clone());
-
-        debug!("Credential retrieved from encrypted file: {key}");
-        Ok(Some(value))
+        let cache = self.cache.read().map_err(|_| Error::LockPoisoned)?;
+        Ok(cache.get(key).cloned())
     }
 
     fn remove(&self, key: &str) -> Result<()> {
@@ -378,14 +379,18 @@ impl CredentialBackend for EncryptedFileBackend {
         store.entries.remove(key);
         self.save_store(store.entries)?;
 
-        self.cache.write_recovered()?.remove(key);
+        self.cache
+            .write()
+            .map_err(|_| Error::LockPoisoned)?
+            .remove(key);
 
         debug!("Credential removed from encrypted file: {key}");
         Ok(())
     }
 
     fn list_keys(&self) -> Result<Vec<String>> {
-        Ok(self.load_store()?.entries.into_keys().collect())
+        let cache = self.cache.read().map_err(|_| Error::LockPoisoned)?;
+        Ok(cache.keys().cloned().collect())
     }
 
     fn backend_name(&self) -> &'static str {
@@ -439,10 +444,8 @@ mod tests {
         backend1.store("secret", "value").unwrap();
 
         // Try to read with different key (same salt, simulating wrong password)
-        let backend2 = EncryptedFileBackend::new(path, &key2, salt).unwrap();
-        let result = backend2.get("secret");
-
-        assert!(result.is_err());
+        let backend2 = EncryptedFileBackend::new(path, &key2, salt);
+        assert!(backend2.is_err());
     }
 
     #[test]
@@ -461,9 +464,9 @@ mod tests {
             Some("secret123".to_string())
         );
 
-        // Wrong password should fail to decrypt
-        let backend3 = EncryptedFileBackend::with_password(path, "wrong_password").unwrap();
-        assert!(backend3.get("api_key").is_err());
+        // Wrong password should fail to decrypt during initialization
+        let backend3 = EncryptedFileBackend::with_password(path, "wrong_password");
+        assert!(backend3.is_err());
     }
 
     #[test]
