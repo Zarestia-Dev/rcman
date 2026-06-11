@@ -83,9 +83,9 @@ pub struct SettingsManager<
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub(super) credentials: Option<CredentialManager>,
 
-    /// In-memory cache of keys stored in the credential store to optimize lookup and migration
+    /// Flag indicating if the credential store was upgraded (missing __rcman_secrets__)
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    pub(super) tracked_secrets_cache: RwLock<Option<std::collections::HashSet<String>>>,
+    pub(super) is_upgraded: Arc<std::sync::atomic::AtomicBool>,
 
     /// External config providers for backups
     #[cfg(feature = "backup")]
@@ -206,8 +206,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             schema_metadata: metadata,
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             credentials,
+
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-            tracked_secrets_cache: RwLock::new(None),
+            is_upgraded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             #[cfg(feature = "backup")]
             external_providers: RwLock::new(Vec::new()),
             #[cfg(feature = "profiles")]

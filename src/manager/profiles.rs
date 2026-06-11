@@ -107,12 +107,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         // Clear in-memory tracked secrets cache so it will be reloaded for the new profile
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        {
-            let mut cache = self
-                .tracked_secrets_cache
-                .write()
-                .map_err(|_| Error::LockPoisoned)?;
-            *cache = None;
+        if let Some(ref creds) = self.credentials {
+            creds.invalidate_tracked_secrets_cache()?;
         }
 
         // Step 4.5: Migrate secret keys for the new profile
@@ -134,6 +130,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             match sub.switch_profile(name) {
                 Ok(()) => {
                     debug!("Switched sub-settings '{key}' to profile '{name}'");
+                    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                    self.migrate_sub_settings_secret_keys(&sub)?;
                 }
                 Err(Error::ProfilesNotEnabled) => {
                     // Ignore sub-settings that don't support profiles.

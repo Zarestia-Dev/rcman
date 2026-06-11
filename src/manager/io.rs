@@ -55,6 +55,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             default_value.clone()
         };
 
+        if old_value == *value {
+            debug!("Secret setting {full_key} unchanged, skipping save");
+            return Ok(());
+        }
+
         if *value == default_value {
             if self.credentials.is_some() {
                 self.remove_credential_with_profile(full_key)?;
@@ -125,22 +130,16 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     fn get_tracked_secrets(&self) -> Result<std::collections::HashSet<String>> {
+        let creds = self.require_credentials()?;
+        let profile = self.active_profile_name();
         {
-            let cache_guard = self
+            let cache_guard = creds
                 .tracked_secrets_cache
                 .read()
                 .map_err(|_| Error::LockPoisoned)?;
-            if let Some(ref cache) = *cache_guard {
+            if let Some(cache) = cache_guard.get(&profile) {
                 return Ok(cache.clone());
             }
-        }
-
-        let mut cache_guard = self
-            .tracked_secrets_cache
-            .write()
-            .map_err(|_| Error::LockPoisoned)?;
-        if let Some(ref cache) = *cache_guard {
-            return Ok(cache.clone());
         }
 
         let secrets = match self.get_credential_with_profile("__rcman_secrets__")? {
@@ -148,9 +147,19 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 let list: Vec<String> = serde_json::from_str(&value_str).map_err(|e| {
                     Error::Credential(format!("Failed to parse tracked secrets list: {e}"))
                 })?;
-                list.into_iter().collect()
+                let set: std::collections::HashSet<String> = list.into_iter().collect();
+                let mut cache_guard = creds
+                    .tracked_secrets_cache
+                    .write()
+                    .map_err(|_| Error::LockPoisoned)?;
+                cache_guard.insert(profile, set.clone());
+                set
             }
             None => {
+                // Set the is_upgraded flag to indicate we did a fallback scan
+                self.is_upgraded
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+
                 // Backward-compatible one-time fallback scan:
                 // Scan all keys in the schema metadata to check what is in credentials
                 let mut initial_tracked = std::collections::HashSet::new();
@@ -159,34 +168,19 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                         initial_tracked.insert(full_key.clone());
                     }
                 }
-                // Write the list to credentials
-                let list: Vec<&String> = initial_tracked.iter().collect();
-                let val_str = serde_json::to_string(&list).map_err(|e| {
-                    Error::Credential(format!("Failed to serialize tracked secrets list: {e}"))
-                })?;
-                self.store_credential_with_profile("__rcman_secrets__", &val_str)?;
+                creds.save_tracked_secrets(&initial_tracked, profile.as_deref())?;
                 initial_tracked
             }
         };
 
-        *cache_guard = Some(secrets.clone());
         Ok(secrets)
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     fn save_tracked_secrets(&self, secrets: &std::collections::HashSet<String>) -> Result<()> {
-        let list: Vec<&String> = secrets.iter().collect();
-        let value_str = serde_json::to_string(&list).map_err(|e| {
-            Error::Credential(format!("Failed to serialize tracked secrets list: {e}"))
-        })?;
-        self.store_credential_with_profile("__rcman_secrets__", &value_str)?;
-
-        let mut cache_guard = self
-            .tracked_secrets_cache
-            .write()
-            .map_err(|_| Error::LockPoisoned)?;
-        *cache_guard = Some(secrets.clone());
-        Ok(())
+        let creds = self.require_credentials()?;
+        let profile = self.active_profile_name();
+        creds.save_tracked_secrets(secrets, profile.as_deref())
     }
 
     /// Invalidate the settings cache.
@@ -405,13 +399,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         if let Some(ref creds) = self.credentials {
             creds.clear()?;
             // Clear in-memory tracked secrets cache since all credentials are gone
-            {
-                let mut cache = self
-                    .tracked_secrets_cache
-                    .write()
-                    .map_err(|_| Error::LockPoisoned)?;
-                *cache = Some(std::collections::HashSet::new());
-            }
+            creds.clear_tracked_secrets_cache(self.active_profile_name().as_deref())?;
             debug!("All credentials cleared");
         }
 
@@ -532,6 +520,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // 2. Migrate Secret -> Normal keys (optimized: only check currently tracked secrets)
         let mut keys_to_remove = Vec::new();
         for full_key in &tracked_secrets {
+            if full_key.starts_with("sub.") {
+                continue;
+            }
             let metadata = self.schema_metadata.get(full_key);
             let is_currently_secret = metadata.map(|m| m.is_secret()).unwrap_or(false);
 
@@ -594,6 +585,154 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
             self.storage.write(&path, &stored)?;
             self.settings_cache.update_stored(stored)?;
+        }
+
+        Ok(())
+    }
+
+    /// Migrate sub-settings secret keys between the sub-settings files and credential store if their secret schema status has changed.
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    pub(crate) fn migrate_sub_settings_secret_keys(
+        &self,
+        sub: &crate::sub_settings::SubSettings<S>,
+    ) -> Result<()> {
+        if self.credentials.is_none() {
+            return Ok(());
+        }
+
+        let Some(schema) = sub.config.schema.as_ref() else {
+            return Ok(());
+        };
+
+        let secret_fields: Vec<_> = schema
+            .iter()
+            .filter(|(_, metadata)| metadata.is_secret())
+            .collect();
+
+        let _write_guard = self
+            .settings_write_lock
+            .lock()
+            .map_err(|_| Error::Config("Settings write lock poisoned".into()))?;
+
+        let creds = self
+            .credentials
+            .as_ref()
+            .ok_or_else(|| Error::Credential("Credentials not enabled".to_string()))?;
+
+        let profile = sub.active_secret_profile();
+        let mut tracked_secrets = self.get_tracked_secrets()?;
+        let mut list_modified = false;
+
+        // One-time upgrade fallback scan for sub-settings if is_upgraded is true
+        if self.is_upgraded.load(std::sync::atomic::Ordering::Relaxed)
+            && let Ok(entries) = sub.list()
+        {
+            for entry_name in &entries {
+                for (path, _) in schema.iter().filter(|(_, m)| m.is_secret()) {
+                    let credential_key = sub.secret_credential_key(entry_name, path);
+                    if let Ok(Some(_)) = creds.get_with_profile(&credential_key, profile.as_deref())
+                        && tracked_secrets.insert(credential_key)
+                    {
+                        list_modified = true;
+                    }
+                }
+            }
+        }
+
+        let store = sub.store.read_recovered()?;
+
+        // Pass 1: Normal -> Secret (Migrate from file to credential store)
+        if !secret_fields.is_empty()
+            && let Ok(entries) = sub.list()
+        {
+            for entry_name in &entries {
+                if let Ok(mut value) = store.get(entry_name) {
+                    let mut entry_modified = false;
+                    for (path, metadata) in &secret_fields {
+                        if let Some(secret_value) =
+                            crate::utils::value::remove_path(&mut value, path)
+                        {
+                            let credential_key = sub.secret_credential_key(entry_name, path);
+                            if secret_value == metadata.default {
+                                creds.remove_with_profile(&credential_key, profile.as_deref())?;
+                            } else {
+                                let value_str = match secret_value {
+                                    Value::String(s) => s,
+                                    v => v.to_string(),
+                                };
+                                creds.store_with_profile(
+                                    &credential_key,
+                                    &value_str,
+                                    profile.as_deref(),
+                                )?;
+                            }
+                            if tracked_secrets.insert(credential_key.clone()) {
+                                list_modified = true;
+                            }
+                            entry_modified = true;
+                            log::info!(
+                                "Migrated sub-setting key '{}' to credential store (changed to secret)",
+                                credential_key
+                            );
+                        }
+                    }
+                    if entry_modified {
+                        store.set(entry_name, value)?;
+                    }
+                }
+            }
+        }
+
+        // Pass 2: Secret -> Normal (Migrate from credential store to file)
+        let prefix = format!("sub.{}.", sub.config.name);
+        let mut keys_to_remove = Vec::new();
+        for full_key in &tracked_secrets {
+            if !full_key.starts_with(&prefix) {
+                continue;
+            }
+            let suffix = &full_key[prefix.len()..];
+            let Some((entry_name, field_path)) = suffix.split_once('.') else {
+                continue;
+            };
+
+            let metadata = schema.get(field_path);
+            let is_currently_secret = metadata.map(|m| m.is_secret()).unwrap_or(false);
+
+            if !is_currently_secret {
+                if let Ok(Some(secret_value)) = creds.get_with_profile(full_key, profile.as_deref())
+                {
+                    if let Some(metadata) = metadata {
+                        let value = Value::String(secret_value);
+                        let default_value = &metadata.default;
+
+                        if value != *default_value {
+                            let mut entry_val = store.get(entry_name).unwrap_or_else(|_| json!({}));
+                            if !entry_val.is_object() {
+                                entry_val = json!({});
+                            }
+                            crate::utils::value::set_path(&mut entry_val, field_path, value);
+                            store.set(entry_name, entry_val)?;
+                        }
+                    }
+                    creds.remove_with_profile(full_key, profile.as_deref())?;
+                    log::info!(
+                        "Migrated sub-setting key '{}' to sub-settings file (changed to non-secret)",
+                        full_key
+                    );
+                }
+                keys_to_remove.push(full_key.clone());
+            }
+        }
+
+        if !keys_to_remove.is_empty() {
+            for key in keys_to_remove {
+                tracked_secrets.remove(&key);
+            }
+            list_modified = true;
+        }
+
+        if list_modified {
+            self.save_tracked_secrets(&tracked_secrets)?;
         }
 
         Ok(())

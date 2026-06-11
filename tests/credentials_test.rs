@@ -622,3 +622,249 @@ fn test_migration_upgrade_path() {
         assert!(list.is_empty());
     }
 }
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Default)]
+struct SubMigrationNormalSettings {
+    pub host: String,
+    pub token: String,
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+impl rcman::SettingsSchema for SubMigrationNormalSettings {
+    fn get_metadata() -> std::collections::HashMap<String, rcman::SettingMetadata> {
+        rcman::settings! {
+            "host" => rcman::SettingMetadata::text(""),
+            "token" => rcman::SettingMetadata::text("")
+        }
+    }
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Default)]
+struct SubMigrationSecretSettings {
+    pub host: String,
+    pub token: String,
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+impl rcman::SettingsSchema for SubMigrationSecretSettings {
+    fn get_metadata() -> std::collections::HashMap<String, rcman::SettingMetadata> {
+        rcman::settings! {
+            "host" => rcman::SettingMetadata::text(""),
+            "token" => {
+                let s = rcman::SettingMetadata::text("");
+                #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                let s = s.secret();
+                s
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_subsettings_migration() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let app_name = unique_app_name();
+
+    // 1. Save entry as a NORMAL setting in the sub-setting file
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .register_sub_settings(
+                rcman::SubSettingsConfig::new("remotes")
+                    .with_schema::<SubMigrationNormalSettings>(),
+            )
+            .unwrap();
+
+        let remotes = manager.sub_settings("remotes").unwrap();
+        remotes
+            .set(
+                "gdrive",
+                &json!({
+                    "host": "example.com",
+                    "token": "plain_token_123"
+                }),
+            )
+            .unwrap();
+
+        // Verify it was written to the sub-settings file
+        let file_path = temp_dir.path().join("remotes").join("gdrive.json");
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(content.contains("plain_token_123"));
+        assert!(content.contains("example.com"));
+    }
+
+    // 2. Re-create manager, register with SECRET schema (token is now secret)
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .register_sub_settings(
+                rcman::SubSettingsConfig::new("remotes")
+                    .with_schema::<SubMigrationSecretSettings>(),
+            )
+            .unwrap();
+
+        let remotes = manager.sub_settings("remotes").unwrap();
+
+        // Verification:
+        // - Value is removed from the settings file JSON
+        let file_path = temp_dir.path().join("remotes").join("gdrive.json");
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(!content.contains("plain_token_123"));
+        assert!(content.contains("example.com"));
+
+        // - Value is in credential store
+        let creds = manager.credentials().unwrap();
+        let stored_secret = creds.get("sub.remotes.gdrive.token").unwrap();
+        assert_eq!(stored_secret, Some("plain_token_123".to_string()));
+
+        // - Reading the setting still returns the correct value
+        let val: serde_json::Value = remotes.get_value("gdrive").unwrap();
+        assert_eq!(val["token"], json!("plain_token_123"));
+        assert_eq!(val["host"], json!("example.com"));
+    }
+
+    // 3. Migrate back to Normal settings
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .register_sub_settings(
+                rcman::SubSettingsConfig::new("remotes")
+                    .with_schema::<SubMigrationNormalSettings>(),
+            )
+            .unwrap();
+
+        let remotes = manager.sub_settings("remotes").unwrap();
+
+        // Verification:
+        // - Value is back in the settings file JSON
+        let file_path = temp_dir.path().join("remotes").join("gdrive.json");
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(content.contains("plain_token_123"));
+        assert!(content.contains("example.com"));
+
+        // - Value is removed from the credential store
+        let creds = manager.credentials().unwrap();
+        assert_eq!(creds.get("sub.remotes.gdrive.token").unwrap(), None);
+
+        // - Reading the setting still returns the correct value
+        let val: serde_json::Value = remotes.get_value("gdrive").unwrap();
+        assert_eq!(val["token"], json!("plain_token_123"));
+        assert_eq!(val["host"], json!("example.com"));
+    }
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_subsettings_migration_upgrade_path() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let app_name = unique_app_name();
+
+    // 1. Write the secret setting using the new library first
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .register_sub_settings(
+                rcman::SubSettingsConfig::new("remotes")
+                    .with_schema::<SubMigrationSecretSettings>(),
+            )
+            .unwrap();
+
+        let remotes = manager.sub_settings("remotes").unwrap();
+        remotes
+            .set(
+                "gdrive",
+                &json!({
+                    "host": "example.com",
+                    "token": "upgrade-secret-token"
+                }),
+            )
+            .unwrap();
+
+        // Verify it was stored in credential store
+        let creds = manager.credentials().unwrap();
+        assert_eq!(
+            creds.get("sub.remotes.gdrive.token").unwrap(),
+            Some("upgrade-secret-token".to_string())
+        );
+
+        // Simulating upgrade: manually remove '__rcman_secrets__'
+        creds.remove("__rcman_secrets__").unwrap();
+    }
+
+    // 2. Instantiate SettingsManager again (simulating upgrade)
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .register_sub_settings(
+                rcman::SubSettingsConfig::new("remotes")
+                    .with_schema::<SubMigrationSecretSettings>(),
+            )
+            .unwrap();
+
+        let remotes = manager.sub_settings("remotes").unwrap();
+
+        // Verify that the one-time scan was triggered and recreated '__rcman_secrets__'
+        let creds = manager.credentials().unwrap();
+        let list_str = creds.get("__rcman_secrets__").unwrap().unwrap();
+        let list: Vec<String> = serde_json::from_str(&list_str).unwrap();
+        assert!(list.contains(&"sub.remotes.gdrive.token".to_string()));
+
+        // Verify the value is still there and correct
+        let val: serde_json::Value = remotes.get_value("gdrive").unwrap();
+        assert_eq!(val["token"], json!("upgrade-secret-token"));
+    }
+
+    // 3. Migrate back to Normal settings
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .register_sub_settings(
+                rcman::SubSettingsConfig::new("remotes")
+                    .with_schema::<SubMigrationNormalSettings>(),
+            )
+            .unwrap();
+
+        let _remotes = manager.sub_settings("remotes").unwrap();
+
+        // Verify that it migrated back to the settings file
+        let file_path = temp_dir.path().join("remotes").join("gdrive.json");
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(content.contains("upgrade-secret-token"));
+
+        // Verify it was removed from credential store
+        let creds = manager.credentials().unwrap();
+        assert_eq!(creds.get("sub.remotes.gdrive.token").unwrap(), None);
+
+        // Verify that '__rcman_secrets__' list does not contain sub.remotes.gdrive.token
+        let list_str = creds.get("__rcman_secrets__").unwrap().unwrap();
+        let list: Vec<String> = serde_json::from_str(&list_str).unwrap();
+        assert!(!list.contains(&"sub.remotes.gdrive.token".to_string()));
+    }
+}

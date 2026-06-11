@@ -159,13 +159,13 @@ pub type ChangeCallback = Arc<dyn Fn(&str, SubSettingsAction) + Send + Sync>;
 
 /// Handler for a single sub-settings type
 pub struct SubSettings<S: StorageBackend = crate::storage::JsonStorage> {
-    config: SubSettingsConfig,
+    pub(crate) config: SubSettingsConfig,
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     credential_manager: Option<crate::credentials::CredentialManager>,
 
     /// The active store implementation
-    store: RwLock<Box<dyn SubSettingsStore>>,
+    pub(crate) store: RwLock<Box<dyn SubSettingsStore>>,
 
     /// We keep storage around mostly for profiles logic if needed,
     /// or simple ref storage.
@@ -488,12 +488,12 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn secret_credential_key(&self, entry_name: &str, field_path: &str) -> String {
+    pub(crate) fn secret_credential_key(&self, entry_name: &str, field_path: &str) -> String {
         format!("sub.{}.{}.{}", self.config.name, entry_name, field_path)
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn active_secret_profile(&self) -> Option<String> {
+    pub(crate) fn active_secret_profile(&self) -> Option<String> {
         #[cfg(feature = "profiles")]
         {
             if self.config.profiles_enabled {
@@ -537,7 +537,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             let credential_key = self.secret_credential_key(entry_name, path);
 
             if secret_value == metadata.default {
-                creds.remove(&credential_key)?;
+                creds.remove_with_profile(&credential_key, profile.as_deref())?;
+                creds.remove_tracked_secret(&credential_key, profile.as_deref())?;
                 continue;
             }
 
@@ -546,7 +547,15 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
                 v => v.to_string(),
             };
 
+            if let Ok(Some(existing_val)) = creds.get_with_profile(&credential_key, profile.as_deref()) {
+                if existing_val == value_str {
+                    creds.add_tracked_secret(&credential_key, profile.as_deref())?;
+                    continue;
+                }
+            }
+
             creds.store_with_profile(&credential_key, &value_str, profile.as_deref())?;
+            creds.add_tracked_secret(&credential_key, profile.as_deref())?;
         }
 
         Ok(())
@@ -631,9 +640,12 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             return Ok(());
         };
 
+        let profile = self.active_secret_profile();
+
         for (path, _) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
             let credential_key = self.secret_credential_key(entry_name, path);
-            creds.remove(&credential_key)?;
+            creds.remove_with_profile(&credential_key, profile.as_deref())?;
+            creds.remove_tracked_secret(&credential_key, profile.as_deref())?;
         }
 
         Ok(())

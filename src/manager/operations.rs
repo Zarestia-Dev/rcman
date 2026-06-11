@@ -246,7 +246,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         )?);
 
         let mut guard = self.sub_settings.write_recovered()?;
-        guard.insert(name.clone(), handler);
+        guard.insert(name.clone(), handler.clone());
+
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        self.migrate_sub_settings_secret_keys(&handler)?;
 
         info!("Registered sub-settings type: {name}");
         Ok(())
