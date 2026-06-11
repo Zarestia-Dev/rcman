@@ -392,3 +392,233 @@ fn test_encrypted_fallback_with_file_password() {
     let val = manager.get_value("api.key").unwrap();
     assert_eq!(val, json!("secret-value"));
 }
+
+// =============================================================================
+// Bidirectional Migration Tests
+// =============================================================================
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Default)]
+struct MigrationNormalSettings {
+    pub api: MigrationApiSettings,
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Default)]
+struct MigrationApiSettings {
+    pub key: String,
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+impl rcman::SettingsSchema for MigrationNormalSettings {
+    fn get_metadata() -> std::collections::HashMap<String, rcman::SettingMetadata> {
+        rcman::settings! {
+            "api.key" => rcman::SettingMetadata::text("")
+                .meta_str("label", "API Key")
+        }
+    }
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Default)]
+struct MigrationSecretSettings {
+    pub api: MigrationApiSettings,
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+impl rcman::SettingsSchema for MigrationSecretSettings {
+    fn get_metadata() -> std::collections::HashMap<String, rcman::SettingMetadata> {
+        rcman::settings! {
+            "api.key" => {
+                let s = rcman::SettingMetadata::text("")
+                    .meta_str("label", "API Key");
+                #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                let s = s.secret();
+                s
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_migration_normal_to_secret() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let app_name = unique_app_name();
+
+    // 1. Write the setting as a NORMAL setting using MigrationNormalSettings schema
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_schema::<MigrationNormalSettings>()
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .save_setting("api", "key", &json!("my-plain-text-key"))
+            .unwrap();
+
+        // Verify it was written to the settings JSON file on disk
+        let settings_path = temp_dir.path().join("settings.json");
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        assert!(content.contains("my-plain-text-key"));
+    }
+
+    // 2. Load the settings with MigrationSecretSettings schema (key is now secret)
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_schema::<MigrationSecretSettings>()
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+
+        // 3. Verify it migrated:
+        // - Value is in credential store
+        let creds = manager.credentials().unwrap();
+        let stored_secret = creds.get("api.key").unwrap();
+        assert_eq!(stored_secret, Some("my-plain-text-key".to_string()));
+
+        // - Value is removed from the settings file JSON
+        let settings_path = temp_dir.path().join("settings.json");
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        assert!(!content.contains("my-plain-text-key"));
+        assert!(!content.contains("api.key"));
+
+        // - Reading the setting still returns the correct value
+        let val: String = manager.get("api.key").unwrap();
+        assert_eq!(val, "my-plain-text-key");
+    }
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_migration_secret_to_normal() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let app_name = unique_app_name();
+
+    // 1. Write the setting as a SECRET setting using MigrationSecretSettings schema
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_schema::<MigrationSecretSettings>()
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .save_setting("api", "key", &json!("my-secret-key-value"))
+            .unwrap();
+
+        // Verify it is NOT in settings.json
+        let settings_path = temp_dir.path().join("settings.json");
+        if settings_path.exists() {
+            let content = std::fs::read_to_string(&settings_path).unwrap();
+            assert!(!content.contains("my-secret-key-value"));
+        }
+
+        // Verify it IS in credential store
+        let creds = manager.credentials().unwrap();
+        assert_eq!(
+            creds.get("api.key").unwrap(),
+            Some("my-secret-key-value".to_string())
+        );
+    }
+
+    // 2. Load the settings with MigrationNormalSettings schema (key is now normal)
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_schema::<MigrationNormalSettings>()
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+
+        // 3. Verify it migrated:
+        // - Value is in settings.json
+        let settings_path = temp_dir.path().join("settings.json");
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        assert!(content.contains("my-secret-key-value"));
+
+        // - Value is removed from the credential store
+        let creds = manager.credentials().unwrap();
+        assert_eq!(creds.get("api.key").unwrap(), None);
+
+        // - Reading the setting still returns the correct value
+        let val: String = manager.get("api.key").unwrap();
+        assert_eq!(val, "my-secret-key-value");
+    }
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_migration_upgrade_path() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let app_name = unique_app_name();
+
+    // 1. Write the secret setting using the new library first
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_schema::<MigrationSecretSettings>()
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .save_setting("api", "key", &json!("old-version-secret"))
+            .unwrap();
+
+        // Verify it was stored in credential store
+        let creds = manager.credentials().unwrap();
+        assert_eq!(
+            creds.get("api.key").unwrap(),
+            Some("old-version-secret".to_string())
+        );
+
+        // Simulating upgrade: manually remove '__rcman_secrets__'
+        creds.remove("__rcman_secrets__").unwrap();
+    }
+
+    // 2. Instantiate SettingsManager again (simulating upgrade)
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_schema::<MigrationSecretSettings>()
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+
+        // Verify that the one-time scan was triggered and recreated '__rcman_secrets__'
+        let creds = manager.credentials().unwrap();
+        let list_str = creds.get("__rcman_secrets__").unwrap().unwrap();
+        let list: Vec<String> = serde_json::from_str(&list_str).unwrap();
+        assert!(list.contains(&"api.key".to_string()));
+
+        // Verify the value is still there and correct
+        let val: String = manager.get("api.key").unwrap();
+        assert_eq!(val, "old-version-secret");
+    }
+
+    // 3. Migrate back to Normal settings
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_schema::<MigrationNormalSettings>()
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+
+        // Verify that it migrated back to settings.json
+        let settings_path = temp_dir.path().join("settings.json");
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        assert!(content.contains("old-version-secret"));
+
+        // Verify it was removed from credential store
+        let creds = manager.credentials().unwrap();
+        assert_eq!(creds.get("api.key").unwrap(), None);
+
+        // Verify that '__rcman_secrets__' list is empty
+        let list_str = creds.get("__rcman_secrets__").unwrap().unwrap();
+        let list: Vec<String> = serde_json::from_str(&list_str).unwrap();
+        assert!(list.is_empty());
+    }
+}

@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- **Bidirectional Secret Migration with O(1) Startup Optimization**:
+  - Automatically migrates settings between `settings.json` and credential storage when schema metadata transitions between secret and normal.
+  - Implemented an optimized O(1) startup check using a profile-scoped `__rcman_secrets__` key inside the credential store.
+  - Added a backward-compatible one-time fallback scan to dynamically upgrade existing configurations without breaking active secrets.
+
+### Changed
+
+- Keyring dependencies changed to submodules instead of main keyring package.
+
 ## [v0.1.9] - 2026-05-19
 
 ### Fixed

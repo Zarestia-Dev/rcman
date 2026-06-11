@@ -58,6 +58,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         if *value == default_value {
             if self.credentials.is_some() {
                 self.remove_credential_with_profile(full_key)?;
+                let mut tracked = self.get_tracked_secrets()?;
+                if tracked.remove(full_key) {
+                    self.save_tracked_secrets(&tracked)?;
+                }
             }
             debug!("Secret {full_key} set to default, removed from keychain");
 
@@ -73,6 +77,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             _ => value.to_string(),
         };
         self.store_credential_with_profile(full_key, &value_str)?;
+
+        if self.credentials.is_some() {
+            let mut tracked = self.get_tracked_secrets()?;
+            if tracked.insert(full_key.to_string()) {
+                self.save_tracked_secrets(&tracked)?;
+            }
+        }
+
         debug!("Secret setting {full_key} stored in keychain");
 
         if old_value != *value {
@@ -109,6 +121,72 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let creds = self.require_credentials()?;
         let profile = self.active_profile_name();
         creds.remove_with_profile(key, profile.as_deref())
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn get_tracked_secrets(&self) -> Result<std::collections::HashSet<String>> {
+        {
+            let cache_guard = self
+                .tracked_secrets_cache
+                .read()
+                .map_err(|_| Error::LockPoisoned)?;
+            if let Some(ref cache) = *cache_guard {
+                return Ok(cache.clone());
+            }
+        }
+
+        let mut cache_guard = self
+            .tracked_secrets_cache
+            .write()
+            .map_err(|_| Error::LockPoisoned)?;
+        if let Some(ref cache) = *cache_guard {
+            return Ok(cache.clone());
+        }
+
+        let secrets = match self.get_credential_with_profile("__rcman_secrets__")? {
+            Some(value_str) => {
+                let list: Vec<String> = serde_json::from_str(&value_str).map_err(|e| {
+                    Error::Credential(format!("Failed to parse tracked secrets list: {e}"))
+                })?;
+                list.into_iter().collect()
+            }
+            None => {
+                // Backward-compatible one-time fallback scan:
+                // Scan all keys in the schema metadata to check what is in credentials
+                let mut initial_tracked = std::collections::HashSet::new();
+                for full_key in self.schema_metadata.keys() {
+                    if let Ok(Some(_)) = self.get_credential_with_profile(full_key) {
+                        initial_tracked.insert(full_key.clone());
+                    }
+                }
+                // Write the list to credentials
+                let list: Vec<&String> = initial_tracked.iter().collect();
+                let val_str = serde_json::to_string(&list).map_err(|e| {
+                    Error::Credential(format!("Failed to serialize tracked secrets list: {e}"))
+                })?;
+                self.store_credential_with_profile("__rcman_secrets__", &val_str)?;
+                initial_tracked
+            }
+        };
+
+        *cache_guard = Some(secrets.clone());
+        Ok(secrets)
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn save_tracked_secrets(&self, secrets: &std::collections::HashSet<String>) -> Result<()> {
+        let list: Vec<&String> = secrets.iter().collect();
+        let value_str = serde_json::to_string(&list).map_err(|e| {
+            Error::Credential(format!("Failed to serialize tracked secrets list: {e}"))
+        })?;
+        self.store_credential_with_profile("__rcman_secrets__", &value_str)?;
+
+        let mut cache_guard = self
+            .tracked_secrets_cache
+            .write()
+            .map_err(|_| Error::LockPoisoned)?;
+        *cache_guard = Some(secrets.clone());
+        Ok(())
     }
 
     /// Invalidate the settings cache.
@@ -326,6 +404,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         if let Some(ref creds) = self.credentials {
             creds.clear()?;
+            // Clear in-memory tracked secrets cache since all credentials are gone
+            {
+                let mut cache = self
+                    .tracked_secrets_cache
+                    .write()
+                    .map_err(|_| Error::LockPoisoned)?;
+                *cache = Some(std::collections::HashSet::new());
+            }
             debug!("All credentials cleared");
         }
 
@@ -387,5 +473,129 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Returns an error if loading from disk or parsing fails.
     pub fn ensure_cache_populated(&self) -> Result<()> {
         self.settings_cache.populate(|| self.load_from_disk())
+    }
+
+    /// Migrate settings between the settings file and credential store if their secret schema status has changed.
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    pub(crate) fn migrate_secret_keys(&self) -> Result<()> {
+        if self.credentials.is_none() {
+            return Ok(());
+        }
+
+        let _write_guard = self
+            .settings_write_lock
+            .lock()
+            .map_err(|_| Error::Config("Settings write lock poisoned".into()))?;
+
+        let path = self.settings_path()?;
+        let mut stored: Value = match self.storage.read(&path) {
+            Ok(v) => v,
+            Err(_) => json!({}),
+        };
+        let mut file_modified = false;
+        let mut list_modified = false;
+
+        // Load the tracked secrets list
+        let mut tracked_secrets = self.get_tracked_secrets()?;
+
+        // 1. Migrate Normal -> Secret keys (based on active schema)
+        for (full_key, metadata) in self.schema_metadata.iter() {
+            if metadata.is_secret() {
+                let Some((category, key)) = Self::parse_setting_key(full_key) else {
+                    continue;
+                };
+
+                if let Some(value) = stored.get(category).and_then(|c| c.get(key)).cloned() {
+                    let value_str = match &value {
+                        Value::String(s) => s.clone(),
+                        _ => value.to_string(),
+                    };
+                    self.store_credential_with_profile(full_key, &value_str)?;
+
+                    if let Some(cat_obj) = stored.get_mut(category).and_then(|c| c.as_object_mut())
+                    {
+                        cat_obj.remove(key);
+                        file_modified = true;
+
+                        if tracked_secrets.insert(full_key.clone()) {
+                            list_modified = true;
+                        }
+                        log::info!(
+                            "Migrated setting '{}' to credential store (changed to secret)",
+                            full_key
+                        );
+                    }
+                }
+            }
+        }
+
+        // 2. Migrate Secret -> Normal keys (optimized: only check currently tracked secrets)
+        let mut keys_to_remove = Vec::new();
+        for full_key in &tracked_secrets {
+            let metadata = self.schema_metadata.get(full_key);
+            let is_currently_secret = metadata.map(|m| m.is_secret()).unwrap_or(false);
+
+            if !is_currently_secret {
+                if let Ok(Some(secret_value)) = self.get_credential_with_profile(full_key) {
+                    if let Some(metadata) = metadata {
+                        let Some((category, key)) = Self::parse_setting_key(full_key) else {
+                            continue;
+                        };
+                        let value = Value::String(secret_value);
+                        let default_value = &metadata.default;
+
+                        // Only write to file if the value differs from default
+                        if value != *default_value {
+                            if !stored.is_object() {
+                                stored = json!({});
+                            }
+                            let cat_obj = stored
+                                .as_object_mut()
+                                .ok_or_else(|| {
+                                    Error::Parse("Settings root is not an object".into())
+                                })?
+                                .entry(category.to_string())
+                                .or_insert_with(|| json!({}))
+                                .as_object_mut()
+                                .ok_or_else(|| {
+                                    Error::Parse(format!("Category {} is not an object", category))
+                                })?;
+                            cat_obj.insert(key.to_string(), value);
+                            file_modified = true;
+                        }
+                    }
+
+                    // Always clean up from the credential store
+                    self.remove_credential_with_profile(full_key)?;
+                    log::info!(
+                        "Migrated setting '{}' to settings file (changed to non-secret)",
+                        full_key
+                    );
+                }
+                keys_to_remove.push(full_key.clone());
+            }
+        }
+
+        if !keys_to_remove.is_empty() {
+            for key in keys_to_remove {
+                tracked_secrets.remove(&key);
+            }
+            list_modified = true;
+        }
+
+        if list_modified {
+            self.save_tracked_secrets(&tracked_secrets)?;
+        }
+
+        if file_modified {
+            // Remove empty categories
+            if let Some(obj) = stored.as_object_mut() {
+                obj.retain(|_, v| !v.as_object().is_some_and(|o| o.is_empty()));
+            }
+            self.storage.write(&path, &stored)?;
+            self.settings_cache.update_stored(stored)?;
+        }
+
+        Ok(())
     }
 }

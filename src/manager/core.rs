@@ -83,6 +83,10 @@ pub struct SettingsManager<
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub(super) credentials: Option<CredentialManager>,
 
+    /// In-memory cache of keys stored in the credential store to optimize lookup and migration
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    pub(super) tracked_secrets_cache: RwLock<Option<std::collections::HashSet<String>>>,
+
     /// External config providers for backups
     #[cfg(feature = "backup")]
     pub(crate) external_providers: RwLock<Vec<Box<dyn ExternalConfigProvider>>>,
@@ -189,7 +193,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             config.config_dir.display()
         );
 
-        Ok(Self {
+        let manager = Self {
             config,
             storage,
             settings_dir: RwLock::new(settings_dir),
@@ -202,12 +206,19 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             schema_metadata: metadata,
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             credentials,
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+            tracked_secrets_cache: RwLock::new(None),
             #[cfg(feature = "backup")]
             external_providers: RwLock::new(Vec::new()),
             #[cfg(feature = "profiles")]
             profile_manager,
             _schema: PhantomData,
-        })
+        };
+
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        manager.migrate_secret_keys()?;
+
+        Ok(manager)
     }
     /// Get the configuration
     pub fn config(&self) -> &SettingsConfig<S, Schema> {

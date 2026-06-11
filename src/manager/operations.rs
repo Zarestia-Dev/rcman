@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Schema> {
-    fn parse_setting_key(key: &str) -> Option<(&str, &str)> {
+    pub(crate) fn parse_setting_key(key: &str) -> Option<(&str, &str)> {
         let mut parts = key.split('.');
         let category = parts.next()?;
         let setting = parts.next()?;

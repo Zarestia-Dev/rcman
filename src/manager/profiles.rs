@@ -105,6 +105,20 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // Step 4: Invalidate cache (after lock is released)
         self.invalidate_cache();
 
+        // Clear in-memory tracked secrets cache so it will be reloaded for the new profile
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        {
+            let mut cache = self
+                .tracked_secrets_cache
+                .write()
+                .map_err(|_| Error::LockPoisoned)?;
+            *cache = None;
+        }
+
+        // Step 4.5: Migrate secret keys for the new profile
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        self.migrate_secret_keys()?;
+
         // Step 5: Propagate to sub-settings
         // Clone the Arc references to avoid holding the lock during profile switches
         let sub_settings_list: Vec<_> = {
