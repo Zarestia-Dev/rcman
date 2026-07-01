@@ -1,4 +1,18 @@
 //! Storage backend trait and implementations
+//!
+//! Backends live behind the [`StorageBackend`] trait. Each backend serializes
+//! a `Serialize` value to a string and persists it under a path. For the
+//! file-based backends (`JsonStorage`, `TomlStorage`, `YamlStorage`) the path
+//! is the settings file. For the database backend (`SqliteStorage`) the path
+//! is the database file and the value is stored as a row in a table.
+//!
+//! Adding a new backend only requires implementing `extension`, `serialize`,
+//! and `deserialize`; `read` and `write` have sensible defaults that work for
+//! any single-file format. Backends that need richer storage (e.g. a database)
+//! override `read` and `write` instead.
+
+#[cfg(feature = "sqlite")]
+mod sqlite;
 
 use crate::error::{Error, Result};
 use crate::utils::security::{ensure_secure_dir, set_secure_file_permissions};
@@ -332,6 +346,16 @@ impl StorageBackend for YamlStorage {
         serde_yaml::from_str(content).map_err(|e| Error::Parse(e.to_string()))
     }
 }
+
+// =============================================================================
+// SQLite Storage Implementation
+// =============================================================================
+
+/// SQLite storage backend
+///
+/// Requires the `sqlite` feature.
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteStorage;
 
 // =============================================================================
 // Tests

@@ -19,10 +19,11 @@ all-features = true
 
 [features]
 default = ["json", "backup"]
-full = ["json", "toml", "yaml", "backup", "keychain", "encrypted-file", "derive", "profiles", "hot-reload"]
+full = ["json", "toml", "yaml", "sqlite", "backup", "keychain", "encrypted-file", "derive", "profiles", "hot-reload"]
 json = []
 toml = ["dep:toml"]
 yaml = ["dep:serde_yaml"]
+sqlite = ["dep:rusqlite"]
 backup = ["dep:zip", "dep:sha2", "dep:tempfile"]
 keychain = [
     "dep:keyring-core",
@@ -54,6 +55,7 @@ base64 = { version = "0.22", optional = true }
 argon2 = { version = "0.5", features = ["std"], optional = true }
 toml = { version = "1.0", optional = true }
 serde_yaml = { version = "0.9", optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 keyring-core = { version = "1", optional = true }
 notify = { version = "6.1", optional = true }
 
@@ -77,15 +79,19 @@ windows = { version = "0.62", features = [
 [dev-dependencies]
 tempfile = "3.26"
 env_logger = "0.11"
-eframe = "0.33"
+
+# -----------------------------------------------------------------------------
+# Examples — one per distinct, meaningful use case.
+#   * basic_usage      — core CRUD + schema (no extra features required)
+#   * backup_restore   — encrypted/unencrypted backups (backup feature)
+#   * derive_usage     — DeriveSettingsSchema macro (derive feature)
+#   * profiles_usage   — named profiles (profiles feature)
+#   * encrypted_storage — encrypted-file credential backend (encrypted-file feature)
+# -----------------------------------------------------------------------------
 
 [[example]]
 name = "derive_usage"
 required-features = ["derive"]
-
-[[example]]
-name = "secret_settings"
-required-features = ["keychain"]
 
 [[example]]
 name = "encrypted_storage"
@@ -96,29 +102,33 @@ name = "backup_restore"
 required-features = ["backup"]
 
 [[example]]
-name = "gui_demo"
-required-features = ["backup"]
-
-[[example]]
 name = "profiles_usage"
 required-features = ["profiles"]
 
+# -----------------------------------------------------------------------------
+# Integration tests — gated tests require their backing feature to compile.
+# -----------------------------------------------------------------------------
+
 [[test]]
-name = "derive_macro_test"
+name = "derive_macro"
 required-features = ["derive"]
 
 [[test]]
-name = "profiles_test"
+name = "profiles"
 required-features = ["profiles"]
 
 [[test]]
-name = "toml_integration_test"
+name = "toml_integration"
 required-features = ["toml"]
 
 [[test]]
-name = "yaml_integration_test"
+name = "yaml_integration"
 required-features = ["yaml"]
 
 [[test]]
-name = "hot_reload_test"
+name = "sqlite_integration"
+required-features = ["sqlite"]
+
+[[test]]
+name = "hot_reload"
 required-features = ["hot-reload"]

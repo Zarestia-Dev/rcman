@@ -333,6 +333,13 @@ pub use storage::TomlStorage;
 #[cfg(feature = "yaml")]
 pub use storage::YamlStorage;
 
+/// SQLite storage backend (requires `sqlite` feature).
+///
+/// Stores settings as a JSON-encoded row in a SQLite database file. See
+/// [`storage::sqlite`](crate::storage::sqlite) for details.
+#[cfg(feature = "sqlite")]
+pub use storage::SqliteStorage;
+
 // -----------------------------------------------------------------------------
 // Cache
 // -----------------------------------------------------------------------------
@@ -448,6 +455,9 @@ pub mod prelude {
 
     #[cfg(feature = "yaml")]
     pub use super::YamlStorage;
+
+    #[cfg(feature = "sqlite")]
+    pub use super::SqliteStorage;
 
     // Cache
     pub use super::CacheStrategy;

@@ -83,7 +83,7 @@ pub struct SettingsManager<
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub(super) credentials: Option<CredentialManager>,
 
-    /// Flag indicating if the credential store was upgraded (missing __rcman_secrets__)
+    /// Flag indicating if the credential store was upgraded (missing `__rcman_secrets__`)
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub(super) is_upgraded: Arc<std::sync::atomic::AtomicBool>,
 

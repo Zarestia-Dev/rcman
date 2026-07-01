@@ -1,17 +1,17 @@
-//! YAML Storage Integration Tests
+//! TOML Storage Integration Tests
 //!
-//! Tests for YAML storage backend with various rcman features:
-//! - Basic settings management with YAML
+//! Tests for TOML storage backend with various rcman features:
+//! - Basic settings management with TOML
 //! - Sub-settings (multi-file and single-file modes)
-//! - Profiles with YAML storage
+//! - Profiles with TOML storage
 //! - Edge cases (null handling, nested structures)
 
-#![cfg(feature = "yaml")]
+#![cfg(feature = "toml")]
 
 mod common;
 
 use common::TestSettings;
-use rcman::{SettingsConfig, SettingsManager, SubSettingsConfig, YamlStorage};
+use rcman::{SettingsConfig, SettingsManager, SubSettingsConfig, TomlStorage};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tempfile::TempDir;
@@ -23,16 +23,16 @@ use rcman::SettingsSchema;
 use std::collections::HashMap;
 
 // =============================================================================
-// Basic YAML Settings Management
+// Basic TOML Settings Management
 // =============================================================================
 
 #[test]
-fn test_yaml_basic_save_and_load() {
+fn test_toml_basic_save_and_load() {
     let temp_dir = TempDir::new().unwrap();
 
     let config = SettingsConfig::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_schema::<TestSettings>()
         .build();
 
@@ -43,25 +43,28 @@ fn test_yaml_basic_save_and_load() {
         .save_setting("ui", "theme", &json!("light"))
         .unwrap();
 
-    // Verify file is YAML
-    let settings_file = temp_dir.path().join("settings.yaml");
-    assert!(settings_file.exists(), "Settings file should be .yaml");
+    // Verify file is TOML
+    let settings_file = temp_dir.path().join("settings.toml");
+    assert!(settings_file.exists(), "Settings file should be .toml");
 
     let content = std::fs::read_to_string(&settings_file).unwrap();
-    assert!(content.contains("ui:"), "YAML should have ui mapping");
     assert!(
-        content.contains("theme: light"),
-        "YAML should contain theme: light"
+        content.contains("[ui]"),
+        "TOML should have [ui] section header"
+    );
+    assert!(
+        content.contains("theme = \"light\""),
+        "TOML should contain theme = light"
     );
 }
 
 #[test]
-fn test_yaml_load_settings_struct() {
+fn test_toml_load_settings_struct() {
     let temp_dir = TempDir::new().unwrap();
 
     let config = SettingsConfig::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_schema::<TestSettings>()
         .build();
 
@@ -82,12 +85,12 @@ fn test_yaml_load_settings_struct() {
 }
 
 #[test]
-fn test_yaml_reset_setting() {
+fn test_toml_reset_setting() {
     let temp_dir = TempDir::new().unwrap();
 
     let config = SettingsConfig::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_schema::<TestSettings>()
         .build();
 
@@ -108,16 +111,16 @@ fn test_yaml_reset_setting() {
 }
 
 // =============================================================================
-// YAML Sub-Settings (Multi-File Mode)
+// TOML Sub-Settings (Multi-File Mode)
 // =============================================================================
 
 #[test]
-fn test_yaml_sub_settings_multi_file() {
+fn test_toml_sub_settings_multi_file() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_sub_settings(SubSettingsConfig::new("remotes"))
         .build()
         .unwrap();
@@ -132,15 +135,15 @@ fn test_yaml_sub_settings_multi_file() {
         .set("s3", &json!({"type": "s3", "bucket": "my-bucket"}))
         .unwrap();
 
-    // Verify files are YAML
+    // Verify files are TOML
     let remotes_dir = temp_dir.path().join("remotes");
-    assert!(remotes_dir.join("gdrive.yaml").exists());
-    assert!(remotes_dir.join("s3.yaml").exists());
+    assert!(remotes_dir.join("gdrive.toml").exists());
+    assert!(remotes_dir.join("s3.toml").exists());
 
-    // Verify content is valid YAML
-    let gdrive_content = std::fs::read_to_string(remotes_dir.join("gdrive.yaml")).unwrap();
-    assert!(gdrive_content.contains("type: drive"));
-    assert!(gdrive_content.contains("client_id: abc123"));
+    // Verify content is valid TOML
+    let gdrive_content = std::fs::read_to_string(remotes_dir.join("gdrive.toml")).unwrap();
+    assert!(gdrive_content.contains("type = \"drive\""));
+    assert!(gdrive_content.contains("client_id = \"abc123\""));
 
     // Read back
     let gdrive = remotes.get_value("gdrive").unwrap();
@@ -148,12 +151,12 @@ fn test_yaml_sub_settings_multi_file() {
 }
 
 #[test]
-fn test_yaml_sub_settings_list() {
+fn test_toml_sub_settings_list() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_sub_settings(SubSettingsConfig::new("configs"))
         .build()
         .unwrap();
@@ -171,12 +174,12 @@ fn test_yaml_sub_settings_list() {
 }
 
 #[test]
-fn test_yaml_sub_settings_delete() {
+fn test_toml_sub_settings_delete() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_sub_settings(SubSettingsConfig::new("remotes"))
         .build()
         .unwrap();
@@ -184,7 +187,7 @@ fn test_yaml_sub_settings_delete() {
     let remotes = manager.sub_settings("remotes").unwrap();
 
     remotes.set("temp", &json!({"type": "temp"})).unwrap();
-    let file_path = temp_dir.path().join("remotes").join("temp.yaml");
+    let file_path = temp_dir.path().join("remotes").join("temp.toml");
     assert!(file_path.exists());
 
     remotes.delete("temp").unwrap();
@@ -193,16 +196,16 @@ fn test_yaml_sub_settings_delete() {
 }
 
 // =============================================================================
-// YAML Sub-Settings (Single-File Mode)
+// TOML Sub-Settings (Single-File Mode)
 // =============================================================================
 
 #[test]
-fn test_yaml_sub_settings_single_file() {
+fn test_toml_sub_settings_single_file() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_sub_settings(SubSettingsConfig::singlefile("backends"))
         .build()
         .unwrap();
@@ -217,14 +220,14 @@ fn test_yaml_sub_settings_single_file() {
         .unwrap();
 
     // Should be a single file
-    let backends_file = temp_dir.path().join("backends.yaml");
+    let backends_file = temp_dir.path().join("backends.toml");
     assert!(backends_file.exists());
     assert!(backends_file.is_file());
 
     // Verify content structure
     let content = std::fs::read_to_string(&backends_file).unwrap();
-    assert!(content.contains("local:") || content.contains("host: localhost"));
-    assert!(content.contains("remote:") || content.contains("host: 192.168.1.1"));
+    assert!(content.contains("[local]") || content.contains("local.host"));
+    assert!(content.contains("[remote]") || content.contains("remote.host"));
 
     // Read back both entries
     let local = backends.get_value("local").unwrap();
@@ -235,17 +238,17 @@ fn test_yaml_sub_settings_single_file() {
 }
 
 // =============================================================================
-// YAML with Profiles
+// TOML with Profiles
 // =============================================================================
 
 #[cfg(feature = "profiles")]
 #[test]
-fn test_yaml_profiles_basic() {
+fn test_toml_profiles_basic() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles())
         .build()
         .unwrap();
@@ -267,18 +270,18 @@ fn test_yaml_profiles_basic() {
         .set("company-drive", &json!({"type": "sharepoint"}))
         .unwrap();
 
-    // Verify directory structure uses .yaml files
+    // Verify directory structure uses .toml files
     let remotes_dir = temp_dir.path().join("remotes");
     assert!(
-        remotes_dir.join(".profiles.yaml").exists(),
-        "Manifest should be .yaml"
+        remotes_dir.join(".profiles.toml").exists(),
+        "Manifest should be .toml"
     );
 
     let default_dir = remotes_dir.join("profiles").join("default");
-    assert!(default_dir.join("personal-drive.yaml").exists());
+    assert!(default_dir.join("personal-drive.toml").exists());
 
     let work_dir = remotes_dir.join("profiles").join("work");
-    assert!(work_dir.join("company-drive.yaml").exists());
+    assert!(work_dir.join("company-drive.toml").exists());
 
     // Switch back and verify isolation
     remotes.switch_profile("default").unwrap();
@@ -288,7 +291,7 @@ fn test_yaml_profiles_basic() {
 
 #[cfg(feature = "profiles")]
 #[test]
-fn test_yaml_main_settings_profiles() {
+fn test_toml_main_settings_profiles() {
     use rcman::SettingMetadata;
 
     #[derive(Serialize, Deserialize, Default)]
@@ -330,7 +333,7 @@ fn test_yaml_main_settings_profiles() {
 
     let config = SettingsConfig::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_schema::<SimpleSettings>()
         .with_profiles()
         .build();
@@ -355,29 +358,29 @@ fn test_yaml_main_settings_profiles() {
         .save_setting("app", "mode", &json!("release"))
         .unwrap();
 
-    // Verify manifest is YAML
-    assert!(temp_dir.path().join(".profiles.yaml").exists());
+    // Verify manifest is TOML
+    assert!(temp_dir.path().join(".profiles.toml").exists());
 
-    // Verify profile settings are YAML
+    // Verify profile settings are TOML
     let prod_settings = temp_dir
         .path()
         .join("profiles")
         .join("production")
-        .join("settings.yaml");
+        .join("settings.toml");
     assert!(prod_settings.exists());
 }
 
 // =============================================================================
-// YAML Edge Cases
+// TOML Edge Cases
 // =============================================================================
 
 #[test]
-fn test_yaml_nested_structures() {
+fn test_toml_nested_structures() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_sub_settings(SubSettingsConfig::new("configs"))
         .build()
         .unwrap();
@@ -415,12 +418,12 @@ fn test_yaml_nested_structures() {
 }
 
 #[test]
-fn test_yaml_arrays() {
+fn test_toml_arrays() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_sub_settings(SubSettingsConfig::new("configs"))
         .build()
         .unwrap();
@@ -445,12 +448,12 @@ fn test_yaml_arrays() {
 }
 
 #[test]
-fn test_yaml_special_characters_in_strings() {
+fn test_toml_special_characters_in_strings() {
     let temp_dir = TempDir::new().unwrap();
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_sub_settings(SubSettingsConfig::new("configs"))
         .build()
         .unwrap();
@@ -478,8 +481,8 @@ fn test_yaml_special_characters_in_strings() {
 }
 
 #[test]
-fn test_yaml_optional_fields() {
-    #[allow(dead_code)]
+fn test_toml_optional_fields() {
+    // TOML doesn't support null, but Option<T> should work with skip_serializing_if
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     struct ConfigWithOptional {
         name: String,
@@ -493,7 +496,7 @@ fn test_yaml_optional_fields() {
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_sub_settings(SubSettingsConfig::new("configs"))
         .build()
         .unwrap();
@@ -501,39 +504,78 @@ fn test_yaml_optional_fields() {
     let configs = manager.sub_settings("configs").unwrap();
 
     // Save with Some values
-    configs
-        .set(
-            "with_optional",
-            &json!({
-                "name": "test",
-                "description": "A test config",
-                "port": 8080
-            }),
-        )
-        .unwrap();
+    let original_with = ConfigWithOptional {
+        name: "test".to_string(),
+        description: Some("A test config".to_string()),
+        port: Some(8080),
+    };
+    configs.set("with_optional", &original_with).unwrap();
 
     // Save without optional fields (simulating None)
-    configs
-        .set(
-            "without_optional",
-            &json!({
-                "name": "minimal"
-            }),
-        )
-        .unwrap();
+    let original_without = ConfigWithOptional {
+        name: "minimal".to_string(),
+        description: None,
+        port: None,
+    };
+    configs.set("without_optional", &original_without).unwrap();
 
     // Both should load correctly
-    let with_opt = configs.get_value("with_optional").unwrap();
-    assert_eq!(with_opt["description"], "A test config");
-    assert_eq!(with_opt["port"], 8080);
+    let with_opt: ConfigWithOptional = configs.get("with_optional").unwrap();
+    assert_eq!(with_opt, original_with);
 
-    let without_opt = configs.get_value("without_optional").unwrap();
-    assert_eq!(without_opt["name"], "minimal");
-    assert!(without_opt.get("description").is_none());
+    let without_opt: ConfigWithOptional = configs.get("without_optional").unwrap();
+    assert_eq!(without_opt, original_without);
+
+    // Verify skip_serializing_if works (keys should be missing in raw JSON)
+    let raw_without = configs.get_value("without_optional").unwrap();
+    assert!(raw_without.get("description").is_none());
+    assert!(raw_without.get("port").is_none());
+}
+
+/// TOML cannot serialize JSON `null` values directly.
+/// This test documents the expected behavior.
+#[test]
+fn test_toml_null_value_handling() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_storage::<TomlStorage>()
+        .with_sub_settings(SubSettingsConfig::new("configs"))
+        .build()
+        .unwrap();
+
+    let configs = manager.sub_settings("configs").unwrap();
+
+    // Attempt to save a value containing null
+    // This should FAIL because TOML doesn't support null
+    let result = configs.set(
+        "with_null",
+        &json!({
+            "name": "test",
+            "value": null  // <-- This is the problem!
+        }),
+    );
+
+    // Document: TOML serialization fails with null values
+    assert!(
+        result.is_err(),
+        "TOML should fail when trying to serialize null values"
+    );
+
+    let err_msg = result.unwrap_err().to_string().to_lowercase();
+    // The error should mention the serialization issue
+    assert!(
+        err_msg.contains("parse")
+            || err_msg.contains("serialize")
+            || err_msg.contains("toml")
+            || err_msg.contains("unsupported"),
+        "Error should indicate serialization failure: {err_msg}"
+    );
 }
 
 #[test]
-fn test_yaml_concurrent_writes() {
+fn test_toml_concurrent_writes() {
     use std::sync::Arc;
     use std::thread;
 
@@ -542,7 +584,7 @@ fn test_yaml_concurrent_writes() {
     let manager = Arc::new(
         SettingsManager::builder("test-app", "1.0.0")
             .with_config_dir(temp_dir.path())
-            .with_storage::<YamlStorage>()
+            .with_storage::<TomlStorage>()
             .with_sub_settings(SubSettingsConfig::new("configs"))
             .build()
             .unwrap(),
@@ -580,26 +622,28 @@ fn test_yaml_concurrent_writes() {
 }
 
 // =============================================================================
-// YAML Migration
+// TOML Migration
 // =============================================================================
 
 #[test]
-fn test_yaml_sub_settings_migrator() {
+fn test_toml_sub_settings_migrator() {
     let temp_dir = TempDir::new().unwrap();
 
-    // Write old format YAML directly
+    // Write old format TOML directly
     let configs_dir = temp_dir.path().join("configs");
     std::fs::create_dir_all(&configs_dir).unwrap();
     std::fs::write(
-        configs_dir.join("old.yaml"),
-        "name: old config\nlegacy_field: should be migrated\n",
+        configs_dir.join("old.toml"),
+        r#"name = "old config"
+legacy_field = "should be migrated"
+"#,
     )
     .unwrap();
 
     // Create manager with migrator
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_storage::<YamlStorage>()
+        .with_storage::<TomlStorage>()
         .with_sub_settings(
             SubSettingsConfig::new("configs").with_migrator(|mut value| {
                 if let Some(obj) = value.as_object_mut() {

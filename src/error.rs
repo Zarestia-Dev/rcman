@@ -259,5 +259,5 @@ pub fn read_dir(path: &Path) -> Result<std::fs::ReadDir> {
 #[cfg(feature = "backup")]
 #[inline]
 pub fn file_size(path: &Path) -> u64 {
-    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+    std::fs::metadata(path).map_or(0, |m| m.len())
 }

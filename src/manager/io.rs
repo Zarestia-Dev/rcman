@@ -142,8 +142,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
         }
 
-        let secrets = match self.get_credential_with_profile("__rcman_secrets__")? {
-            Some(value_str) => {
+        let secrets =
+            if let Some(value_str) = self.get_credential_with_profile("__rcman_secrets__")? {
                 let list: Vec<String> = serde_json::from_str(&value_str).map_err(|e| {
                     Error::Credential(format!("Failed to parse tracked secrets list: {e}"))
                 })?;
@@ -154,8 +154,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                     .map_err(|_| Error::LockPoisoned)?;
                 cache_guard.insert(profile, set.clone());
                 set
-            }
-            None => {
+            } else {
                 // Set the is_upgraded flag to indicate we did a fallback scan
                 self.is_upgraded
                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -170,8 +169,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 }
                 creds.save_tracked_secrets(&initial_tracked, profile.as_deref())?;
                 initial_tracked
-            }
-        };
+            };
 
         Ok(secrets)
     }
@@ -487,6 +485,45 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let mut tracked_secrets = self.get_tracked_secrets()?;
 
         // 1. Migrate Normal -> Secret keys (based on active schema)
+        self.migrate_normal_to_secret(
+            &mut stored,
+            &mut tracked_secrets,
+            &mut file_modified,
+            &mut list_modified,
+        )?;
+
+        // 2. Migrate Secret -> Normal keys (optimized: only check currently tracked secrets)
+        self.migrate_secret_to_normal(
+            &mut stored,
+            &mut tracked_secrets,
+            &mut file_modified,
+            &mut list_modified,
+        )?;
+
+        if list_modified {
+            self.save_tracked_secrets(&tracked_secrets)?;
+        }
+
+        if file_modified {
+            // Remove empty categories
+            if let Some(obj) = stored.as_object_mut() {
+                obj.retain(|_, v| !v.as_object().is_some_and(serde_json::Map::is_empty));
+            }
+            self.storage.write(&path, &stored)?;
+            self.settings_cache.update_stored(stored)?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn migrate_normal_to_secret(
+        &self,
+        stored: &mut Value,
+        tracked_secrets: &mut std::collections::HashSet<String>,
+        file_modified: &mut bool,
+        list_modified: &mut bool,
+    ) -> Result<()> {
         for (full_key, metadata) in self.schema_metadata.iter() {
             if metadata.is_secret() {
                 let Some((category, key)) = Self::parse_setting_key(full_key) else {
@@ -503,28 +540,36 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                     if let Some(cat_obj) = stored.get_mut(category).and_then(|c| c.as_object_mut())
                     {
                         cat_obj.remove(key);
-                        file_modified = true;
+                        *file_modified = true;
 
                         if tracked_secrets.insert(full_key.clone()) {
-                            list_modified = true;
+                            *list_modified = true;
                         }
                         log::info!(
-                            "Migrated setting '{}' to credential store (changed to secret)",
-                            full_key
+                            "Migrated setting '{full_key}' to credential store (changed to secret)"
                         );
                     }
                 }
             }
         }
+        Ok(())
+    }
 
-        // 2. Migrate Secret -> Normal keys (optimized: only check currently tracked secrets)
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn migrate_secret_to_normal(
+        &self,
+        stored: &mut Value,
+        tracked_secrets: &mut std::collections::HashSet<String>,
+        file_modified: &mut bool,
+        list_modified: &mut bool,
+    ) -> Result<()> {
         let mut keys_to_remove = Vec::new();
-        for full_key in &tracked_secrets {
+        for full_key in &*tracked_secrets {
             if full_key.starts_with("sub.") {
                 continue;
             }
             let metadata = self.schema_metadata.get(full_key);
-            let is_currently_secret = metadata.map(|m| m.is_secret()).unwrap_or(false);
+            let is_currently_secret = metadata.is_some_and(SettingMetadata::is_secret);
 
             if !is_currently_secret {
                 if let Ok(Some(secret_value)) = self.get_credential_with_profile(full_key) {
@@ -538,7 +583,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                         // Only write to file if the value differs from default
                         if value != *default_value {
                             if !stored.is_object() {
-                                stored = json!({});
+                                *stored = json!({});
                             }
                             let cat_obj = stored
                                 .as_object_mut()
@@ -549,18 +594,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                                 .or_insert_with(|| json!({}))
                                 .as_object_mut()
                                 .ok_or_else(|| {
-                                    Error::Parse(format!("Category {} is not an object", category))
+                                    Error::Parse(format!("Category {category} is not an object"))
                                 })?;
                             cat_obj.insert(key.to_string(), value);
-                            file_modified = true;
+                            *file_modified = true;
                         }
                     }
 
                     // Always clean up from the credential store
                     self.remove_credential_with_profile(full_key)?;
                     log::info!(
-                        "Migrated setting '{}' to settings file (changed to non-secret)",
-                        full_key
+                        "Migrated setting '{full_key}' to settings file (changed to non-secret)"
                     );
                 }
                 keys_to_remove.push(full_key.clone());
@@ -571,22 +615,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             for key in keys_to_remove {
                 tracked_secrets.remove(&key);
             }
-            list_modified = true;
+            *list_modified = true;
         }
-
-        if list_modified {
-            self.save_tracked_secrets(&tracked_secrets)?;
-        }
-
-        if file_modified {
-            // Remove empty categories
-            if let Some(obj) = stored.as_object_mut() {
-                obj.retain(|_, v| !v.as_object().is_some_and(|o| o.is_empty()));
-            }
-            self.storage.write(&path, &stored)?;
-            self.settings_cache.update_stored(stored)?;
-        }
-
         Ok(())
     }
 
@@ -642,37 +672,71 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let store = sub.store.read_recovered()?;
 
         // Pass 1: Normal -> Secret (Migrate from file to credential store)
+        if self.migrate_sub_settings_normal_to_secret(
+            sub,
+            &secret_fields,
+            profile.as_deref(),
+            &**store,
+            &mut tracked_secrets,
+        )? {
+            list_modified = true;
+        }
+
+        // Pass 2: Secret -> Normal (Migrate from credential store to file)
+        if self.migrate_sub_settings_secret_to_normal(
+            sub,
+            schema,
+            profile.as_deref(),
+            &**store,
+            &mut tracked_secrets,
+        )? {
+            list_modified = true;
+        }
+
+        if list_modified {
+            self.save_tracked_secrets(&tracked_secrets)?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn migrate_sub_settings_normal_to_secret(
+        &self,
+        sub: &crate::sub_settings::SubSettings<S>,
+        secret_fields: &[(&String, &SettingMetadata)],
+        profile: Option<&str>,
+        store: &dyn crate::sub_settings::SubSettingsStore,
+        tracked_secrets: &mut std::collections::HashSet<String>,
+    ) -> Result<bool> {
+        let creds = self.require_credentials()?;
+        let mut list_modified = false;
         if !secret_fields.is_empty()
             && let Ok(entries) = sub.list()
         {
             for entry_name in &entries {
                 if let Ok(mut value) = store.get(entry_name) {
                     let mut entry_modified = false;
-                    for (path, metadata) in &secret_fields {
+                    for (path, metadata) in secret_fields {
                         if let Some(secret_value) =
                             crate::utils::value::remove_path(&mut value, path)
                         {
                             let credential_key = sub.secret_credential_key(entry_name, path);
                             if secret_value == metadata.default {
-                                creds.remove_with_profile(&credential_key, profile.as_deref())?;
+                                creds.remove_with_profile(&credential_key, profile)?;
                             } else {
                                 let value_str = match secret_value {
                                     Value::String(s) => s,
                                     v => v.to_string(),
                                 };
-                                creds.store_with_profile(
-                                    &credential_key,
-                                    &value_str,
-                                    profile.as_deref(),
-                                )?;
+                                creds.store_with_profile(&credential_key, &value_str, profile)?;
                             }
                             if tracked_secrets.insert(credential_key.clone()) {
                                 list_modified = true;
                             }
                             entry_modified = true;
                             log::info!(
-                                "Migrated sub-setting key '{}' to credential store (changed to secret)",
-                                credential_key
+                                "Migrated sub-setting key '{credential_key}' to credential store (changed to secret)"
                             );
                         }
                     }
@@ -682,11 +746,23 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 }
             }
         }
+        Ok(list_modified)
+    }
 
-        // Pass 2: Secret -> Normal (Migrate from credential store to file)
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn migrate_sub_settings_secret_to_normal(
+        &self,
+        sub: &crate::sub_settings::SubSettings<S>,
+        schema: &std::collections::HashMap<String, SettingMetadata>,
+        profile: Option<&str>,
+        store: &dyn crate::sub_settings::SubSettingsStore,
+        tracked_secrets: &mut std::collections::HashSet<String>,
+    ) -> Result<bool> {
+        let creds = self.require_credentials()?;
         let prefix = format!("sub.{}.", sub.config.name);
         let mut keys_to_remove = Vec::new();
-        for full_key in &tracked_secrets {
+        let mut list_modified = false;
+        for full_key in &*tracked_secrets {
             if !full_key.starts_with(&prefix) {
                 continue;
             }
@@ -696,11 +772,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             };
 
             let metadata = schema.get(field_path);
-            let is_currently_secret = metadata.map(|m| m.is_secret()).unwrap_or(false);
+            let is_currently_secret = metadata.is_some_and(SettingMetadata::is_secret);
 
             if !is_currently_secret {
-                if let Ok(Some(secret_value)) = creds.get_with_profile(full_key, profile.as_deref())
-                {
+                if let Ok(Some(secret_value)) = creds.get_with_profile(full_key, profile) {
                     if let Some(metadata) = metadata {
                         let value = Value::String(secret_value);
                         let default_value = &metadata.default;
@@ -714,10 +789,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                             store.set(entry_name, entry_val)?;
                         }
                     }
-                    creds.remove_with_profile(full_key, profile.as_deref())?;
+                    creds.remove_with_profile(full_key, profile)?;
                     log::info!(
-                        "Migrated sub-setting key '{}' to sub-settings file (changed to non-secret)",
-                        full_key
+                        "Migrated sub-setting key '{full_key}' to sub-settings file (changed to non-secret)"
                     );
                 }
                 keys_to_remove.push(full_key.clone());
@@ -730,11 +804,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
             list_modified = true;
         }
-
-        if list_modified {
-            self.save_tracked_secrets(&tracked_secrets)?;
-        }
-
-        Ok(())
+        Ok(list_modified)
     }
 }

@@ -23,7 +23,7 @@ use std::sync::{Arc, RwLock};
 
 use self::multi_file::MultiFileStore;
 use self::single_file::SingleFileStore;
-use self::store::SubSettingsStore;
+pub(crate) use self::store::SubSettingsStore;
 
 /// Mode of storage for sub-settings
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -547,11 +547,12 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
                 v => v.to_string(),
             };
 
-            if let Ok(Some(existing_val)) = creds.get_with_profile(&credential_key, profile.as_deref()) {
-                if existing_val == value_str {
-                    creds.add_tracked_secret(&credential_key, profile.as_deref())?;
-                    continue;
-                }
+            if let Ok(Some(existing_val)) =
+                creds.get_with_profile(&credential_key, profile.as_deref())
+                && existing_val == value_str
+            {
+                creds.add_tracked_secret(&credential_key, profile.as_deref())?;
+                continue;
             }
 
             creds.store_with_profile(&credential_key, &value_str, profile.as_deref())?;
