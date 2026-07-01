@@ -25,7 +25,7 @@ toml = ["dep:toml"]
 yaml = ["dep:serde_yaml"]
 sqlite = ["dep:rusqlite"]
 backup = ["dep:zip", "dep:sha2", "dep:tempfile"]
-keychain = ["dep:keyring", "dep:security-framework"]
+keychain = ["dep:keyring", "dep:security-framework", "dep:apple-native-keyring-store"]
 encrypted-file = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2"]
 derive = ["dep:rcman-derive"]
 profiles = []
@@ -56,6 +56,10 @@ notify = { version = "6.1", optional = true }
 # Linux + Windows: keyring v4 (works fine, no macOS issue)
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 keyring = { version = "4", optional = true }
+
+# iOS: require the protected feature on apple-native-keyring-store for keychain compilation
+[target.'cfg(target_os = "ios")'.dependencies]
+apple-native-keyring-store = { version = "1.0", features = ["protected"], optional = true }
 
 # macOS: security-framework v2.x directly (NOT v3 which has the broken symbol)
 [target.'cfg(target_os = "macos")'.dependencies]

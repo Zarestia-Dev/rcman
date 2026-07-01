@@ -493,6 +493,7 @@ fn test_migration_normal_to_secret() {
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 #[test]
+#[ignore = "Requires Secret Service daemon (not available in CI)"]
 fn test_migration_secret_to_normal() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let app_name = unique_app_name();
@@ -551,6 +552,7 @@ fn test_migration_secret_to_normal() {
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 #[test]
+#[ignore = "Requires Secret Service daemon (not available in CI)"]
 fn test_migration_upgrade_path() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let app_name = unique_app_name();
@@ -664,6 +666,7 @@ impl rcman::SettingsSchema for SubMigrationSecretSettings {
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 #[test]
+#[ignore = "Requires Secret Service daemon (not available in CI)"]
 fn test_subsettings_migration() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let app_name = unique_app_name();
@@ -770,6 +773,7 @@ fn test_subsettings_migration() {
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 #[test]
+#[ignore = "Requires Secret Service daemon (not available in CI)"]
 fn test_subsettings_migration_upgrade_path() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let app_name = unique_app_name();
