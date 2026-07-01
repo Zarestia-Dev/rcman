@@ -38,21 +38,26 @@ impl KeychainBackend {
             static NATIVE_STORE_INIT: OnceLock<()> = OnceLock::new();
             NATIVE_STORE_INIT.get_or_init(|| {
                 // v4/core requires a config HashMap for initialization, even if empty
-                let _config: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+                let config: std::collections::HashMap<&str, &str> =
+                    std::collections::HashMap::new();
+                let _ = &config;
 
                 // Force Secret Service (Seahorse/KWallet) on Linux
                 #[cfg(target_os = "linux")]
                 {
-                    match dbus_secret_service_keyring_store::Store::new_with_configuration(&_config) {
+                    match dbus_secret_service_keyring_store::Store::new_with_configuration(&config)
+                    {
                         Ok(store) => keyring_core::set_default_store(store),
-                        Err(e) => warn!("Failed to initialize Linux Secret Service keyring store: {e}"),
+                        Err(e) => {
+                            warn!("Failed to initialize Linux Secret Service keyring store: {e}");
+                        }
                     }
                 }
 
                 // Native Windows Credential Manager on Windows
                 #[cfg(target_os = "windows")]
                 {
-                    match windows_native_keyring_store::Store::new_with_configuration(&_config) {
+                    match windows_native_keyring_store::Store::new_with_configuration(&config) {
                         Ok(store) => keyring_core::set_default_store(store),
                         Err(e) => warn!("Failed to initialize Windows native store: {e}"),
                     }
