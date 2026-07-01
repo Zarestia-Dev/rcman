@@ -280,29 +280,46 @@ impl EncryptedFileBackend {
         let file_name = self.path.file_name().unwrap_or_default().to_string_lossy();
         temp_path.set_file_name(format!("{file_name}.{now}.tmp"));
 
-        let mut temp_file = fs::File::create(&temp_path).map_err(|e| Error::FileWrite {
-            path: temp_path.clone(),
-            source: e,
-        })?;
-
-        temp_file
-            .write_all(content.as_bytes())
-            .map_err(|e| Error::FileWrite {
+        // Scope the temp file handle so it's dropped (closed) before we
+        // try to rename.  On Windows, renaming an open file fails with
+        // `Error::SharingViolation`; on Unix it works but the close
+        // happens at scope-end anyway, so scoping is correct on both.
+        {
+            let mut temp_file = fs::File::create(&temp_path).map_err(|e| Error::FileWrite {
                 path: temp_path.clone(),
                 source: e,
             })?;
 
-        temp_file.sync_all().map_err(|e| Error::FileWrite {
-            path: temp_path.clone(),
-            source: e,
-        })?;
+            temp_file
+                .write_all(content.as_bytes())
+                .map_err(|e| Error::FileWrite {
+                    path: temp_path.clone(),
+                    source: e,
+                })?;
+
+            temp_file.sync_all().map_err(|e| Error::FileWrite {
+                path: temp_path.clone(),
+                source: e,
+            })?;
+            // temp_file is dropped here → file is closed.
+        }
 
         crate::utils::security::set_secure_file_permissions(&temp_path)?;
 
-        fs::rename(&temp_path, &self.path).map_err(|e| Error::FileWrite {
-            path: self.path.clone(),
-            source: e,
-        })?;
+        // Attempt the rename.  On failure, clean up the temp file so
+        // we don't leak it.  The cleanup is best-effort.
+        if let Err(e) = fs::rename(&temp_path, &self.path) {
+            if let Err(cleanup_err) = fs::remove_file(&temp_path) {
+                log::warn!(
+                    "save_store: failed to clean up temp file {} after rename failure: {cleanup_err}",
+                    temp_path.display()
+                );
+            }
+            return Err(Error::FileWrite {
+                path: self.path.clone(),
+                source: e,
+            });
+        }
 
         Ok(())
     }

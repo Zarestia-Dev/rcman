@@ -378,10 +378,11 @@ impl CredentialManager {
         self.volatile.exists(&full_key).unwrap_or(false)
     }
 
-    /// Clear all credentials for this service
+    /// Clear all credentials for this service.
     ///
     /// # Errors
-    /// Returns an error if the primary backend fails to list keys or if the fallback backend fails to remove keys.
+    ///
+    /// Returns an error if the cache invalidation fails.
     pub fn clear(&self) -> Result<()> {
         #[cfg(feature = "profiles")]
         let prefix = if let Some(profile_ctx) = &self.profile_context {
@@ -421,13 +422,43 @@ impl CredentialManager {
             }
         }
 
-        for full_key in keys_to_remove {
-            // Remove directly from backends using full key to avoid reconstruction overhead
-            let _ = self.primary.remove(&full_key);
-            if let Some(ref fallback) = self.fallback {
-                let _ = fallback.remove(&full_key);
+        // Track per-key failures so we can log a useful aggregate without
+        // aborting the loop on the first error.
+        let mut failure_count: usize = 0;
+        let total = keys_to_remove.len();
+
+        for full_key in &keys_to_remove {
+            // Remove directly from backends using full key to avoid
+            // reconstruction overhead.  Each backend's `remove()` is
+            // idempotent — a `NoEntry` result is treated as success.
+            if let Err(e) = self.primary.remove(full_key) {
+                log::debug!("clear: primary.remove({full_key}) failed: {e}");
+                failure_count += 1;
             }
-            let _ = self.volatile.remove(&full_key);
+            if let Some(ref fallback) = self.fallback
+                && let Err(e) = fallback.remove(full_key)
+            {
+                log::debug!("clear: fallback.remove({full_key}) failed: {e}");
+                failure_count += 1;
+            }
+            if let Err(e) = self.volatile.remove(full_key) {
+                log::debug!("clear: volatile.remove({full_key}) failed: {e}");
+                failure_count += 1;
+            }
+        }
+
+        if let Err(e) = self.invalidate_tracked_secrets_cache() {
+            log::warn!("clear: failed to invalidate tracked_secrets_cache: {e}");
+            return Err(e);
+        }
+
+        if failure_count > 0 {
+            log::warn!(
+                "clear: {failure_count} of {} removals failed (see debug log for details)",
+                total * 3 // each key tried against up to 3 backends
+            );
+        } else {
+            log::debug!("clear: removed {total} keys");
         }
 
         Ok(())
