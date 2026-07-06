@@ -48,6 +48,7 @@ cargo add rcman
 | `json`           | JSON storage                      | ✅       |
 | `toml`           | TOML storage                      | ❌       |
 | `yaml`           | YAML storage                      | ❌       |
+| `sqlite`         | SQLite database storage           | ❌       |
 | `backup`         | Backup/restore (zip)              | ✅       |
 | `derive`         | `#[derive(SettingsSchema)]` macro | ❌       |
 | `keychain`       | OS keychain support               | ❌       |
@@ -190,6 +191,7 @@ impl SettingsSchema for AppSettings {
 | `toggle(default)`          | Boolean toggle               | Type (boolean)             |
 | `select(default, options)` | Dropdown with options        | Valid option               |
 | `list(default)`            | List of strings              | Type (array)               |
+| `object(default)`          | Untyped JSON object (`serde_json::Value`) | -             |
 | `info(default)`            | Read-only display (any type) | -                          |
 
 > **UI-only types** (password, color, path, file, textarea): Use `text()` with `.meta_str("input_type", "password")` for UI hints.
@@ -257,6 +259,38 @@ let theme = manager.general_theme()?;
 
 ---
 
+### 1.1 Storage Backends (JSON, TOML, YAML, SQLite)
+
+`rcman` supports multiple storage backends to persist your configuration data. By default, it uses pretty-printed JSON. You can easily switch to TOML, YAML, or a SQLite database via the builder:
+
+```rust
+use rcman::{SettingsManager, JsonStorage, TomlStorage, YamlStorage, SqliteStorage};
+
+// 1. JSON Storage (Default)
+let manager = SettingsManager::builder("my-app", "1.0.0")
+    .with_storage::<JsonStorage>()
+    .build()?;
+
+// 2. TOML Storage (requires `toml` feature)
+let manager = SettingsManager::builder("my-app", "1.0.0")
+    .with_storage::<TomlStorage>()
+    .build()?;
+
+// 3. YAML Storage (requires `yaml` feature)
+let manager = SettingsManager::builder("my-app", "1.0.0")
+    .with_storage::<YamlStorage>()
+    .build()?;
+
+// 4. SQLite Storage (requires `sqlite` feature)
+// Stores settings in a single-row SQLite table (`rcman_settings`), providing
+// transactional, atomic writes and high robustness.
+let manager = SettingsManager::builder("my-app", "1.0.0")
+    .with_storage::<SqliteStorage>()
+    .build()?;
+```
+
+---
+
 ### 2. Sub-Settings
 
 Per-entity configuration files (e.g., one config per "remote"):
@@ -315,6 +349,7 @@ runtime.stop();
 ```
 
 Notes:
+
 - The watcher is OS-triggered by default (`HotReloadBackend::Auto`), with optional polling mode.
 - Debounce prevents reload storms for bursty writes.
 - Current scope watches only the main settings file.
@@ -517,9 +552,20 @@ Settings marked with `.secret()` are automatically stored in the most secure bac
     .meta_str("input_type", "password")
     .secret(),
 
-// 2. Configure the manager with zero boilerplate!
+// 2. Configure the manager with your choice of credentials provider!
+// Automatic environment variable resolution (Keychain + Encrypted File fallback)
 let manager = SettingsManager::builder("my-app", "1.0.0")
-    .with_env_credentials() // Resolve MY_APP_SECRET and MY_APP_SECRET_PATH
+    .with_env_credentials() // Resolves MY_APP_SECRET and MY_APP_SECRET_PATH
+    .build()?;
+
+// Or read the master password from a specific file
+let manager = SettingsManager::builder("my-app", "1.0.0")
+    .with_file_credentials("/path/to/secret.key")
+    .build()?;
+
+// Or provide the password directly/programmatically
+let manager = SettingsManager::builder("my-app", "1.0.0")
+    .with_password_credentials("my-master-password")
     .build()?;
 
 // 3. Usage - automatically routes to secure storage!
@@ -529,19 +575,28 @@ manager.save_setting("api", "key", &json!("sk-123"))?;
 // → Custom fallback path: From MY_APP_SECRET_PATH
 ```
 
+#### Bidirectional Secret Migration
+
+When you update your schema to transition a setting between normal and secret (e.g., adding `.secret()` to an existing setting, or removing it), `rcman` automatically and transparently migrates the setting's value:
+- **Normal to Secret**: The value is moved from the settings file (e.g., `settings.json`) to the secure credential store on startup.
+- **Secret to Normal**: The value is moved from the credential store back to the settings file.
+
+This migration is optimized with an $O(1)$ startup check using a profile-scoped `__rcman_secrets__` key in the credential store, with a backward-compatible one-time fallback scan to dynamically upgrade existing configurations.
+
 #### Three-Tier Security Hierarchy
 
 rcman implements a cascading fallback system to guarantee that secret operations never fail:
 
-| Tier | Backend | Persistence | Use Case |
-| :--- | :--- | :--- | :--- |
-| **1. Primary** | **OS Keychain** | ✅ Yes | Desktop/Mobile apps with native keyring support. |
-| **2. Fallback** | **Encrypted File** | ✅ Yes | Headless servers, Docker, or limited permission environments. |
-| **3. Emergency** | **Volatile Memory**| ❌ No | Extreme cases where all persistent storage is unavailable. |
+| Tier             | Backend             | Persistence | Use Case                                                      |
+| :--------------- | :------------------ | :---------- | :------------------------------------------------------------ |
+| **1. Primary**   | **OS Keychain**     | ✅ Yes      | Desktop/Mobile apps with native keyring support.              |
+| **2. Fallback**  | **Encrypted File**  | ✅ Yes      | Headless servers, Docker, or limited permission environments. |
+| **3. Emergency** | **Volatile Memory** | ❌ No       | Extreme cases where all persistent storage is unavailable.    |
 
 **Sticky Fallback:** If the Primary backend fails (e.g., "locked keychain" or "missing dbus" on Linux), the manager permanently switches to the Fallback tier for the remainder of the session to avoid repeated platform timeouts.
 
 #### Platform Support
+
 - **macOS/iOS**: Apple Keychain
 - **Windows**: Credential Manager
 - **Linux**: Secret Service (libsecret/KWallet)
@@ -549,7 +604,9 @@ rcman implements a cascading fallback system to guarantee that secret operations
 - **Cross-Platform Fallback**: AES-256-GCM (Argon2id KDF)
 
 #### Master Password Resolution (`SecretPasswordSource`)
+
 The secondary "Encrypted File" tier requires a master password. To avoid hardcoding, you can resolve it at runtime:
+
 - `SecretPasswordSource::Env("VAR_NAME")`: Load from an environment variable.
 - `SecretPasswordSource::File(path)`: Read from a secure file (e.g., a Docker secret).
 - `SecretPasswordSource::Provided(string)`: Manually provided by the user.

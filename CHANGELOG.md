@@ -8,20 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **macOS 10.14 Mojave dyld crash (`_kSecUseDataProtectionKeychain` not found)**:
-    - **Root cause**: `keyring` v4 on macOS pulls in
-      `apple-native-keyring-store` v1 → `security-framework` v3.x, which
-      statically references `_kSecUseDataProtectionKeychain` (added in
-      macOS 10.15 Catalina). dyld aborts the process at load time on
-      macOS ≤ 10.14, before `main()` runs — no runtime catch possible.
-    - **Fix**: On macOS, use `security-framework` v2.x directly (it only
-      references symbols from macOS 10.7 Lion). On Linux/Windows, keep
-      `keyring` v4.x (the issue is macOS-specific). The split is done
-      via target-specific dependencies in `Cargo.toml` so `keyring` is
-      not even in the macOS dependency graph.
-    - See `MACOS_COMPAT.md` for why runtime detection can't fix this.
 - `CredentialManager::clear()` now invalidates `tracked_secrets_cache`
-  after removing keys.  Previously the cache retained stale entries,
+  after removing keys. Previously the cache retained stale entries,
   causing `get_tracked_secrets()` to report secrets that had been
   deleted.
 - `EncryptedFileBackend::save_store()` now closes the temp file before
@@ -38,9 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `keychain` feature now uses `security-framework` v2.x directly on macOS
-  (instead of `keyring` v4 which pulls in `security-framework` v3.x).
-  Linux/Windows still use `keyring` v4.x.
+- Keyring dependencies changed to submodules instead of main keyring package.
 
 ## [v0.1.9] - 2026-05-19
 
