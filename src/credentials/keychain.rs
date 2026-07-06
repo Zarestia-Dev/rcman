@@ -24,7 +24,7 @@ impl KeychainBackend {
     pub fn new(service_name: impl Into<String>) -> Self {
         NATIVE_STORE_INIT.get_or_init(|| {
             // v4 requires a config HashMap for initialization, even if empty
-            let config: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+            let _config: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
 
             // Force Secret Service (Seahorse/KWallet) on Linux
             #[cfg(target_os = "linux")]
