@@ -63,6 +63,9 @@ pub struct SubSettingsConfig {
     /// Profile migration strategy (defaults to Auto)
     #[cfg(feature = "profiles")]
     pub profile_migrator: crate::ProfileMigrator,
+
+    /// Whether to deny unknown fields not defined in the schema (default: true)
+    pub deny_unknown_fields: bool,
 }
 
 impl Default for SubSettingsConfig {
@@ -78,6 +81,7 @@ impl Default for SubSettingsConfig {
             profiles_enabled: false,
             #[cfg(feature = "profiles")]
             profile_migrator: crate::ProfileMigrator::default(),
+            deny_unknown_fields: false,
         }
     }
 }
@@ -150,6 +154,12 @@ impl SubSettingsConfig {
     #[must_use]
     pub fn with_profile_migrator(mut self, migrator: crate::profiles::ProfileMigrator) -> Self {
         self.profile_migrator = migrator;
+        self
+    }
+
+    #[must_use]
+    pub fn deny_unknown_fields(mut self, deny: bool) -> Self {
+        self.deny_unknown_fields = deny;
         self
     }
 }
@@ -457,7 +467,9 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             return Ok(());
         };
 
-        if let Some(obj) = value.as_object() {
+        if self.config.deny_unknown_fields
+            && let Some(obj) = value.as_object()
+        {
             let allowed_roots: std::collections::HashSet<&str> = schema
                 .keys()
                 .map(|key| key.split('.').next().unwrap_or(key.as_str()))

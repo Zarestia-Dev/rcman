@@ -623,7 +623,11 @@ fn test_sub_settings_schema_rejects_unknown_root_field() {
 
     let manager = SettingsManager::builder("test-app", "1.0.0")
         .with_config_dir(temp_dir.path())
-        .with_sub_settings(SubSettingsConfig::new("remotes").with_schema::<RemoteEntrySchema>())
+        .with_sub_settings(
+            SubSettingsConfig::new("remotes")
+                .with_schema::<RemoteEntrySchema>()
+                .deny_unknown_fields(true),
+        )
         .build()
         .unwrap();
 
@@ -637,6 +641,26 @@ fn test_sub_settings_schema_rejects_unknown_root_field() {
             .to_string()
             .contains("not defined in sub-settings schema")
     );
+}
+
+#[test]
+fn test_sub_settings_schema_allows_unknown_root_field_when_disabled() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_sub_settings(
+            SubSettingsConfig::new("remotes")
+                .with_schema::<RemoteEntrySchema>()
+                .deny_unknown_fields(false),
+        )
+        .build()
+        .unwrap();
+
+    let remotes = manager.sub_settings("remotes").unwrap();
+    let result = remotes.set("unexpected", &json!({"unknown": true}));
+
+    assert!(result.is_ok());
 }
 
 #[test]
