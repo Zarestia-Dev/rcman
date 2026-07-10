@@ -27,7 +27,8 @@ impl KeychainBackend {
             #[cfg(target_os = "linux")]
             {
                 // v4 requires a config HashMap for initialization, even if empty
-                let config: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+                let config: std::collections::HashMap<&str, &str> =
+                    std::collections::HashMap::new();
                 match dbus_secret_service_keyring_store::Store::new_with_configuration(&config) {
                     Ok(store) => keyring_core::set_default_store(store),
                     Err(e) => warn!("Failed to initialize Linux Secret Service keyring store: {e}"),
@@ -38,7 +39,8 @@ impl KeychainBackend {
             #[cfg(target_os = "macos")]
             {
                 // v4 requires a config HashMap for initialization, even if empty
-                let config: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+                let config: std::collections::HashMap<&str, &str> =
+                    std::collections::HashMap::new();
                 match apple_native_keyring_store::keychain::Store::new_with_configuration(&config) {
                     Ok(store) => keyring_core::set_default_store(store),
                     Err(e) => warn!("Failed to initialize macOS Keychain store: {e}"),
@@ -49,7 +51,8 @@ impl KeychainBackend {
             #[cfg(target_os = "windows")]
             {
                 // v4 requires a config HashMap for initialization, even if empty
-                let config: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+                let config: std::collections::HashMap<&str, &str> =
+                    std::collections::HashMap::new();
                 match windows_native_keyring_store::Store::new_with_configuration(&config) {
                     Ok(store) => keyring_core::set_default_store(store),
                     Err(e) => warn!("Failed to initialize Windows native store: {e}"),
