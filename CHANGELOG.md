@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v0.2.1] - 2026-07-14
+
+### Fixed
+
+- Fixes an issue not skip the null values on restore if that value spefied as a null in schema.
+
 ## [v0.2.0] - 2026-07-10
 
 ### Fixed

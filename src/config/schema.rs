@@ -323,6 +323,10 @@ pub struct SettingMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
 
+    /// Whether this setting can be null (optional)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nullable: bool,
+
     /// Type-specific constraints
     #[serde(flatten)]
     pub constraints: SettingConstraints,
@@ -338,6 +342,7 @@ impl Default for SettingMetadata {
             setting_type: SettingType::Text,
             default: Value::Null,
             value: None,
+            nullable: false,
             constraints: SettingConstraints::default(),
             metadata: HashMap::new(),
         }
@@ -547,6 +552,13 @@ impl SettingMetadata {
         self
     }
 
+    /// Mark whether this setting can accept null values (optional field)
+    #[must_use]
+    pub fn nullable(mut self, nullable: bool) -> Self {
+        self.nullable = nullable;
+        self
+    }
+
     /// Check if this setting is marked as secret
     #[must_use]
     pub fn is_secret(&self) -> bool {
@@ -568,6 +580,12 @@ impl SettingMetadata {
     /// # Errors
     /// Returns an error message if validation fails (type mismatch, out of range, invalid pattern, etc.)
     pub fn validate(&self, value: &Value) -> Result<(), String> {
+        if value.is_null() {
+            if self.nullable {
+                return Ok(());
+            }
+            return Err("Value cannot be null for non-optional setting".to_string());
+        }
         match self.setting_type {
             SettingType::Toggle => Self::validate_toggle(value),
             SettingType::Number => self.validate_number(value),
@@ -959,6 +977,15 @@ mod tests {
             result.unwrap_err(),
             r"Value does not match pattern: ^[\w.-]+@[\w.-]+\.\w+$"
         );
+    }
+
+    #[test]
+    fn test_nullable_validation() {
+        let text_setting = SettingMetadata::text("default");
+        assert!(text_setting.validate(&Value::Null).is_err());
+
+        let nullable_text_setting = SettingMetadata::text("default").nullable(true);
+        assert!(nullable_text_setting.validate(&Value::Null).is_ok());
     }
 
     #[test]

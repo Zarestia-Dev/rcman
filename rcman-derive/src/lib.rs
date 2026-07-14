@@ -1101,7 +1101,7 @@ fn generate_setting_type(
 ) -> proc_macro2::TokenStream {
     let is_option = extract_inner_type_from_option(ty).is_some();
 
-    match type_info {
+    let mut base = match type_info {
         TypeInfo::Toggle => {
             if is_option {
                 quote! { rcman::SettingMetadata::toggle(defaults.#field_name.unwrap_or_default()) }
@@ -1158,5 +1158,11 @@ fn generate_setting_type(
         TypeInfo::Unknown => {
             unreachable!("Unknown types are rejected in process_field")
         }
+    };
+
+    if is_option {
+        base.extend(quote! { .nullable(true) });
     }
+
+    base
 }
