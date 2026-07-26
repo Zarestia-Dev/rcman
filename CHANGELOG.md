@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v0.2.2] - 2026-07-26
+
+### Fixed
+
+- Fixed an issue where the library was not able to initialize keyring on Android.
+
 ## [v0.2.1] - 2026-07-14
 
 ### Fixed

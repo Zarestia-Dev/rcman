@@ -226,28 +226,30 @@
 //! `rcman = { version = "0.1", features = ["hot-reload"] }`
 //!
 //! ```rust,no_run
-//! use rcman::{HotReloadConfig, HotReloadRuntime, SettingsManager};
-//! use std::sync::Arc;
+//! #[cfg(feature = "hot-reload")]
+//! {
+//!     use rcman::{HotReloadConfig, HotReloadRuntime, SettingsManager};
+//!     use std::sync::Arc;
 //!
-//! # fn demo() -> rcman::Result<()> {
-//! let manager = Arc::new(
-//!     SettingsManager::builder("my-app", "1.0.0")
-//!         .with_hot_reload()
-//!         .build()?,
-//! );
+//!     let manager = Arc::new(
+//!         SettingsManager::builder("my-app", "1.0.0")
+//!             .with_hot_reload()
+//!             .build()
+//!             .unwrap(),
+//!     );
 //!
-//! let mut runtime = HotReloadRuntime::start(
-//!     Arc::clone(&manager),
-//!     HotReloadConfig::default(),
-//!     |event| {
-//!         println!("hot-reload event: {event:?}");
-//!     },
-//! )?;
+//!     let mut runtime = HotReloadRuntime::start(
+//!         Arc::clone(&manager),
+//!         HotReloadConfig::default(),
+//!         |event| {
+//!             println!("hot-reload event: {event:?}");
+//!         },
+//!     )
+//!     .unwrap();
 //!
-//! // ... app loop
-//! runtime.stop();
-//! # Ok(())
-//! # }
+//!     // ... app loop
+//!     runtime.stop();
+//! }
 //! ```
 //!
 //! Scope note:

@@ -5,7 +5,7 @@
 //!   - macOS/iOS: native keychain via `keyring` apple-native
 //!   - Windows: Windows Credential Manager via `keyring`
 //!   - Linux: Secret Service via `keyring`
-//!   - Android: native credential store via `keyring` v4 / `keyring-core` (android-native-keyring-store)
+//!   - Android: native credential store via `keyring` v4 / `keyring-core` (`android-native-keyring-store`, requires `ndk_context` setup)
 //! - **Encrypted File**: Encrypted JSON fallback for CI/Docker and unsupported platforms - requires `encrypted-file` feature
 //! - **Memory**: In-memory only for testing
 
@@ -250,22 +250,19 @@ impl CredentialManager {
     pub fn store_with_profile(&self, key: &str, value: &str, profile: Option<&str>) -> Result<()> {
         let full_key = self.make_key_with_profile(key, profile);
 
-        // Check if primary is dead
-        if !self.is_primary_failed.load(Ordering::Relaxed) {
-            match self.primary.store(&full_key, value) {
-                Ok(()) => {
-                    log::debug!(
-                        "Stored credential '{key}' in {}",
-                        self.primary.backend_name()
-                    );
-                    return Ok(());
-                }
-                Err(e) => {
-                    log::error!("=== PRIMARY BACKEND FAILED FOR {key}: {e:?}");
-                    // Mark primary as failed if it's a platform/permission error
-                    // (Simplification: any non-not-found error triggers fallback switch)
-                    self.is_primary_failed.store(true, Ordering::Relaxed);
-                }
+        // Always attempt primary backend first
+        match self.primary.store(&full_key, value) {
+            Ok(()) => {
+                log::debug!(
+                    "Stored credential '{key}' in {}",
+                    self.primary.backend_name()
+                );
+                self.is_primary_failed.store(false, Ordering::Relaxed);
+                return Ok(());
+            }
+            Err(e) => {
+                log::debug!("Primary backend store for '{key}' failed: {e:?}");
+                self.is_primary_failed.store(true, Ordering::Relaxed);
             }
         }
 
@@ -306,14 +303,15 @@ impl CredentialManager {
     pub fn get_with_profile(&self, key: &str, profile: Option<&str>) -> Result<Option<String>> {
         let full_key = self.make_key_with_profile(key, profile);
 
-        // Try primary first if not dead
-        if !self.is_primary_failed.load(Ordering::Relaxed) {
-            match self.primary.get(&full_key) {
-                Ok(val) => return Ok(val),
-                Err(e) => {
-                    log::error!("=== PRIMARY BACKEND FAILED FOR {key}: {e:?}");
-                    self.is_primary_failed.store(true, Ordering::Relaxed);
-                }
+        // Try primary first
+        match self.primary.get(&full_key) {
+            Ok(val) => {
+                self.is_primary_failed.store(false, Ordering::Relaxed);
+                return Ok(val);
+            }
+            Err(e) => {
+                log::debug!("Primary backend get for '{key}' failed: {e:?}");
+                self.is_primary_failed.store(true, Ordering::Relaxed);
             }
         }
 

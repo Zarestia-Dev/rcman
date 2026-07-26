@@ -1,13 +1,97 @@
-//! OS Keychain backend using keyring (v4+)
+//! OS Keychain backend using `keyring` (v4+)
+//!
+//! Supports native secure credential storage across desktop and mobile platforms:
+//! - **Linux**: Secret Service (D-Bus / Seahorse / KWallet)
+//! - **macOS / iOS**: Native Apple Keychain & Protected Data store
+//! - **Windows**: Windows Credential Manager
+//! - **Android**: Android KeyStore & SharedPreferences (requires `ndk_context` initialization)
 
 use super::CredentialBackend;
 use crate::error::{Error, Result};
 use keyring_core::{Entry, Error as KeyringError};
 use log::{debug, warn};
 use std::collections::HashSet;
-use std::sync::{OnceLock, RwLock};
+#[cfg(not(target_os = "android"))]
+use std::sync::OnceLock;
+use std::sync::RwLock;
 
-static NATIVE_STORE_INIT: OnceLock<()> = OnceLock::new();
+/// Ensures the platform-native keyring store is initialized.
+///
+/// On Android, initialization waits until `ndk_context::android_context()` is initialized by the host application (e.g., Tauri v2) to prevent panic or lock poisoning.
+/// On desktop and iOS, initialization is performed lazily once via `OnceLock`.
+fn ensure_native_store_initialized() {
+    #[cfg(target_os = "android")]
+    {
+        static IS_INIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !IS_INIT.load(std::sync::atomic::Ordering::Relaxed) {
+            let context_ready = std::panic::catch_unwind(|| {
+                let _ = ndk_context::android_context();
+            })
+            .is_ok();
+
+            if context_ready {
+                let config: std::collections::HashMap<&str, &str> =
+                    std::collections::HashMap::new();
+                match android_native_keyring_store::Store::new_with_configuration(&config) {
+                    Ok(store) => {
+                        keyring_core::set_default_store(store);
+                        IS_INIT.store(true, std::sync::atomic::Ordering::Relaxed);
+                        log::info!("Android KeyStore keyring store initialized successfully");
+                    }
+                    Err(e) => warn!("Failed to initialize Android KeyStore keyring store: {e}"),
+                }
+            } else {
+                log::debug!("Android KeyStore initialization waiting for ndk_context");
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        static NATIVE_STORE_INIT: OnceLock<()> = OnceLock::new();
+        NATIVE_STORE_INIT.get_or_init(|| {
+            // Force Secret Service (Seahorse/KWallet) on Linux
+            #[cfg(target_os = "linux")]
+            {
+                let config: std::collections::HashMap<&str, &str> =
+                    std::collections::HashMap::new();
+                match dbus_secret_service_keyring_store::Store::new_with_configuration(&config) {
+                    Ok(store) => keyring_core::set_default_store(store),
+                    Err(e) => warn!("Failed to initialize Linux Secret Service keyring store: {e}"),
+                }
+            }
+
+            // Native Apple Keychain on macOS / iOS
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                let config: std::collections::HashMap<&str, &str> =
+                    std::collections::HashMap::new();
+                #[cfg(target_os = "ios")]
+                let store_res =
+                    apple_native_keyring_store::protected::Store::new_with_configuration(&config);
+                #[cfg(target_os = "macos")]
+                let store_res =
+                    apple_native_keyring_store::keychain::Store::new_with_configuration(&config);
+
+                match store_res {
+                    Ok(store) => keyring_core::set_default_store(store),
+                    Err(e) => warn!("Failed to initialize Apple Keychain store: {e}"),
+                }
+            }
+
+            // Native Windows Credential Manager on Windows
+            #[cfg(target_os = "windows")]
+            {
+                let config: std::collections::HashMap<&str, &str> =
+                    std::collections::HashMap::new();
+                match windows_native_keyring_store::Store::new_with_configuration(&config) {
+                    Ok(store) => keyring_core::set_default_store(store),
+                    Err(e) => warn!("Failed to initialize Windows native store: {e}"),
+                }
+            }
+        });
+    }
+}
 
 /// OS Keychain backend for secure credential storage
 pub struct KeychainBackend {
@@ -22,43 +106,7 @@ pub struct KeychainBackend {
 impl KeychainBackend {
     /// Create a new keychain backend
     pub fn new(service_name: impl Into<String>) -> Self {
-        NATIVE_STORE_INIT.get_or_init(|| {
-            // Force Secret Service (Seahorse/KWallet) on Linux
-            #[cfg(target_os = "linux")]
-            {
-                // v4 requires a config HashMap for initialization, even if empty
-                let config: std::collections::HashMap<&str, &str> =
-                    std::collections::HashMap::new();
-                match dbus_secret_service_keyring_store::Store::new_with_configuration(&config) {
-                    Ok(store) => keyring_core::set_default_store(store),
-                    Err(e) => warn!("Failed to initialize Linux Secret Service keyring store: {e}"),
-                }
-            }
-
-            // Native Apple Keychain on macOS
-            #[cfg(target_os = "macos")]
-            {
-                // v4 requires a config HashMap for initialization, even if empty
-                let config: std::collections::HashMap<&str, &str> =
-                    std::collections::HashMap::new();
-                match apple_native_keyring_store::keychain::Store::new_with_configuration(&config) {
-                    Ok(store) => keyring_core::set_default_store(store),
-                    Err(e) => warn!("Failed to initialize macOS Keychain store: {e}"),
-                }
-            }
-
-            // Native Windows Credential Manager on Windows
-            #[cfg(target_os = "windows")]
-            {
-                // v4 requires a config HashMap for initialization, even if empty
-                let config: std::collections::HashMap<&str, &str> =
-                    std::collections::HashMap::new();
-                match windows_native_keyring_store::Store::new_with_configuration(&config) {
-                    Ok(store) => keyring_core::set_default_store(store),
-                    Err(e) => warn!("Failed to initialize Windows native store: {e}"),
-                }
-            }
-        });
+        ensure_native_store_initialized();
 
         Self {
             service_name: service_name.into(),
@@ -69,6 +117,7 @@ impl KeychainBackend {
     }
 
     fn get_entry(&self, key: &str) -> Result<Entry> {
+        ensure_native_store_initialized();
         Entry::new(&self.service_name, key).map_err(|e| {
             Error::Credential(format!("Failed to create keychain entry for {key}: {e}"))
         })

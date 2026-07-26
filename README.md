@@ -597,11 +597,36 @@ rcman implements a cascading fallback system to guarantee that secret operations
 
 #### Platform Support
 
-- **macOS/iOS**: Apple Keychain
-- **Windows**: Credential Manager
-- **Linux**: Secret Service (libsecret/KWallet)
-- **Android**: Biometric/Keystore integration
+- **macOS/iOS**: Apple Keychain (`apple-native-keyring-store`)
+- **Windows**: Credential Manager (`windows-native-keyring-store`)
+- **Linux**: Secret Service (`dbus-secret-service-keyring-store`)
+- **Android**: Android KeyStore & EncryptedSharedPreferences (`android-native-keyring-store`, requires `ndk_context`)
 - **Cross-Platform Fallback**: AES-256-GCM (Argon2id KDF)
+
+##### Android Keyring Initialization (`ndk_context`)
+
+On Android, `rcman` uses `android-native-keyring-store` to interface with the native Android KeyStore and `SharedPreferences`. This backend requires `ndk_context` to access the JavaVM and Application Context.
+
+Before `rcman` can access the native Android KeyStore, your Android application (or UI framework such as Tauri v2) must initialize `ndk_context`:
+
+```rust
+// Example: Initializing ndk_context in Tauri v2 (mobile main window startup)
+#[cfg(target_os = "android")]
+window.with_webview(|webview| {
+    webview.jni_handle().exec(|env, context, _webview| {
+        if let Ok(vm) = env.get_java_vm() {
+            let vm_ptr = vm.get_java_vm_pointer() as *mut std::ffi::c_void;
+            let context_ptr = context.as_raw() as *mut std::ffi::c_void;
+            unsafe {
+                ndk_context::initialize_android_context(vm_ptr, context_ptr);
+            }
+        }
+    });
+});
+```
+
+> [!NOTE]
+> **Graceful Fallback Handling:** If `ndk_context` has not been initialized when `rcman` attempts to access secret settings, `rcman` detects that `ndk_context` is uninitialized and safely defers native KeyStore access. Secret operations will automatically fall back to the secondary persistent tier (Encrypted File) or volatile memory tier without crashing.
 
 #### Master Password Resolution (`SecretPasswordSource`)
 
