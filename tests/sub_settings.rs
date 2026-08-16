@@ -16,7 +16,6 @@ use rcman::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
@@ -36,7 +35,7 @@ struct RemoteConfig {
 struct RemoteEntrySchema;
 
 impl SettingsSchema for RemoteEntrySchema {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             "type" => SettingMetadata::select("drive", vec![
                 opt("drive", "Drive"),
@@ -53,7 +52,7 @@ impl SettingsSchema for RemoteEntrySchema {
 struct InvalidRemoteSchema;
 
 impl SettingsSchema for InvalidRemoteSchema {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             "port" => SettingMetadata::number(8080.0)
                 .min(9000.0)
@@ -68,7 +67,7 @@ struct SecretRemoteSchema;
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 impl SettingsSchema for SecretRemoteSchema {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             "host" => SettingMetadata::text("localhost"),
             "token" => SettingMetadata::text("").secret(),

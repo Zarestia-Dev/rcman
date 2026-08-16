@@ -58,7 +58,7 @@ pub const DEFAULT_KEY: &str = "main";
 /// # use std::collections::HashMap;
 /// # #[derive(Default, Serialize, Deserialize)] struct MySettings;
 /// # impl SettingsSchema for MySettings {
-/// #     fn get_metadata() -> HashMap<String, SettingMetadata> { HashMap::new() }
+/// #     fn get_metadata() -> IndexMap<String, SettingMetadata> { IndexMap::new() }
 /// # }
 ///
 /// let manager = SettingsManager::builder("my-app", "1.0.0")

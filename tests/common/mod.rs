@@ -110,7 +110,7 @@ pub struct PathsSettings {
 }
 
 impl SettingsSchema for TestSettings {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             "ui.theme" => SettingMetadata::select("dark", vec![
                 opt("light", "Light"),

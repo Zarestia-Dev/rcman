@@ -20,12 +20,9 @@ use tempfile::TempDir;
 #[cfg(feature = "profiles")]
 use rcman::SettingsSchema;
 #[cfg(feature = "profiles")]
-use std::collections::HashMap;
-
 // =============================================================================
 // Basic TOML Settings Management
 // =============================================================================
-
 #[test]
 fn test_toml_basic_save_and_load() {
     let temp_dir = TempDir::new().unwrap();
@@ -319,8 +316,8 @@ fn test_toml_main_settings_profiles() {
     }
 
     impl SettingsSchema for SimpleSettings {
-        fn get_metadata() -> HashMap<String, SettingMetadata> {
-            let mut map = HashMap::new();
+        fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
+            let mut map = rcman::IndexMap::new();
             map.insert(
                 "app.mode".to_string(),
                 SettingMetadata::text("normal").meta_str("label", "Mode"),

@@ -753,7 +753,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     fn migrate_sub_settings_secret_to_normal(
         &self,
         sub: &crate::sub_settings::SubSettings<S>,
-        schema: &std::collections::HashMap<String, SettingMetadata>,
+        schema: &IndexMap<String, SettingMetadata>,
         profile: Option<&str>,
         store: &dyn crate::sub_settings::SubSettingsStore,
         tracked_secrets: &mut std::collections::HashSet<String>,

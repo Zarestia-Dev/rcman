@@ -12,8 +12,8 @@ struct TestSchema {
 }
 
 impl SettingsSchema for TestSchema {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
-        let mut map = HashMap::new();
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
+        let mut map = rcman::IndexMap::new();
         // Define a test setting
         map.insert(
             "general.test_key".to_string(),

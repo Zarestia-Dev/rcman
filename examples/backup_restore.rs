@@ -11,15 +11,12 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "backup")]
 use serde_json::json;
 #[cfg(feature = "backup")]
-use std::collections::HashMap;
-
-#[cfg(feature = "backup")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct AppSettings;
 
 #[cfg(feature = "backup")]
 impl SettingsSchema for AppSettings {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             "app.name" => SettingMetadata::text("My App")
                 .meta_str("label", "App Name"),

@@ -21,9 +21,9 @@
 //!
 //! # use rcman::*;
 //! # use serde::{Serialize, Deserialize};
-//! # use std::collections::HashMap;
+//! # use rcman::IndexMap;
 //! # #[derive(Default, Serialize, Deserialize)] struct MySettings;
-//! # impl SettingsSchema for MySettings { fn get_metadata() -> HashMap<String, SettingMetadata> { HashMap::new() } }
+//! # impl SettingsSchema for MySettings { fn get_metadata() -> IndexMap<String, SettingMetadata> { IndexMap::new() } }
 //! let manager = SettingsManager::builder("my-app", "1.0.0")
 //!     .with_config_dir("~/.config/my-app")
 //!     .with_credentials()  // Enable automatic secret storage
@@ -38,7 +38,7 @@
 //! ```rust,no_run
 //! use rcman::{settings, SettingsSchema, SettingMetadata, opt};
 //! use serde::{Deserialize, Serialize};
-//! use std::collections::HashMap;
+//! use rcman::IndexMap;
 //!
 //! #[derive(Default, Serialize, Deserialize)]
 //! struct MySettings {
@@ -47,7 +47,7 @@
 //! }
 //!
 //! impl SettingsSchema for MySettings {
-//!     fn get_metadata() -> HashMap<String, SettingMetadata> {
+//!     fn get_metadata() -> IndexMap<String, SettingMetadata> {
 //!         settings! {
 //!             "ui.theme" => SettingMetadata::select("dark", vec![
 //!                 opt("light", "Light"),
@@ -96,9 +96,9 @@
 //! # fn example() -> rcman::Result<()> {
 //! # use rcman::*;
 //! # use serde::{Serialize, Deserialize};
-//! # use std::collections::HashMap;
+//! # use rcman::IndexMap;
 //! # #[derive(Default, Serialize, Deserialize)] struct MySettings;
-//! # impl SettingsSchema for MySettings { fn get_metadata() -> HashMap<String, SettingMetadata> { HashMap::new() } }
+//! # impl SettingsSchema for MySettings { fn get_metadata() -> IndexMap<String, SettingMetadata> { IndexMap::new() } }
 //! // Register sub-settings via builder
 //! let manager = SettingsManager::builder("my-app", "1.0.0")
 //!     .with_sub_settings(SubSettingsConfig::new("remotes"))  // Multi-file mode
@@ -126,9 +126,9 @@
 //! # {
 //! # use rcman::*;
 //! # use serde::{Serialize, Deserialize};
-//! # use std::collections::HashMap;
+//! # use rcman::IndexMap;
 //! # #[derive(Default, Serialize, Deserialize)] struct MySettings;
-//! # impl SettingsSchema for MySettings { fn get_metadata() -> HashMap<String, SettingMetadata> { HashMap::new() } }
+//! # impl SettingsSchema for MySettings { fn get_metadata() -> IndexMap<String, SettingMetadata> { IndexMap::new() } }
 //! let manager = SettingsManager::builder("my-app", "1.0.0")
 //!     .with_profiles() // Enable profiles for main settings
 //!     .with_sub_settings(SubSettingsConfig::new("remotes").with_profiles()) // Enable for sub-settings
@@ -156,9 +156,9 @@
 //! # fn example() -> rcman::Result<()> {
 //! # use rcman::*;
 //! # use serde::{Serialize, Deserialize};
-//! # use std::collections::HashMap;
+//! # use rcman::IndexMap;
 //! # #[derive(Default, Serialize, Deserialize)] struct MySettings;
-//! # impl SettingsSchema for MySettings { fn get_metadata() -> HashMap<String, SettingMetadata> { HashMap::new() } }
+//! # impl SettingsSchema for MySettings { fn get_metadata() -> IndexMap<String, SettingMetadata> { IndexMap::new() } }
 //! let config = SettingsConfig::builder("my-app", "1.0.0")
 //!     .with_schema::<MySettings>()
 //!     .build();
@@ -285,12 +285,13 @@ mod credentials;
 // Core Types (always available)
 // -----------------------------------------------------------------------------
 
-/// Core configuration types and traits for settings management.
 pub use config::{
     CredentialConfig, DefaultEnvSource, EnvSource, NumberConstraints, SettingConstraints,
     SettingMetadata, SettingOption, SettingType, SettingsConfig, SettingsConfigBuilder,
     SettingsSchema, TextConstraints, meta, opt,
 };
+/// Core configuration types and traits for settings management.
+pub use indexmap::IndexMap;
 
 #[cfg(feature = "hot-reload")]
 pub use config::{HotReloadBackend, HotReloadConfig};

@@ -155,6 +155,7 @@
 //! derive_schema_example();
 //! ```
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -816,7 +817,7 @@ pub trait SettingsSchema: Default + Serialize + for<'de> Deserialize<'de> {
     /// Get metadata for all settings
     ///
     /// The key format should be "`category.setting_name`" (e.g., "general.language")
-    fn get_metadata() -> HashMap<String, SettingMetadata>;
+    fn get_metadata() -> IndexMap<String, SettingMetadata>;
 
     /// Get list of categories in display order
     #[must_use]
@@ -834,8 +835,8 @@ pub trait SettingsSchema: Default + Serialize + for<'de> Deserialize<'de> {
 
 // Default implementation for () to allow DynamicManager (no schema)
 impl SettingsSchema for () {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
-        HashMap::new()
+    fn get_metadata() -> IndexMap<String, SettingMetadata> {
+        IndexMap::new()
     }
 }
 
@@ -859,10 +860,10 @@ pub fn opt(value: impl Into<String>, label: impl Into<String>) -> SettingOption 
 /// # Example
 /// ```rust,compile_fail
 /// use rcman::{settings, SettingsSchema, SettingMetadata, opt};
-/// use std::collections::HashMap;
+/// use indexmap::IndexMap;
 ///
 /// impl SettingsSchema for MySettings {
-///     fn get_metadata() -> HashMap<String, SettingMetadata> {
+///     fn get_metadata() -> IndexMap<String, SettingMetadata> {
 ///         settings! {
 ///             "ui.theme" => SettingMetadata::select("dark", vec![
 ///                 opt("light", "Light"),
@@ -885,7 +886,7 @@ pub fn opt(value: impl Into<String>, label: impl Into<String>) -> SettingOption 
 #[macro_export]
 macro_rules! settings {
     ($($key:expr => $value:expr),* $(,)?) => {{
-        let mut map = std::collections::HashMap::new();
+        let mut map = $crate::IndexMap::new();
         $(
             map.insert($key.to_string(), $value);
         )*

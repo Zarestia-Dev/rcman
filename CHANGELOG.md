@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **Deterministic Setting Metadata Ordering with `IndexMap`**:
+    - Replaced `std::collections::HashMap` with `indexmap::IndexMap` across `SettingsSchema::get_metadata()`, `SettingsManager::metadata()`, `SubSettingsConfig`, and `SubSettings::schema_metadata()`.
+    - Re-exported `IndexMap` from the root of `rcman`.
+    - Updated `#[derive(SettingsSchema)]` in `rcman-derive` to generate `IndexMap`, ensuring struct fields are returned and serialized in their exact declaration order.
+
 ## [v0.2.2] - 2026-07-26
 
 ### Fixed

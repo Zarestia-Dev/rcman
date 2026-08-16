@@ -14,6 +14,7 @@ use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
 use crate::utils::sync::RwLockExt;
 use crate::{SettingMetadata, SettingsSchema};
+use indexmap::IndexMap;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -48,7 +49,7 @@ pub struct SubSettingsConfig {
     pub migrator: Option<Arc<dyn Fn(Value) -> Value + Send + Sync>>,
 
     /// Optional schema metadata for validating sub-settings entries
-    pub schema: Option<Arc<HashMap<String, SettingMetadata>>>,
+    pub schema: Option<Arc<IndexMap<String, SettingMetadata>>>,
 
     /// Storage mode (`MultiFile` or `SingleFile`)
     pub mode: SubSettingsMode,
@@ -133,7 +134,7 @@ impl SubSettingsConfig {
     }
 
     #[must_use]
-    pub fn with_metadata(mut self, metadata: HashMap<String, SettingMetadata>) -> Self {
+    pub fn with_metadata(mut self, metadata: IndexMap<String, SettingMetadata>) -> Self {
         self.schema = Some(Arc::new(metadata));
         self
     }
@@ -349,7 +350,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         self.config.extension.as_deref().unwrap_or("json")
     }
 
-    pub fn schema_metadata(&self) -> Option<Arc<HashMap<String, SettingMetadata>>> {
+    pub fn schema_metadata(&self) -> Option<Arc<IndexMap<String, SettingMetadata>>> {
         self.config.schema.clone()
     }
 

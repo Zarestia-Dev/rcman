@@ -7,8 +7,6 @@ use rcman::{SettingsConfigBuilder, SettingsManager, SubSettingsConfig};
 #[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
-use std::collections::HashMap;
 use std::fs;
 use tempfile::tempdir;
 
@@ -122,7 +120,7 @@ struct ProfileSecretSettings;
 
 #[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
 impl SettingsSchema for ProfileSecretSettings {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             "secrets.api_key" => SettingMetadata::text("").secret(),
         }

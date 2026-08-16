@@ -5,14 +5,13 @@
 use rcman::{SettingMetadata, SettingsManager, SettingsSchema, opt, settings};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
 
 // Define your settings schema
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct AppSettings;
 
 impl SettingsSchema for AppSettings {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             "app.name" => SettingMetadata::text("My App")
                 .meta_str("label", "Application Name")

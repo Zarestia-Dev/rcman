@@ -11,7 +11,7 @@ struct FileSecretSettings;
 
 #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
 impl SettingsSchema for FileSecretSettings {
-    fn get_metadata() -> std::collections::HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             "secrets.api_key" => SettingMetadata::text("").secret(),
         }
@@ -75,7 +75,7 @@ struct RemoteSecretSchema;
 
 #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
 impl SettingsSchema for RemoteSecretSchema {
-    fn get_metadata() -> std::collections::HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             "type" => SettingMetadata::text("drive"),
             "token" => SettingMetadata::text("").secret(),

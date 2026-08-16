@@ -3,7 +3,7 @@
 //! Generates markdown documentation from `SettingsSchema` metadata.
 
 use crate::config::{SettingMetadata, SettingType, SettingsSchema};
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 /// Configuration for docs generation
 #[derive(Debug, Clone)]
@@ -63,8 +63,8 @@ pub fn generate_docs<T: SettingsSchema>(config: DocsConfig) -> String {
 
 /// Generate docs from raw metadata (useful when schema isn't available)
 #[must_use]
-pub fn generate_docs_from_metadata<S: std::hash::BuildHasher>(
-    metadata: &HashMap<String, SettingMetadata, S>,
+pub fn generate_docs_from_metadata<S>(
+    metadata: &IndexMap<String, SettingMetadata, S>,
     config: DocsConfig,
 ) -> String {
     use std::fmt::Write;
@@ -252,8 +252,8 @@ mod tests {
     struct TestSettings {}
 
     impl SettingsSchema for TestSettings {
-        fn get_metadata() -> HashMap<String, SettingMetadata> {
-            let mut m = HashMap::new();
+        fn get_metadata() -> IndexMap<String, SettingMetadata> {
+            let mut m = IndexMap::new();
             m.insert(
                 "appearance.theme".into(),
                 SettingMetadata::select(

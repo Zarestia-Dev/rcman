@@ -1,5 +1,7 @@
 //! Backup creation
 
+use indexmap::IndexMap;
+
 use super::archive::{calculate_file_hash, create_rcman_container, create_zip_archive};
 use super::types::{
     BackupAnalysis, BackupContents, BackupManifest, ExternalConfigProvider,
@@ -29,7 +31,7 @@ type ExternalGatherResult = (
 
 struct SecretContext<'a> {
     prefix: &'a str,
-    metadata: &'a std::collections::HashMap<String, crate::SettingMetadata>,
+    metadata: &'a IndexMap<String, crate::SettingMetadata>,
     should_include: bool,
     credential_profile: Option<&'a str>,
 }
@@ -519,7 +521,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         &self,
         value: &mut serde_json::Value,
         prefix: &str,
-        metadata: &std::collections::HashMap<String, crate::SettingMetadata>,
+        metadata: &IndexMap<String, crate::SettingMetadata>,
         should_include: bool,
         #[allow(unused_variables)] credential_profile: Option<&str>,
     ) {
@@ -618,7 +620,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         let sub_export_dir = export_dir.join(sub_type);
         let sub_metadata = sub
             .schema_metadata()
-            .unwrap_or_else(|| std::sync::Arc::new(std::collections::HashMap::new()));
+            .unwrap_or_else(|| std::sync::Arc::new(IndexMap::new()));
 
         if sub.is_single_file() {
             // Single-file mode

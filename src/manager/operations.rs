@@ -8,9 +8,9 @@ use crate::utils::sync::RwLockExt;
 #[cfg(feature = "backup")]
 use crate::backup::{BackupManager, ExternalConfigProvider};
 
+use indexmap::IndexMap;
 use log::{debug, info};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Schema> {
@@ -88,7 +88,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Returns an error if:
     /// - Storage read fails
     /// - Data is corrupted
-    pub fn metadata(&self) -> Result<HashMap<String, SettingMetadata>> {
+    pub fn metadata(&self) -> Result<IndexMap<String, SettingMetadata>> {
         // Ensure cache is populated
         self.ensure_cache_populated()?;
 

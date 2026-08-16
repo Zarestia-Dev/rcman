@@ -383,7 +383,6 @@ fn test_single_file_profile_migration() {
 fn test_main_settings_profiles() {
     use rcman::{SettingMetadata, SettingsSchema};
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
 
     #[derive(Serialize, Deserialize, Default)]
     struct TestSettings {
@@ -410,8 +409,8 @@ fn test_main_settings_profiles() {
     }
 
     impl SettingsSchema for TestSettings {
-        fn get_metadata() -> HashMap<String, SettingMetadata> {
-            let mut map = HashMap::new();
+        fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
+            let mut map = rcman::IndexMap::new();
             map.insert(
                 "general.theme".to_string(),
                 SettingMetadata::text("light").meta_str("label", "Theme"),
@@ -470,7 +469,6 @@ fn test_main_settings_profiles() {
 fn test_main_profile_switch_emits_changed_setting_callbacks() {
     use rcman::{SettingMetadata, SettingsSchema};
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
 
     #[derive(Default, Serialize, Deserialize)]
     struct TestSettings {
@@ -483,8 +481,8 @@ fn test_main_profile_switch_emits_changed_setting_callbacks() {
     }
 
     impl SettingsSchema for TestSettings {
-        fn get_metadata() -> HashMap<String, SettingMetadata> {
-            let mut map = HashMap::new();
+        fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
+            let mut map = rcman::IndexMap::new();
             map.insert(
                 "general.theme".to_string(),
                 SettingMetadata::text("light").meta_str("label", "Theme"),
@@ -537,7 +535,6 @@ fn test_main_profile_switch_emits_changed_setting_callbacks() {
 fn test_main_profile_switch_without_value_change_emits_no_callbacks() {
     use rcman::{SettingMetadata, SettingsSchema};
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
 
     #[derive(Default, Serialize, Deserialize)]
     struct TestSettings {
@@ -550,8 +547,8 @@ fn test_main_profile_switch_without_value_change_emits_no_callbacks() {
     }
 
     impl SettingsSchema for TestSettings {
-        fn get_metadata() -> HashMap<String, SettingMetadata> {
-            let mut map = HashMap::new();
+        fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
+            let mut map = rcman::IndexMap::new();
             map.insert(
                 "general.theme".to_string(),
                 SettingMetadata::text("light").meta_str("label", "Theme"),
@@ -588,7 +585,6 @@ fn test_main_profile_switch_without_value_change_emits_no_callbacks() {
 fn test_main_settings_profiles_directory_structure() {
     use rcman::{SettingMetadata, SettingsSchema};
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
 
     #[derive(Default, Serialize, Deserialize)]
     struct TestSettings {
@@ -601,8 +597,8 @@ fn test_main_settings_profiles_directory_structure() {
     }
 
     impl SettingsSchema for TestSettings {
-        fn get_metadata() -> HashMap<String, SettingMetadata> {
-            let mut map = HashMap::new();
+        fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
+            let mut map = rcman::IndexMap::new();
             map.insert(
                 "ui.theme".to_string(),
                 SettingMetadata::text("light").meta_str("label", "Theme"),
@@ -687,7 +683,6 @@ fn test_main_profile_propagation_with_mixed_sub_settings() {
 fn test_secret_reset_is_profile_scoped() {
     use rcman::{SettingMetadata, SettingsSchema};
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
 
     #[derive(Default, Serialize, Deserialize)]
     struct TestSettings {
@@ -700,8 +695,8 @@ fn test_secret_reset_is_profile_scoped() {
     }
 
     impl SettingsSchema for TestSettings {
-        fn get_metadata() -> HashMap<String, SettingMetadata> {
-            let mut map = HashMap::new();
+        fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
+            let mut map = rcman::IndexMap::new();
             map.insert(
                 "api.key".to_string(),
                 SettingMetadata::text("")
@@ -860,7 +855,7 @@ struct ProfileSecretSettings;
 
 #[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
 impl SettingsSchema for ProfileSecretSettings {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             "secrets.api_key" => SettingMetadata::text("").secret(),
         }

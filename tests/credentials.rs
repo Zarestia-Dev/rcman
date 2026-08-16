@@ -411,7 +411,7 @@ struct MigrationApiSettings {
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 impl rcman::SettingsSchema for MigrationNormalSettings {
-    fn get_metadata() -> std::collections::HashMap<String, rcman::SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, rcman::SettingMetadata> {
         rcman::settings! {
             "api.key" => rcman::SettingMetadata::text("")
                 .meta_str("label", "API Key")
@@ -427,7 +427,7 @@ struct MigrationSecretSettings {
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 impl rcman::SettingsSchema for MigrationSecretSettings {
-    fn get_metadata() -> std::collections::HashMap<String, rcman::SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, rcman::SettingMetadata> {
         rcman::settings! {
             "api.key" => {
                 let s = rcman::SettingMetadata::text("")
@@ -634,7 +634,7 @@ struct SubMigrationNormalSettings {
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 impl rcman::SettingsSchema for SubMigrationNormalSettings {
-    fn get_metadata() -> std::collections::HashMap<String, rcman::SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, rcman::SettingMetadata> {
         rcman::settings! {
             "host" => rcman::SettingMetadata::text(""),
             "token" => rcman::SettingMetadata::text("")
@@ -651,7 +651,7 @@ struct SubMigrationSecretSettings {
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 impl rcman::SettingsSchema for SubMigrationSecretSettings {
-    fn get_metadata() -> std::collections::HashMap<String, rcman::SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, rcman::SettingMetadata> {
         rcman::settings! {
             "host" => rcman::SettingMetadata::text(""),
             "token" => {

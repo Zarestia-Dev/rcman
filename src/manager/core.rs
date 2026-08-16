@@ -12,6 +12,7 @@ use crate::manager::env::EnvironmentHandler;
 use crate::storage::StorageBackend;
 use crate::sub_settings::SubSettings;
 
+use indexmap::IndexMap;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -77,7 +78,7 @@ pub struct SettingsManager<
     pub(super) schema_defaults: Arc<HashMap<String, Value>>,
 
     /// Cached schema metadata (shared across read paths)
-    pub(super) schema_metadata: Arc<HashMap<String, SettingMetadata>>,
+    pub(super) schema_metadata: Arc<IndexMap<String, SettingMetadata>>,
 
     /// Credential manager for secret settings (optional, requires keychain or encrypted-file feature)
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -285,7 +286,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         feature = "backup",
         any(feature = "keychain", feature = "encrypted-file")
     ))]
-    pub(crate) fn schema_metadata(&self) -> &HashMap<String, SettingMetadata> {
+    pub(crate) fn schema_metadata(&self) -> &IndexMap<String, SettingMetadata> {
         &self.schema_metadata
     }
 }

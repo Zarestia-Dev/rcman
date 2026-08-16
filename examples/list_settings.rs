@@ -8,13 +8,12 @@
 use rcman::{SettingMetadata, SettingType, SettingsManager, SettingsSchema, settings};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct AppSettings;
 
 impl SettingsSchema for AppSettings {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             // List of allowed email domains
             "security.allowed_domains" => SettingMetadata::list(

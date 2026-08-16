@@ -8,8 +8,6 @@ use rcman::{SettingMetadata, SettingsManager, SettingsSchema, settings};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "keychain")]
 use serde_json::json;
-#[cfg(feature = "keychain")]
-use std::collections::HashMap;
 
 #[cfg(feature = "keychain")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -17,7 +15,7 @@ struct AppSettings;
 
 #[cfg(feature = "keychain")]
 impl SettingsSchema for AppSettings {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
             "app.name" => SettingMetadata::text("My App")
                 .meta_str("label", "App Name"),

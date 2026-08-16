@@ -146,9 +146,9 @@ fn derive_settings_schema_impl(
 
     Ok(quote! {
         impl rcman::SettingsSchema for #name {
-            fn get_metadata() -> std::collections::HashMap<String, rcman::SettingMetadata> {
+            fn get_metadata() -> rcman::IndexMap<String, rcman::SettingMetadata> {
                 let defaults = <#name as Default>::default();
-                let mut map = std::collections::HashMap::new();
+                let mut map = rcman::IndexMap::new();
                 #(#metadata_entries)*
                 map
             }
