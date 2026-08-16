@@ -469,3 +469,48 @@ fn test_concurrent_access() {
     let theme = metadata.get("ui.theme").unwrap();
     assert!(theme.value.is_some());
 }
+
+#[test]
+fn test_update_closure_modifies_and_persists() {
+    let fixture = TestFixture::new();
+
+    // Initial state
+    let initial = fixture.manager.get_all().unwrap();
+    assert_eq!(initial.ui.theme, "dark");
+    assert_eq!(initial.general.language, "en");
+
+    // Perform closure update
+    let updated = fixture
+        .manager
+        .update(|s| {
+            s.ui.theme = "light".to_string();
+            s.general.language = "tr".to_string();
+            s.general.tray_enabled = false;
+        })
+        .unwrap();
+
+    assert_eq!(updated.ui.theme, "light");
+    assert_eq!(updated.general.language, "tr");
+    assert!(!updated.general.tray_enabled);
+
+    // Verify persisted
+    let reloaded = fixture.manager.get_all().unwrap();
+    assert_eq!(reloaded.ui.theme, "light");
+    assert_eq!(reloaded.general.language, "tr");
+    assert!(!reloaded.general.tray_enabled);
+}
+
+#[test]
+fn test_save_all_persists_model() {
+    let fixture = TestFixture::new();
+
+    let mut model = fixture.manager.get_all().unwrap();
+    model.ui.theme = "system".to_string();
+    model.ui.font_size = 18.0;
+
+    fixture.manager.save_all(&model).unwrap();
+
+    let reloaded = fixture.manager.get_all().unwrap();
+    assert_eq!(reloaded.ui.theme, "system");
+    assert!((reloaded.ui.font_size - 18.0).abs() < f64::EPSILON);
+}

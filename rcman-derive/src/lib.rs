@@ -114,7 +114,7 @@ fn derive_settings_schema_impl(
     let name = &input.ident;
     let container_attrs = parse_container_attrs(&input.attrs)?;
 
-    let fields = match &input.data {
+    match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(fields) => {
                 if fields.named.is_empty() {
@@ -123,24 +123,33 @@ fn derive_settings_schema_impl(
                         "SettingsSchema can only be derived for structs with named fields",
                     ));
                 }
-                &fields.named
+                derive_struct_settings_schema(name, &fields.named, &container_attrs)
             }
-            _ => {
-                return Err(syn::Error::new_spanned(
-                    input,
-                    "SettingsSchema can only be derived for structs with named fields",
-                ));
-            }
-        },
-        _ => {
-            return Err(syn::Error::new_spanned(
+            _ => Err(syn::Error::new_spanned(
                 input,
-                "SettingsSchema can only be derived for structs, not enums or unions",
-            ));
-        }
-    };
-    let (metadata_entries, snapshot_methods, manager_trait_methods, manager_impl_methods) =
-        build_metadata_and_accessors(fields, &container_attrs)?;
+                "SettingsSchema can only be derived for structs with named fields",
+            )),
+        },
+        Data::Enum(data_enum) => derive_enum_settings_schema(name, data_enum, &container_attrs),
+        _ => Err(syn::Error::new_spanned(
+            input,
+            "SettingsSchema can only be derived for structs or tagged enums, not unions",
+        )),
+    }
+}
+
+fn derive_struct_settings_schema(
+    name: &syn::Ident,
+    fields: &syn::punctuated::Punctuated<Field, syn::token::Comma>,
+    container_attrs: &ContainerAttrs,
+) -> Result<proc_macro2::TokenStream, syn::Error> {
+    let (
+        metadata_entries,
+        snapshot_methods,
+        manager_trait_methods,
+        manager_impl_methods,
+        const_keys,
+    ) = build_metadata_and_accessors(fields, container_attrs)?;
 
     let manager_trait_name = format_ident!("{}ManagerAccessors", name);
 
@@ -155,6 +164,7 @@ fn derive_settings_schema_impl(
         }
 
         impl #name {
+            #(#const_keys)*
             #(#snapshot_methods)*
         }
 
@@ -168,8 +178,100 @@ fn derive_settings_schema_impl(
     })
 }
 
+fn derive_enum_settings_schema(
+    name: &syn::Ident,
+    data_enum: &syn::DataEnum,
+    container_attrs: &ContainerAttrs,
+) -> Result<proc_macro2::TokenStream, syn::Error> {
+    let tag_name = container_attrs
+        .serde_tag
+        .clone()
+        .unwrap_or_else(|| "kind".to_string());
+
+    let mut variant_extends = Vec::new();
+    let mut const_variants = Vec::new();
+
+    for v in &data_enum.variants {
+        let variant_ident = &v.ident;
+        let v_attrs = parse_variant_attrs(&v.attrs)?;
+
+        let cfg_attrs: Vec<_> = v
+            .attrs
+            .iter()
+            .filter(|a| a.path().is_ident("cfg"))
+            .cloned()
+            .collect();
+
+        let syn::Fields::Unnamed(fields_unnamed) = &v.fields else {
+            return Err(syn::Error::new_spanned(
+                v,
+                "SettingsSchema enum derive requires single-element tuple variants like `Variant(VariantType)`",
+            ));
+        };
+
+        if fields_unnamed.unnamed.len() != 1 {
+            return Err(syn::Error::new_spanned(
+                v,
+                "SettingsSchema enum derive requires exactly one inner type per variant",
+            ));
+        }
+
+        let inner_type = &fields_unnamed.unnamed.first().unwrap().ty;
+
+        let tag_value = v_attrs
+            .rename
+            .unwrap_or_else(|| to_snake_case(&variant_ident.to_string()));
+        let label_value = v_attrs
+            .label
+            .unwrap_or_else(|| to_title_case(&variant_ident.to_string()));
+
+        let const_name = format_ident!("{}", variant_ident.to_string().to_ascii_uppercase());
+
+        variant_extends.push(quote! {
+            #(#cfg_attrs)*
+            {
+                map.extend(<#inner_type as rcman::SettingsSchema>::get_metadata());
+                options.push(rcman::opt(#tag_value, #label_value));
+            }
+        });
+
+        const_variants.push(quote! {
+            #(#cfg_attrs)*
+            pub const #const_name: &'static str = #tag_value;
+        });
+    }
+
+    Ok(quote! {
+        impl rcman::SettingsSchema for #name {
+            fn get_metadata() -> rcman::IndexMap<String, rcman::SettingMetadata> {
+                let mut map = rcman::IndexMap::new();
+                let mut options = Vec::new();
+                #(#variant_extends)*
+
+                let default_tag = options
+                    .first()
+                    .and_then(|o| o.value.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                map.insert(
+                    #tag_name.to_string(),
+                    rcman::SettingMetadata::select(default_tag, options)
+                        .meta_str("label", "Type"),
+                );
+
+                map
+            }
+        }
+
+        impl #name {
+            #(#const_variants)*
+        }
+    })
+}
+
 // Alias to reduce signature complexity for the helper that returns generated pieces
 type AccessorCollections = (
+    Vec<proc_macro2::TokenStream>,
     Vec<proc_macro2::TokenStream>,
     Vec<proc_macro2::TokenStream>,
     Vec<proc_macro2::TokenStream>,
@@ -184,6 +286,7 @@ fn build_metadata_and_accessors(
     let mut snapshot_methods = Vec::new();
     let mut manager_trait_methods = Vec::new();
     let mut manager_impl_methods = Vec::new();
+    let mut const_keys = Vec::new();
     let mut used_method_names = std::collections::HashMap::<String, proc_macro2::Span>::new();
     let mut errors = None::<syn::Error>;
 
@@ -210,6 +313,25 @@ fn build_metadata_and_accessors(
             .filter(|attr| attr.path().is_ident("cfg"))
             .cloned()
             .collect();
+
+        if let Some(field_name) = &field.ident {
+            let const_ident = format_ident!("{}", field_name.to_string().to_ascii_uppercase());
+            let category = resolve_field_category(&attrs, container_attrs);
+            let key_name = attrs
+                .rename
+                .clone()
+                .unwrap_or_else(|| field_name.to_string());
+            let full_key = if category.is_empty() {
+                key_name
+            } else {
+                format!("{category}.{key_name}")
+            };
+
+            const_keys.push(quote! {
+                #(#cfg_attrs)*
+                pub const #const_ident: &'static str = #full_key;
+            });
+        }
 
         match process_field(field, &attrs, container_attrs, &cfg_attrs) {
             Ok(entry) => {
@@ -266,6 +388,7 @@ fn build_metadata_and_accessors(
         snapshot_methods,
         manager_trait_methods,
         manager_impl_methods,
+        const_keys,
     ))
 }
 
@@ -799,10 +922,11 @@ fn parse_lit_expr<'a>(expr: &'a syn::Expr, name: &str) -> Result<&'a syn::ExprLi
     }
 }
 
-/// Container-level attributes from #[schema(...)]
+/// Container-level attributes from #[schema(...)] and #[serde(...)]
 #[derive(Default)]
 struct ContainerAttrs {
     category: Option<String>,
+    serde_tag: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -834,6 +958,84 @@ struct FieldAttrs {
     metadata_num: Vec<(String, f64)>,
 }
 
+struct VariantAttrs {
+    rename: Option<String>,
+    label: Option<String>,
+}
+
+fn parse_variant_attrs(attrs: &[Attribute]) -> Result<VariantAttrs, syn::Error> {
+    let mut result = VariantAttrs {
+        rename: None,
+        label: None,
+    };
+
+    for attr in attrs {
+        if attr.path().is_ident("serde") {
+            if let Ok(nested) = attr.parse_args_with(
+                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+            ) {
+                for meta in nested {
+                    if let Meta::NameValue(nv) = meta
+                        && nv.path.is_ident("rename")
+                        && let Expr::Lit(lit) = &nv.value
+                        && let Lit::Str(s) = &lit.lit
+                    {
+                        result.rename = Some(s.value());
+                    }
+                }
+            }
+        } else if attr.path().is_ident("setting")
+            && let Ok(nested) = attr.parse_args_with(
+                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+            )
+        {
+            for meta in nested {
+                if let Meta::NameValue(nv) = meta {
+                    if nv.path.is_ident("rename")
+                        && let Expr::Lit(lit) = &nv.value
+                        && let Lit::Str(s) = &lit.lit
+                    {
+                        result.rename = Some(s.value());
+                    } else if nv.path.is_ident("label")
+                        && let Expr::Lit(lit) = &nv.value
+                        && let Lit::Str(s) = &lit.lit
+                    {
+                        result.label = Some(s.value());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+fn to_snake_case(s: &str) -> String {
+    let mut result = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(ch.to_ascii_lowercase());
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn to_title_case(s: &str) -> String {
+    let mut result = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 {
+            result.push(' ');
+        }
+        result.push(ch);
+    }
+    result
+}
+
 fn parse_container_attrs(attrs: &[Attribute]) -> Result<ContainerAttrs, syn::Error> {
     let mut result = ContainerAttrs::default();
 
@@ -862,6 +1064,20 @@ fn parse_container_attrs(attrs: &[Attribute]) -> Result<ContainerAttrs, syn::Err
                             "#[schema(category)] must be a string literal, not an expression",
                         ));
                     }
+                }
+            }
+        } else if attr.path().is_ident("serde")
+            && let Ok(nested) = attr.parse_args_with(
+                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+            )
+        {
+            for meta in nested {
+                if let Meta::NameValue(nv) = meta
+                    && nv.path.is_ident("tag")
+                    && let Expr::Lit(lit) = &nv.value
+                    && let Lit::Str(s) = &lit.lit
+                {
+                    result.serde_tag = Some(s.value());
                 }
             }
         }

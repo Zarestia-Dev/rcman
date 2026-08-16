@@ -235,9 +235,8 @@ impl SettingsConfig {
 ///
 /// **Type-Safe (With Schema):**
 /// ```no_run
-/// use rcman::{SettingsConfig, SettingsSchema, SettingMetadata, settings};
+/// use rcman::{IndexMap, SettingMetadata, SettingsConfig, SettingsSchema, settings};
 /// use serde::{Serialize, Deserialize};
-/// use std::collections::HashMap;
 ///
 /// #[derive(Default, Serialize, Deserialize)]
 /// struct MySettings { theme: String }
@@ -647,9 +646,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     ///
     /// # Example
     /// ```no_run
-    /// use rcman::{SettingsConfig, SettingsSchema, SettingMetadata, settings};
+    /// use rcman::{IndexMap, SettingMetadata, SettingsConfig, SettingsSchema, settings};
     /// use serde::{Serialize, Deserialize};
-    /// use std::collections::HashMap;
     ///
     /// #[derive(Default, Serialize, Deserialize)]
     /// struct AppSettings {

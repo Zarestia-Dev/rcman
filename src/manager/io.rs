@@ -311,6 +311,186 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(())
     }
 
+    /// Save the entire settings model to storage and credentials.
+    ///
+    /// Validates all fields, routes secret settings to the OS keychain or encrypted file,
+    /// minimizes the JSON file by removing default values, and writes non-secret settings
+    /// in a single atomic transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Validation fails for any setting
+    /// - Storage write fails
+    /// - Keyring storage fails
+    pub fn save_all(&self, schema: &Schema) -> Result<()> {
+        let value = serde_json::to_value(schema).map_err(|e| Error::Parse(e.to_string()))?;
+        self.ensure_cache_populated()?;
+
+        // 1. Validation Pre-Pass: Validate all values before mutating any storage or keychain
+        for (full_key, setting_meta) in self.schema_metadata.iter() {
+            let new_val = if let Some((category, setting_name)) = Self::parse_setting_key(full_key)
+            {
+                value.get(category).and_then(|c| c.get(setting_name))
+            } else {
+                value.get(full_key)
+            }
+            .unwrap_or(&setting_meta.default);
+
+            self.events
+                .validate(full_key, new_val)
+                .map_err(|msg| Error::InvalidSettingValue {
+                    key: full_key.clone(),
+                    reason: msg,
+                })?;
+
+            if let Err(e) = setting_meta.validate(new_val) {
+                return Err(Error::Config(format!(
+                    "Validation failed for {full_key}: {e}"
+                )));
+            }
+        }
+
+        let _write_guard = self
+            .settings_write_lock
+            .lock()
+            .map_err(|_| Error::Config("Settings write lock poisoned".into()))?;
+
+        let mut stored = self
+            .settings_cache
+            .get_stored()?
+            .unwrap_or_else(|| json!({}));
+
+        let mut notifications = Vec::new();
+        let mut stored_modified = false;
+
+        for (full_key, setting_meta) in self.schema_metadata.iter() {
+            let new_val = if let Some((category, setting_name)) = Self::parse_setting_key(full_key)
+            {
+                value.get(category).and_then(|c| c.get(setting_name))
+            } else {
+                value.get(full_key)
+            }
+            .unwrap_or(&setting_meta.default);
+
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+            if setting_meta.is_secret() {
+                let default_value = &setting_meta.default;
+                let old_value = if self.credentials.is_some() {
+                    match self.get_credential_with_profile(full_key) {
+                        Ok(Some(secret_value)) => Value::String(secret_value),
+                        Ok(None) => default_value.clone(),
+                        Err(_) => default_value.clone(),
+                    }
+                } else {
+                    default_value.clone()
+                };
+
+                if old_value != *new_val {
+                    self.save_secret_setting(full_key, new_val, setting_meta)?;
+                    notifications.push((full_key.clone(), old_value, new_val.clone()));
+                }
+                continue;
+            }
+
+            let default_value = &setting_meta.default;
+            let (category, setting_name) = match Self::parse_setting_key(full_key) {
+                Some((cat, name)) => (cat, name),
+                None => ("", full_key.as_str()),
+            };
+
+            let old_value = if category.is_empty() {
+                stored
+                    .get(setting_name)
+                    .cloned()
+                    .unwrap_or_else(|| default_value.clone())
+            } else {
+                stored
+                    .get(category)
+                    .and_then(|c| c.get(setting_name))
+                    .cloned()
+                    .unwrap_or_else(|| default_value.clone())
+            };
+
+            if old_value != *new_val {
+                stored_modified = true;
+                notifications.push((full_key.clone(), old_value, new_val.clone()));
+
+                let stored_obj = stored
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Parse("Settings root is not an object".into()))?;
+
+                if category.is_empty() {
+                    if *new_val == *default_value {
+                        stored_obj.remove(setting_name);
+                    } else {
+                        stored_obj.insert(setting_name.to_string(), new_val.clone());
+                    }
+                } else {
+                    let category_obj = stored_obj
+                        .entry(category.to_string())
+                        .or_insert_with(|| json!({}))
+                        .as_object_mut()
+                        .ok_or_else(|| {
+                            Error::Parse(format!("Category {category} is not an object"))
+                        })?;
+
+                    if *new_val == *default_value {
+                        category_obj.remove(setting_name);
+                    } else {
+                        category_obj.insert(setting_name.to_string(), new_val.clone());
+                    }
+                }
+            }
+        }
+
+        if let Some(stored_obj) = stored.as_object_mut() {
+            stored_obj.retain(|_, v| v.as_object().is_none_or(|obj| !obj.is_empty()));
+        }
+
+        if stored_modified {
+            let path = self.settings_path()?;
+            self.storage.write(&path, &stored)?;
+            self.settings_cache.update_stored(stored)?;
+        }
+
+        for (key, old_v, new_v) in notifications {
+            self.events.notify(&key, &old_v, &new_v);
+        }
+
+        debug!("Settings model saved successfully");
+        Ok(())
+    }
+
+    /// Update settings in-place using a closure and atomically persist all changes.
+    ///
+    /// Fetches the current settings snapshot, yields a mutable reference to the closure,
+    /// validates the modified struct, and persists all changes (including secrets) to disk and keychain.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use rcman::{SettingsManager, SettingsSchema, SettingMetadata, settings};
+    /// # use serde::{Serialize, Deserialize};
+    /// # #[derive(Default, Serialize, Deserialize, Clone)] struct MySettings { theme: String }
+    /// # impl SettingsSchema for MySettings {
+    /// #     fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> { rcman::IndexMap::new() }
+    /// # }
+    /// # let manager = SettingsManager::builder("app", "1.0").with_schema::<MySettings>().build().unwrap();
+    /// manager.update(|settings| {
+    ///     settings.theme = "dark".to_string();
+    /// }).unwrap();
+    /// ```
+    pub fn update<F>(&self, f: F) -> Result<Schema>
+    where
+        F: FnOnce(&mut Schema),
+    {
+        let mut current = self.get_all()?;
+        f(&mut current);
+        self.save_all(&current)?;
+        Ok(current)
+    }
+
     /// Reset a single setting to its schema default.
     ///
     /// # Errors
@@ -753,7 +933,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     fn migrate_sub_settings_secret_to_normal(
         &self,
         sub: &crate::sub_settings::SubSettings<S>,
-        schema: &IndexMap<String, SettingMetadata>,
+        schema: &indexmap::IndexMap<String, SettingMetadata>,
         profile: Option<&str>,
         store: &dyn crate::sub_settings::SubSettingsStore,
         tracked_secrets: &mut std::collections::HashSet<String>,

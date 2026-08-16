@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Closure-Based In-Place Mutation with `SettingsManager::update`**:
+    - Added `SettingsManager::update<F>(&self, f: F) -> Result<Schema>` allowing developers to mutate settings using a closure with full compile-time struct field type-safety and IDE autocomplete.
+    - Added `SettingsManager::save_all(&self, schema: &Schema) -> Result<()>` performing pre-validation, automatic secret/keychain routing, default value stripping, atomic disk writes, and change event dispatching.
+- **Compile-Time `const` Key Identifiers in `rcman-derive`**:
+    - `#[derive(SettingsSchema)]` now generates uppercase compile-time `pub const` key constants on derived structs (e.g. `ServerSettings::PORT = "network.custom_port"`), enabling zero-cost, typo-proof key access with full rust-analyzer autocomplete.
+- **Tagged-Union `enum` Support in `rcman-derive`**:
+    - `#[derive(SettingsSchema)]` can now be derived directly on enums annotated with `#[serde(tag = "...")]`.
+    - Automatically aggregates metadata from variant schemas (`<Variant as SettingsSchema>::get_metadata()`) and generates the tag discriminant selection metadata without manual boilerplate.
+
 ### Changed
 
 - **Deterministic Setting Metadata Ordering with `IndexMap`**:

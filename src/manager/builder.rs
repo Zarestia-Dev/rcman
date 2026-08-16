@@ -216,9 +216,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     /// # Example
     ///
     /// ```rust,no_run
-    /// use rcman::{SettingsManager, SettingsSchema, SettingMetadata, settings};
+    /// use rcman::{IndexMap, SettingMetadata, SettingsManager, SettingsSchema, settings};
     /// use serde::{Deserialize, Serialize};
-    /// use std::collections::HashMap;
     ///
     /// #[derive(Debug, Clone, Serialize, Deserialize, Default)]
     /// struct AppSettings {

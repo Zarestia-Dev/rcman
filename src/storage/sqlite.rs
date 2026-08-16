@@ -53,9 +53,8 @@ pub const DEFAULT_KEY: &str = "main";
 ///
 /// ```rust,no_run
 /// use rcman::{SettingsManager, SqliteStorage};
-/// # use rcman::{SettingsSchema, SettingMetadata};
+/// # use rcman::{IndexMap, SettingMetadata, SettingsSchema};
 /// # use serde::{Serialize, Deserialize};
-/// # use std::collections::HashMap;
 /// # #[derive(Default, Serialize, Deserialize)] struct MySettings;
 /// # impl SettingsSchema for MySettings {
 /// #     fn get_metadata() -> IndexMap<String, SettingMetadata> { IndexMap::new() }
