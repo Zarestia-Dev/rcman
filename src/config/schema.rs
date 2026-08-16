@@ -158,6 +158,7 @@
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 // =============================================================================
@@ -233,7 +234,7 @@ pub struct NumberConstraints {
 pub struct TextConstraints {
     /// Regex pattern for validation
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pattern: Option<String>,
+    pub pattern: Option<Cow<'static, str>>,
 }
 
 /// Match mode for list reservations
@@ -256,7 +257,7 @@ pub enum ReservedMatchMode {
 pub struct ListConstraints {
     /// Reserved values that cannot be used
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reserved: Option<Vec<String>>,
+    pub reserved: Option<Vec<Cow<'static, str>>>,
     /// How to match reserved values
     #[serde(skip_serializing_if = "Option::is_none")]
     pub match_mode: Option<ReservedMatchMode>,
@@ -516,7 +517,7 @@ impl SettingMetadata {
 
     /// Set regex pattern for validation
     #[must_use]
-    pub fn pattern(mut self, pattern: impl Into<String>) -> Self {
+    pub fn pattern(mut self, pattern: impl Into<Cow<'static, str>>) -> Self {
         self.constraints.text.pattern = Some(pattern.into());
         self
     }
@@ -527,8 +528,12 @@ impl SettingMetadata {
 
     /// Set reserved values for List type
     #[must_use]
-    pub fn reserved(mut self, reserved: Vec<String>) -> Self {
-        self.constraints.list.reserved = Some(reserved);
+    pub fn reserved<I, S>(mut self, reserved: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<Cow<'static, str>>,
+    {
+        self.constraints.list.reserved = Some(reserved.into_iter().map(Into::into).collect());
         self
     }
 
@@ -674,39 +679,33 @@ impl SettingMetadata {
 
     fn check_reserved_item(
         item: &str,
-        reserved: &[String],
+        reserved: &[Cow<'static, str>],
         mode: &ReservedMatchMode,
     ) -> Result<(), String> {
         for r in reserved {
+            let r_str = r.as_ref();
             match mode {
                 ReservedMatchMode::Exact => {
-                    if item == r {
+                    if item == r_str {
                         return Err(format!("Value '{item}' is a reserved value"));
                     }
                 }
                 ReservedMatchMode::PrefixEquals => {
-                    if item == r || item.starts_with(&format!("{r}=")) {
-                        return Err(format!("Value '{item}' matches reserved prefix '{r}'"));
+                    if item == r_str || item.starts_with(&format!("{r_str}=")) {
+                        return Err(format!("Value '{item}' matches reserved prefix '{r_str}'"));
                     }
                 }
                 ReservedMatchMode::PrefixSpace => {
-                    if item == r {
-                        return Err(format!("Value '{item}' is a reserved value"));
-                    }
-                    if let Some((key, _)) = item.split_once(' ')
-                        && key == r
-                    {
-                        return Err(format!("Value '{item}' matches reserved prefix '{r}'"));
+                    if item == r_str || item.starts_with(&format!("{r_str} ")) {
+                        return Err(format!("Value '{item}' matches reserved prefix '{r_str}'"));
                     }
                 }
                 ReservedMatchMode::CliFlag => {
-                    if item == r || item.starts_with(&format!("{r}=")) {
-                        return Err(format!("Value '{item}' matches reserved flag '{r}'"));
-                    }
-                    if let Some((key, _)) = item.split_once(' ')
-                        && key == r
+                    if item == r_str
+                        || item.starts_with(&format!("{r_str}="))
+                        || item.starts_with(&format!("{r_str} "))
                     {
-                        return Err(format!("Value '{item}' matches reserved flag '{r}'"));
+                        return Err(format!("Value '{item}' matches reserved flag '{r_str}'"));
                     }
                 }
             }
@@ -773,15 +772,15 @@ pub struct SettingOption {
     /// Value to store
     pub value: Value,
     /// Display label
-    pub label: String,
+    pub label: Cow<'static, str>,
     /// Optional description
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    pub description: Option<Cow<'static, str>>,
 }
 
 impl SettingOption {
     /// Create a simple string option
-    pub fn new(value: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn new(value: impl Into<String>, label: impl Into<Cow<'static, str>>) -> Self {
         let value_str = value.into();
         Self {
             value: Value::String(value_str),
@@ -793,8 +792,8 @@ impl SettingOption {
     /// Create an option with description
     pub fn with_description(
         value: impl Into<String>,
-        label: impl Into<String>,
-        description: impl Into<String>,
+        label: impl Into<Cow<'static, str>>,
+        description: impl Into<Cow<'static, str>>,
     ) -> Self {
         let value_str = value.into();
         Self {
@@ -831,12 +830,44 @@ pub trait SettingsSchema: Default + Serialize + for<'de> Deserialize<'de> {
         categories.dedup();
         categories
     }
+
+    /// Validate this settings instance against schema constraints.
+    ///
+    /// The default implementation serializes `self` to `serde_json::Value` and validates
+    /// each field against its corresponding [`SettingMetadata`] constraints.
+    /// Types generated via `#[derive(SettingsSchema)]` override this with zero-overhead,
+    /// compile-time strongly-typed checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidSettingValue`](crate::Error::InvalidSettingValue) if any setting fails validation,
+    /// or [`Error::Serialize`](crate::Error::Serialize) if serialization fails.
+    fn validate(&self) -> Result<(), crate::Error> {
+        let value = serde_json::to_value(self)?;
+        let metadata = Self::get_metadata();
+        for (full_key, setting_meta) in &metadata {
+            let field_val =
+                crate::utils::value::get_path(&value, full_key).unwrap_or(&setting_meta.default);
+
+            if let Err(reason) = setting_meta.validate(field_val) {
+                return Err(crate::Error::InvalidSettingValue {
+                    key: full_key.clone(),
+                    reason,
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 // Default implementation for () to allow DynamicManager (no schema)
 impl SettingsSchema for () {
     fn get_metadata() -> IndexMap<String, SettingMetadata> {
         IndexMap::new()
+    }
+
+    fn validate(&self) -> Result<(), crate::Error> {
+        Ok(())
     }
 }
 
@@ -851,7 +882,7 @@ impl SettingsSchema for () {
 /// use rcman::opt;
 /// let options = vec![opt("light", "Light Mode"), opt("dark", "Dark Mode")];
 /// ```
-pub fn opt(value: impl Into<String>, label: impl Into<String>) -> SettingOption {
+pub fn opt(value: impl Into<String>, label: impl Into<Cow<'static, str>>) -> SettingOption {
     SettingOption::new(value, label)
 }
 

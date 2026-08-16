@@ -1,0 +1,11 @@
+error: Duplicate generated accessor method name `api_network_port` detected
+  --> tests/ui/fail/duplicate_accessors.rs:10:9
+   |
+10 |     pub port: u16,
+   |         ^^^^
+
+error: First conflicting field is here
+ --> tests/ui/fail/duplicate_accessors.rs:7:9
+  |
+7 |     pub network_port: u16,
+  |         ^^^^^^^^^^^^

@@ -1,0 +1,21 @@
+error: SettingsSchema can only be derived for structs with named fields
+ --> tests/ui/fail/invalid_container.rs:5:1
+  |
+5 | / #[schema(category = "test")]
+6 | | struct EmptySettings {}
+  | |_______________________^
+
+error: SettingsSchema can only be derived for structs with named fields
+  --> tests/ui/fail/invalid_container.rs:9:1
+   |
+ 9 | / #[schema(category = "test")]
+10 | | struct TupleSettings(u16, String);
+   | |__________________________________^
+
+error: SettingsSchema can only be derived for structs or tagged enums, not unions
+  --> tests/ui/fail/invalid_container.rs:13:1
+   |
+13 | / union UnionSettings {
+14 | |     a: u32,
+15 | | }
+   | |_^

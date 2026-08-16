@@ -40,4 +40,5 @@ fn main() {
 
     assert_eq!(Action::EMAIL, "email_action");
     assert_eq!(Action::WEBHOOK, "webhook_action");
+    assert_eq!(Action::ALL_KEYS, &[Action::EMAIL, Action::WEBHOOK]);
 }

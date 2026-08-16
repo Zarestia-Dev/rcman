@@ -89,14 +89,14 @@ rcman offers two primary patterns depending on your needs:
 Best for: Applications with a defined schema and need compile-time safety.
 
 ```rust
-use rcman::{SettingsManager, SettingsSchema, SettingMetadata, settings};
+use rcman::{SettingsManager, SettingsSchema, SettingMetadata, settings, IndexMap};
 use serde::{Serialize, Deserialize};
 
 #[derive(Default, Serialize, Deserialize)]
 struct MySettings { theme: String }
 
 impl SettingsSchema for MySettings {
-    fn get_metadata() -> std::collections::HashMap<String, SettingMetadata> {
+    fn get_metadata() -> IndexMap<String, SettingMetadata> {
         settings! { "ui.theme" => SettingMetadata::text("dark").meta_str("label", "Theme") }
     }
 }
@@ -107,6 +107,11 @@ let manager = SettingsManager::builder("my-app", "1.0.0")
 
 // Type-safe access!
 let settings: MySettings = manager.get_all()?;
+
+// In-place atomic mutation with full struct autocomplete!
+let updated = manager.update(|s| {
+    s.theme = "light".to_string();
+})?;
 ```
 
 #### 🔧 Dynamic Pattern
@@ -133,9 +138,8 @@ let settings = manager.metadata()?;
 Define settings using the clean builder API:
 
 ```rust
-use rcman::{settings, SettingsSchema, SettingMetadata, opt};
+use rcman::{settings, SettingsSchema, SettingMetadata, opt, IndexMap};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 #[derive(Default, Serialize, Deserialize)]
 struct AppSettings {
@@ -145,7 +149,7 @@ struct AppSettings {
 }
 
 impl SettingsSchema for AppSettings {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> IndexMap<String, SettingMetadata> {
         settings! {
             // Toggle setting
             "ui.dark_mode" => SettingMetadata::toggle(false)
@@ -212,12 +216,12 @@ impl SettingsSchema for AppSettings {
 - `.meta_bool(key, value)` - Add custom boolean metadata (e.g., advanced, readonly)
 - `.meta_num(key, value)` - Add custom number metadata (e.g., order, priority)
 
-### Using the Derive Macro (Recommended)
+### 2. Using the Derive Macro (Recommended)
 
-Instead of implementing `SettingsSchema` manually, use the derive macro:
+Instead of implementing `SettingsSchema` manually, use `#[derive(DeriveSettingsSchema)]` for maximum Developer Experience (DX):
 
 ```toml
-rcman = { version = "0.1", features = ["derive"] }
+rcman = { version = "0.2", features = ["derive"] }
 ```
 
 ```rust
@@ -227,35 +231,79 @@ use serde::{Deserialize, Serialize};
 #[derive(Default, Serialize, Deserialize, DeriveSettingsSchema)]
 #[schema(category = "general")]
 struct GeneralSettings {
-    #[setting(label = "Enable Tray", description = "Show tray icon")]
+    /// Toggle desktop system tray integration.
+    #[setting(label = "Enable Tray", description = "Show tray icon in system bar")]
     tray_enabled: bool,
 
-    #[setting(label = "Port", min = 1024, max = 65535)]
+    /// TCP port for incoming connections.
+    #[setting(label = "Port", min = 1024, max = 65535, default = 8080)]
     port: u16,
 
+    /// Application display theme.
     #[setting(label = "Theme", options(("light", "Light"), ("dark", "Dark")))]
     theme: String,
 }
 
-// Snapshot accessors generated on the struct
-let mut snapshot = GeneralSettings::default();
-let _ = snapshot.general_theme();
-snapshot.set_general_theme("dark".to_string());
+// 1. Compile-Time Key Constants (Zero Runtime Cost, Zero Typo Risk)
+assert_eq!(GeneralSettings::PORT, "general.port");
+assert_eq!(GeneralSettings::THEME, "general.theme");
 
-// Manager accessors generated as <SchemaName>ManagerAccessors trait
+// 2. Strongly-Typed In-Place Mutation
 let manager = rcman::SettingsManager::builder("my-app", "1.0.0")
     .with_schema::<GeneralSettings>()
     .build()?;
+
+manager.update(|s| {
+    s.port = 9090;
+    s.theme = "dark".to_string();
+})?;
+
+// 3. Snapshot accessors generated on the struct
+let mut snapshot = manager.get_all::<GeneralSettings>()?;
+let _ = snapshot.general_theme();
+snapshot.set_general_theme("dark".to_string());
+
+// 4. Manager accessors generated as <SchemaName>ManagerAccessors trait
 manager.set_general_theme("light".to_string())?;
 let theme = manager.general_theme()?;
 ```
 
-**Available field attributes:**
+#### 💡 Rich IDE IntelliSense & Documentation Cards
 
-- `label`, `description`, `category`
-- `min`, `max`, `step` (for numbers)
-- `options((...))` (for selects)
-- `secret`, `skip`
+When you use `#[derive(DeriveSettingsSchema)]`, `rcman-derive` generates structured Markdown doc comments for `rust-analyzer` at compile-time. When hovering over constants (`GeneralSettings::PORT`) or methods in your IDE, a rich information card is displayed with zero runtime overhead:
+
+```text
+⚙️ Setting: general.port
+
+TCP port for incoming connections.
+
+- 🏷️ Label: Port
+- 🔤 Type: u16
+- 📏 Range: 1024 .. 65535
+- 🔒 Security: Plaintext config file
+```
+
+#### 🔀 Tagged-Union `enum` Support
+
+Polymorphic configs (such as action types or provider definitions) can derive `DeriveSettingsSchema` directly with `#[serde(tag = "...")]`:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, DeriveSettingsSchema)]
+#[serde(tag = "kind")]
+pub enum AlertAction {
+    #[serde(rename = "webhook")]
+    #[setting(label = "Webhook")]
+    Webhook(WebhookAction),
+
+    #[serde(rename = "email")]
+    #[setting(label = "Email")]
+    Email(EmailAction),
+}
+
+// Automatically generates discriminant selection metadata and constants:
+assert_eq!(AlertAction::WEBHOOK, "webhook");
+assert_eq!(AlertAction::EMAIL, "email");
+```
 
 ---
 
@@ -359,14 +407,13 @@ Notes:
 Optional schema validation (same metadata model as main settings):
 
 ```rust
-use rcman::{SettingMetadata, SettingsSchema, SubSettingsConfig, opt, settings};
-use std::collections::HashMap;
+use rcman::{SettingMetadata, SettingsSchema, SubSettingsConfig, opt, settings, IndexMap};
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct RemoteSchema;
 
 impl SettingsSchema for RemoteSchema {
-    fn get_metadata() -> HashMap<String, SettingMetadata> {
+    fn get_metadata() -> IndexMap<String, SettingMetadata> {
         settings! {
             "type" => SettingMetadata::select("drive", vec![
                 opt("drive", "Drive"),

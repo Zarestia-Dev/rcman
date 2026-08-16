@@ -13,9 +13,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Added `SettingsManager::save_all(&self, schema: &Schema) -> Result<()>` performing pre-validation, automatic secret/keychain routing, default value stripping, atomic disk writes, and change event dispatching.
 - **Compile-Time `const` Key Identifiers in `rcman-derive`**:
     - `#[derive(SettingsSchema)]` now generates uppercase compile-time `pub const` key constants on derived structs (e.g. `ServerSettings::PORT = "network.custom_port"`), enabling zero-cost, typo-proof key access with full rust-analyzer autocomplete.
+    - Generates a static `pub const ALL_KEYS: &'static [&'static str]` slice containing all compile-time keys defined on derived structs and tagged enums.
+- **Rich IDE IntelliSense Cards Generated at Compile-Time**:
+    - `rcman-derive` now generates clean, structured Markdown documentation cards for `rust-analyzer` attached to `pub const` keys, struct snapshot methods, and manager trait accessors.
+    - Displays field doc comments, types, numeric ranges, regex patterns, dropdown options, security backend (OS Keychain vs plaintext), and dynamic custom metadata directly in IDE hover tooltips with zero runtime overhead.
 - **Tagged-Union `enum` Support in `rcman-derive`**:
     - `#[derive(SettingsSchema)]` can now be derived directly on enums annotated with `#[serde(tag = "...")]`.
     - Automatically aggregates metadata from variant schemas (`<Variant as SettingsSchema>::get_metadata()`) and generates the tag discriminant selection metadata without manual boilerplate.
+- **Strongly-Typed `settings.validate()` Method**:
+    - Added `SettingsSchema::validate(&self) -> Result<(), Error>` trait method with backward-compatible default fallback validating against schema metadata.
+    - `rcman-derive` now generates zero-overhead, compile-time strongly-typed `validate(&self)` implementations on derived structs and tagged enums checking numeric ranges (`min`/`max`), regex patterns (`pattern`), dropdown constraints (`options`), and nested schemas directly without JSON serialization overhead.
+    - Added inherent `pub fn validate(&self) -> Result<(), Error>` on derived structs and enums so validation can be called directly without importing the `SettingsSchema` trait into scope.
+- **Zero-Allocation Schema Metadata with `Cow<'static, str>`**:
+    - Converted `SettingOption` (`label`, `description`), `TextConstraints` (`pattern`), and `ListConstraints` (`reserved`) to use `Cow<'static, str>` instead of heap-allocated `String`.
+    - `opt()`, `SettingOption::new()`, `SettingMetadata::pattern()`, and `SettingMetadata::reserved()` now accept generic `Into<Cow<'static, str>>` parameters, allowing static string literals to be stored without heap allocation while seamlessly accepting dynamic strings.
+    - Updated `rcman-derive` code generation to emit borrowed static string slices without `.to_string()` overhead.
 
 ### Changed
 

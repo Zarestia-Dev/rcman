@@ -1,0 +1,17 @@
+error: SettingsSchema enum derive requires single-element tuple variants like `Variant(VariantType)`
+ --> tests/ui/fail/invalid_enum.rs:7:5
+  |
+7 |     Unit,
+  |     ^^^^
+
+error: SettingsSchema enum derive requires exactly one inner type per variant
+  --> tests/ui/fail/invalid_enum.rs:13:5
+   |
+13 |     Multi(u32, String),
+   |     ^^^^^^^^^^^^^^^^^^
+
+error: #[serde(tag = "...")] cannot be used with tuple variants
+  --> tests/ui/fail/invalid_enum.rs:13:5
+   |
+13 |     Multi(u32, String),
+   |     ^^^^^^^^^^^^^^^^^^

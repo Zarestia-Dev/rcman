@@ -364,8 +364,8 @@ fn test_pattern_constraint() {
     // Test email pattern constraint
     let email = metadata.get("validation.email").unwrap();
     assert_eq!(
-        email.constraints.text.pattern,
-        Some(r"^[\w.-]+@[\w.-]+\.\w+$".to_string())
+        email.constraints.text.pattern.as_deref(),
+        Some(r"^[\w.-]+@[\w.-]+\.\w+$")
     );
     assert_eq!(email.get_meta_str("label"), Some("Email Address"));
 
@@ -384,8 +384,8 @@ fn test_pattern_constraint() {
     // Test phone pattern constraint
     let phone = metadata.get("validation.phone").unwrap();
     assert_eq!(
-        phone.constraints.text.pattern,
-        Some(r"^\d{3}-\d{3}-\d{4}$".to_string())
+        phone.constraints.text.pattern.as_deref(),
+        Some(r"^\d{3}-\d{3}-\d{4}$")
     );
     assert_eq!(phone.get_meta_str("label"), Some("Phone Number"));
 
@@ -508,4 +508,202 @@ fn test_renamed_field_accessor() {
     // String API reads the renamed key path and remains compatible.
     let theme: String = manager.get("ui.theme-name").unwrap();
     assert_eq!(theme, "light");
+}
+
+// =============================================================================
+// Strongly-Typed validate() Tests
+// =============================================================================
+
+#[derive(Default, Serialize, Deserialize, DeriveSettingsSchema)]
+#[schema(category = "validation")]
+struct ValidationSettings {
+    #[setting(min = 10, max = 100)]
+    port: u16,
+
+    #[setting(pattern = "^[a-z0-9_-]+$")]
+    username: String,
+
+    #[setting(options(("dark", "Dark"), ("light", "Light"), ("system", "System")))]
+    theme: String,
+
+    #[setting(min = 1, max = 5)]
+    retries: Option<u8>,
+}
+
+#[derive(Default, Serialize, Deserialize, DeriveSettingsSchema)]
+#[schema(category = "root")]
+struct RootValidationSettings {
+    nested: ValidationSettings,
+
+    #[setting(min = 0, max = 100)]
+    volume: u8,
+}
+
+#[test]
+fn test_struct_validation_success() {
+    let s = ValidationSettings {
+        port: 80,
+        username: "user_123".to_string(),
+        theme: "dark".to_string(),
+        retries: Some(3),
+    };
+
+    assert!(s.validate().is_ok());
+
+    let root = RootValidationSettings {
+        nested: s,
+        volume: 50,
+    };
+
+    assert!(root.validate().is_ok());
+}
+
+#[test]
+fn test_struct_validation_number_min_violation() {
+    let s = ValidationSettings {
+        port: 5, // min is 10
+        username: "valid".to_string(),
+        theme: "dark".to_string(),
+        retries: None,
+    };
+
+    let err = s.validate().unwrap_err();
+    match err {
+        rcman::Error::InvalidSettingValue { key, reason } => {
+            assert_eq!(key, ValidationSettings::PORT);
+            assert!(reason.contains("at least 10"));
+        }
+        other => panic!("Unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn test_struct_validation_number_max_violation() {
+    let s = ValidationSettings {
+        port: 150, // max is 100
+        username: "valid".to_string(),
+        theme: "dark".to_string(),
+        retries: None,
+    };
+
+    let err = s.validate().unwrap_err();
+    match err {
+        rcman::Error::InvalidSettingValue { key, reason } => {
+            assert_eq!(key, ValidationSettings::PORT);
+            assert!(reason.contains("at most 100"));
+        }
+        other => panic!("Unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn test_struct_validation_pattern_violation() {
+    let s = ValidationSettings {
+        port: 50,
+        username: "INVALID USERNAME!".to_string(),
+        theme: "dark".to_string(),
+        retries: None,
+    };
+
+    let err = s.validate().unwrap_err();
+    match err {
+        rcman::Error::InvalidSettingValue { key, reason } => {
+            assert_eq!(key, ValidationSettings::USERNAME);
+            assert!(reason.contains("does not match pattern"));
+        }
+        other => panic!("Unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn test_struct_validation_options_violation() {
+    let s = ValidationSettings {
+        port: 50,
+        username: "valid".to_string(),
+        theme: "neon-blue".to_string(), // not in [dark, light, system]
+        retries: None,
+    };
+
+    let err = s.validate().unwrap_err();
+    match err {
+        rcman::Error::InvalidSettingValue { key, reason } => {
+            assert_eq!(key, ValidationSettings::THEME);
+            assert!(reason.contains("one of the available options"));
+        }
+        other => panic!("Unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn test_struct_validation_nested_propagation() {
+    let root = RootValidationSettings {
+        nested: ValidationSettings {
+            port: 2, // invalid: min is 10
+            username: "valid".to_string(),
+            theme: "dark".to_string(),
+            retries: None,
+        },
+        volume: 50,
+    };
+
+    let err = root.validate().unwrap_err();
+    match err {
+        rcman::Error::InvalidSettingValue { key, .. } => {
+            assert_eq!(key, ValidationSettings::PORT);
+        }
+        other => panic!("Unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn test_struct_validation_optional_field() {
+    let mut s = ValidationSettings {
+        port: 50,
+        username: "valid".to_string(),
+        theme: "dark".to_string(),
+        retries: None, // None should pass
+    };
+
+    assert!(s.validate().is_ok());
+
+    s.retries = Some(10); // max is 5
+    assert!(s.validate().is_err());
+}
+
+#[derive(Serialize, Deserialize, DeriveSettingsSchema)]
+#[serde(tag = "mode")]
+enum ModeEnum {
+    #[serde(rename = "valid")]
+    Valid(ValidationSettings),
+    #[serde(rename = "root")]
+    Root(RootValidationSettings),
+}
+
+impl Default for ModeEnum {
+    fn default() -> Self {
+        Self::Valid(ValidationSettings::default())
+    }
+}
+
+#[test]
+fn test_enum_validation() {
+    let s = ValidationSettings {
+        port: 50,
+        username: "valid".to_string(),
+        theme: "dark".to_string(),
+        retries: None,
+    };
+
+    let mode = ModeEnum::Valid(s);
+    assert!(mode.validate().is_ok());
+
+    let invalid_s = ValidationSettings {
+        port: 200, // max is 100
+        username: "valid".to_string(),
+        theme: "dark".to_string(),
+        retries: None,
+    };
+
+    let invalid_mode = ModeEnum::Valid(invalid_s);
+    assert!(invalid_mode.validate().is_err());
 }

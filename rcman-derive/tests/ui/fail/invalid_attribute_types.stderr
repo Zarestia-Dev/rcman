@@ -1,0 +1,17 @@
+error: #[schema(category)] must be a string literal
+ --> tests/ui/fail/invalid_attribute_types.rs:5:21
+  |
+5 | #[schema(category = 123)]
+  |                     ^^^
+
+error: #[setting(min)] expects a number, found string literal (hint: remove quotes, use `min = 10`)
+  --> tests/ui/fail/invalid_attribute_types.rs:13:21
+   |
+13 |     #[setting(min = "ten")]
+   |                     ^^^^^
+
+error: #[setting(max)] expects a number, found boolean (hint: use `max = 10`)
+  --> tests/ui/fail/invalid_attribute_types.rs:16:21
+   |
+16 |     #[setting(max = true)]
+   |                     ^^^^

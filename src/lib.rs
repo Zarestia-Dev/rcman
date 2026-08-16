@@ -305,6 +305,9 @@ pub use error::{Error, Result};
 /// Re-exported `serde_json` for macro-generated integrations.
 pub use serde_json;
 
+/// Re-exported `regex` for pattern validation and macro integrations.
+pub use regex;
+
 /// Event system for reactive settings changes.
 pub use manager::EventManager;
 
@@ -399,12 +402,15 @@ pub use credentials::CredentialManager;
 
 /// Derive macro for auto-generating `SettingsSchema` implementations.
 ///
-/// Use this to reduce boilerplate when defining settings structs.
+/// Use this to reduce boilerplate when defining settings structs or tagged enums.
 ///
 /// The derive also generates:
+/// - Compile-time `pub const` key constants (`GeneralSettings::TRAY_ENABLED = "general.tray_enabled"`)
+/// - Clean Markdown IDE documentation cards with types, ranges, constraints, security status, and metadata
 /// - Snapshot accessors on the settings struct (`ui_theme()`, `set_ui_theme(...)`)
 /// - A manager extension trait named `<SchemaName>ManagerAccessors`
 ///   for typed manager reads/writes (`manager.ui_theme()?`, `manager.set_ui_theme(...)`)
+/// - Tagged enum support for polymorphic actions annotated with `#[serde(tag = "...")]`
 ///
 /// # Example
 ///
@@ -415,9 +421,13 @@ pub use credentials::CredentialManager;
 /// #[derive(Default, Serialize, Deserialize, DeriveSettingsSchema)]
 /// #[schema(category = "general")]
 /// struct GeneralSettings {
-///     #[setting(label = "Enable Tray")]
+///     /// Control system tray visibility.
+///     #[setting(label = "Enable Tray", description = "Show icon in menu bar")]
 ///     tray_enabled: bool,
 /// }
+///
+/// // Access compile-time constant:
+/// assert_eq!(GeneralSettings::TRAY_ENABLED, "general.tray_enabled");
 /// ```
 #[cfg(feature = "derive")]
 pub use rcman_derive::SettingsSchema as DeriveSettingsSchema;

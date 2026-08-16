@@ -13,4 +13,8 @@ struct ServerSettings {
 fn main() {
     assert_eq!(ServerSettings::PORT, "network.custom_port");
     assert_eq!(ServerSettings::HOST, "network.host");
+    assert_eq!(
+        ServerSettings::ALL_KEYS,
+        &[ServerSettings::PORT, ServerSettings::HOST]
+    );
 }
