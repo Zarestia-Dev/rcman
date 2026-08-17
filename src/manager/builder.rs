@@ -245,6 +245,31 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         }
     }
 
+    /// Specify the storage backend instance.
+    ///
+    /// This transforms the builder to use the specified storage backend instance.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use rcman::{SettingsManager, JsonStorage};
+    ///
+    /// let storage = JsonStorage::compact();
+    /// let manager = SettingsManager::builder("my-app", "1.0.0")
+    ///     .with_storage_instance(storage)
+    ///     .build()
+    ///     .unwrap();
+    /// ```
+    #[must_use]
+    pub fn with_storage_instance<NewS: StorageBackend>(
+        self,
+        storage: NewS,
+    ) -> SettingsManagerBuilder<NewS, Schema> {
+        SettingsManagerBuilder {
+            config_builder: self.config_builder.with_storage_instance(storage),
+            sub_settings: self.sub_settings,
+        }
+    }
+
     /// Specify the storage backend type.
     ///
     /// This transforms the builder to use the specified storage backend.
@@ -262,10 +287,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     pub fn with_storage<NewS: StorageBackend + Default>(
         self,
     ) -> SettingsManagerBuilder<NewS, Schema> {
-        SettingsManagerBuilder {
-            config_builder: self.config_builder.with_storage::<NewS>(),
-            sub_settings: self.sub_settings,
-        }
+        self.with_storage_instance(NewS::default())
     }
 
     /// Enable profiles for main settings.
@@ -325,7 +347,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     /// Returns an error if the config directory cannot be created.
     pub fn build(self) -> Result<SettingsManager<S, Schema>>
     where
-        S: Default + 'static,
+        S: 'static,
     {
         let config = self.config_builder.build();
         let manager = SettingsManager::new(config)?;
@@ -359,5 +381,17 @@ mod tests {
         {
             let _ = manager;
         }
+    }
+
+    #[test]
+    fn test_builder_with_storage_instance() {
+        let storage = crate::storage::JsonStorage::compact();
+        let manager = SettingsManager::builder("my-app", "1.0.0")
+            .with_config_dir("/tmp/my-app-storage-test")
+            .with_storage_instance(storage)
+            .build()
+            .unwrap();
+
+        assert_eq!(manager.storage().extension(), "json");
     }
 }

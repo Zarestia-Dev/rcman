@@ -202,6 +202,11 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfig<S, Schema> {
     pub fn settings_path(&self) -> PathBuf {
         self.config_dir.join(&self.settings_file)
     }
+
+    /// Get a reference to the storage backend
+    pub fn storage(&self) -> &S {
+        &self.storage
+    }
 }
 
 impl SettingsConfig {
@@ -717,22 +722,24 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         }
     }
 
-    /// Specify the storage backend type.
+    /// Specify the storage backend instance.
     ///
-    /// This transforms the builder to use the specified storage backend.
+    /// This transforms the builder to use the specified storage backend instance.
     /// The settings filename will automatically be updated to match the format.
     ///
     /// # Example
     /// ```no_run
     /// use rcman::{SettingsConfig, JsonStorage};
     ///
+    /// let storage = JsonStorage::compact();
     /// let config = SettingsConfig::builder("my-app", "1.0.0")
-    ///     .with_storage::<JsonStorage>()
+    ///     .with_storage_instance(storage)
     ///     .build();
     /// ```
     #[must_use]
-    pub fn with_storage<NewS: StorageBackend + Default>(
+    pub fn with_storage_instance<NewS: StorageBackend>(
         self,
+        storage: NewS,
     ) -> SettingsConfigBuilder<NewS, Schema> {
         let Self {
             config_dir,
@@ -775,9 +782,29 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             credential_config,
             env_overrides_secrets,
             resolve_env_credentials,
-            storage: NewS::default(),
+            storage,
             _schema: PhantomData,
         }
+    }
+
+    /// Specify the storage backend type.
+    ///
+    /// This transforms the builder to use the specified storage backend.
+    /// The settings filename will automatically be updated to match the format.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use rcman::{SettingsConfig, JsonStorage};
+    ///
+    /// let config = SettingsConfig::builder("my-app", "1.0.0")
+    ///     .with_storage::<JsonStorage>()
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn with_storage<NewS: StorageBackend + Default>(
+        self,
+    ) -> SettingsConfigBuilder<NewS, Schema> {
+        self.with_storage_instance(NewS::default())
     }
 
     /// Build the `SettingsConfig`

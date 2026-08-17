@@ -305,9 +305,12 @@ impl CredentialManager {
 
         // Try primary first
         match self.primary.get(&full_key) {
-            Ok(val) => {
+            Ok(Some(val)) => {
                 self.is_primary_failed.store(false, Ordering::Relaxed);
-                return Ok(val);
+                return Ok(Some(val));
+            }
+            Ok(None) => {
+                self.is_primary_failed.store(false, Ordering::Relaxed);
             }
             Err(e) => {
                 log::debug!("Primary backend get for '{key}' failed: {e:?}");
@@ -318,7 +321,8 @@ impl CredentialManager {
         // Try fallback
         if let Some(ref fallback) = self.fallback {
             match fallback.get(&full_key) {
-                Ok(val) => return Ok(val),
+                Ok(Some(val)) => return Ok(Some(val)),
+                Ok(None) => {}
                 Err(e) => {
                     log::error!(
                         "Persistent fallback failed for '{key}': {e}. Trying VOLATILE memory."
@@ -864,6 +868,62 @@ mod tests {
         );
 
         // Cleanup should also pass
+        manager.remove("api_key").unwrap();
+        assert_eq!(manager.get("api_key").unwrap(), None);
+    }
+
+    struct StoreFailingBackend;
+
+    impl CredentialBackend for StoreFailingBackend {
+        fn store(&self, _key: &str, _value: &str) -> Result<()> {
+            Err(crate::error::Error::Credential(
+                "primary store failed".to_string(),
+            ))
+        }
+
+        fn get(&self, _key: &str) -> Result<Option<String>> {
+            // Emulates OS keychain behavior where unwritten entry returns Ok(None)
+            Ok(None)
+        }
+
+        fn remove(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_keys(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "store_failing"
+        }
+    }
+
+    #[test]
+    fn test_volatile_fallback_when_primary_get_returns_none() {
+        let manager = CredentialManager {
+            primary: Arc::new(StoreFailingBackend),
+            fallback: None,
+            is_primary_failed: Arc::new(AtomicBool::new(false)),
+            service_name: "test-app".to_string(),
+            #[cfg(feature = "profiles")]
+            profile_context: None,
+            volatile: Arc::new(MemoryBackend::new()),
+            tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+        };
+
+        // Primary store fails, stored in volatile memory
+        manager.store("api_key", "top-secret").unwrap();
+
+        // Primary get returns Ok(None), but volatile fallback has it
+        assert_eq!(
+            manager.get("api_key").unwrap(),
+            Some("top-secret".to_string())
+        );
+
+        // Cleanup
         manager.remove("api_key").unwrap();
         assert_eq!(manager.get("api_key").unwrap(), None);
     }

@@ -113,6 +113,18 @@ impl SqliteStorage {
         self
     }
 
+    /// Get the configured table name.
+    #[must_use]
+    pub fn table_name(&self) -> &str {
+        &self.table_name
+    }
+
+    /// Get the configured row key.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
     /// Open a connection to the database at `path`, creating parent
     /// directories with secure permissions first if needed.
     fn connect(&self, path: &Path) -> Result<Connection> {
@@ -217,7 +229,7 @@ impl StorageBackend for SqliteStorage {
 /// first character. This matches SQLite's unquoted identifier rules and
 /// prevents SQL injection via the table name (which must be interpolated
 /// because SQLite does not accept parameterized identifiers).
-fn is_valid_identifier(name: &str) -> bool {
+pub(crate) fn is_valid_identifier(name: &str) -> bool {
     let mut bytes = name.bytes();
     let Some(first) = bytes.next() else {
         return false;

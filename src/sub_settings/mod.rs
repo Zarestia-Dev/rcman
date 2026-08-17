@@ -9,6 +9,8 @@
 mod multi_file;
 mod single_file;
 mod store;
+#[cfg(feature = "sqlite")]
+mod table;
 
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
@@ -34,6 +36,22 @@ pub enum SubSettingsMode {
     MultiFile,
     /// Store all entries in a single file
     SingleFile,
+    /// Store each entry as a distinct row in a SQLite table
+    #[cfg(feature = "sqlite")]
+    Table,
+}
+
+#[inline]
+fn is_table_mode(mode: &SubSettingsMode) -> bool {
+    #[cfg(feature = "sqlite")]
+    {
+        matches!(mode, SubSettingsMode::Table)
+    }
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = mode;
+        false
+    }
 }
 
 /// Configuration for a sub-settings type.
@@ -67,6 +85,10 @@ pub struct SubSettingsConfig {
 
     /// Whether to deny unknown fields not defined in the schema (default: true)
     pub deny_unknown_fields: bool,
+
+    /// Custom SQLite table name (only used when mode is `Table`; defaults to `name`)
+    #[cfg(feature = "sqlite")]
+    pub table_name: Option<String>,
 }
 
 impl Default for SubSettingsConfig {
@@ -83,6 +105,8 @@ impl Default for SubSettingsConfig {
             #[cfg(feature = "profiles")]
             profile_migrator: crate::ProfileMigrator::default(),
             deny_unknown_fields: false,
+            #[cfg(feature = "sqlite")]
+            table_name: None,
         }
     }
 }
@@ -100,6 +124,30 @@ impl SubSettingsConfig {
             mode: SubSettingsMode::SingleFile,
             ..Default::default()
         }
+    }
+
+    /// Create a new `SubSettingsConfig` in SQLite Table mode.
+    ///
+    /// Each entry will be stored as an individual row in a SQLite table named
+    /// after this sub-settings group (or a custom table name).
+    #[cfg(feature = "sqlite")]
+    pub fn table(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            name: name.clone(),
+            mode: SubSettingsMode::Table,
+            extension: Some("db".into()),
+            table_name: Some(name),
+            ..Default::default()
+        }
+    }
+
+    /// Use a custom SQLite table name (only applies when mode is `Table`).
+    #[cfg(feature = "sqlite")]
+    #[must_use]
+    pub fn with_table(mut self, table_name: impl Into<String>) -> Self {
+        self.table_name = Some(table_name.into());
+        self
     }
 
     #[must_use]
@@ -230,6 +278,21 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
                 storage,
                 config.migrator.clone(),
             )),
+            #[cfg(feature = "sqlite")]
+            SubSettingsMode::Table => {
+                let table_name = config
+                    .table_name
+                    .clone()
+                    .unwrap_or_else(|| config.name.clone());
+                Box::new(table::TableStore::new(
+                    config.name.clone(),
+                    table_name,
+                    base_dir,
+                    extension,
+                    config.migrator.clone(),
+                    config.cache_strategy,
+                ))
+            }
         }
     }
 
@@ -277,23 +340,26 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         #[cfg(feature = "profiles")]
         let root_dir = if config.profiles_enabled {
             config_dir.join(&config.name)
-        } else if matches!(config.mode, SubSettingsMode::SingleFile) {
+        } else if matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(&config.mode)
+        {
             config_dir.to_path_buf()
         } else {
             config_dir.join(&config.name)
         };
 
         #[cfg(not(feature = "profiles"))]
-        let root_dir = if matches!(config.mode, SubSettingsMode::SingleFile) {
-            config_dir.to_path_buf()
-        } else {
-            config_dir.join(&config.name)
-        };
+        let root_dir =
+            if matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(&config.mode) {
+                config_dir.to_path_buf()
+            } else {
+                config_dir.join(&config.name)
+            };
 
         // Determine initial base_dir (active profile or root)
         #[cfg(feature = "profiles")]
         let (base_dir, profile_manager) = if config.profiles_enabled {
-            let is_single_file = matches!(config.mode, SubSettingsMode::SingleFile);
+            let is_single_file =
+                matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(&config.mode);
             crate::profiles::migrate(
                 &root_dir,
                 &config.name,
@@ -339,6 +405,11 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
     pub fn is_single_file(&self) -> bool {
         matches!(self.config.mode, SubSettingsMode::SingleFile)
+    }
+
+    /// Check if sub-settings are stored in a SQLite table
+    pub fn is_table(&self) -> bool {
+        is_table_mode(&self.config.mode)
     }
 
     #[cfg(feature = "profiles")]

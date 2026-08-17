@@ -335,6 +335,15 @@ let manager = SettingsManager::builder("my-app", "1.0.0")
 let manager = SettingsManager::builder("my-app", "1.0.0")
     .with_storage::<SqliteStorage>()
     .build()?;
+
+// 5. Custom Storage Instance (e.g., custom SQLite table name and row key)
+let sqlite_storage = SqliteStorage::new()
+    .with_table("app_settings")
+    .with_key("main_config");
+
+let manager = SettingsManager::builder("my-app", "1.0.0")
+    .with_storage_instance(sqlite_storage)
+    .build()?;
 ```
 
 ---
@@ -349,8 +358,9 @@ use serde_json::json;
 
 // Register sub-settings via builder
 let manager = SettingsManager::builder("my-app", "1.0.0")
-    .with_sub_settings(SubSettingsConfig::new("remotes"))  // Multi-file mode
-    .with_sub_settings(SubSettingsConfig::singlefile("backends"))  // Single-file mode
+    .with_sub_settings(SubSettingsConfig::new("remotes"))  // Multi-file mode (e.g. remotes/s3.json)
+    .with_sub_settings(SubSettingsConfig::singlefile("backends"))  // Single-file mode (e.g. backends.json)
+    .with_sub_settings(SubSettingsConfig::table("servers"))  // SQLite Table mode (e.g. servers.db with table `servers`)
     .build()?;
 
 // Access sub-settings

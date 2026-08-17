@@ -356,6 +356,8 @@ impl StorageBackend for YamlStorage {
 /// Requires the `sqlite` feature.
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteStorage;
+#[cfg(feature = "sqlite")]
+pub(crate) use sqlite::is_valid_identifier as is_valid_sqlite_identifier;
 
 // =============================================================================
 // Tests

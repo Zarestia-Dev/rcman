@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Pre-Configured Storage Instances with `with_storage_instance`**:
+    - Added `SettingsManagerBuilder::with_storage_instance<NewS>(self, storage: NewS)` and `SettingsConfigBuilder::with_storage_instance<NewS>(self, storage: NewS)` allowing pre-configured storage backend instances (such as customized `SqliteStorage` with custom tables/keys, or `JsonStorage::compact()`) to be passed directly into the builder.
+    - Added `SqliteStorage::table_name(&self) -> &str` and `SqliteStorage::key(&self) -> &str` getter methods.
+    - Added `SettingsConfig::storage(&self) -> &S` getter.
+    - Relaxed the `where S: Default` requirement on `SettingsManagerBuilder::build()`, allowing any `'static` storage backend to be built cleanly.
+- **SQLite Sub-Settings Table Mode (`SubSettingsMode::Table`)**:
+    - Added `SubSettingsMode::Table` variant gated behind `#[cfg(feature = "sqlite")]` to store each sub-settings entity as an individual row (`key`, `data`) in a dedicated SQLite table instead of multiple `.db` files (`MultiFile`) or a single serialized JSON map (`SingleFile`).
+    - Added `SubSettingsConfig::table(name: impl Into<String>)` constructor and `.with_table(table_name: impl Into<String>)` builder method.
+    - Implemented `TableStore` handling row-level CRUD, atomic schema creation, customizable caching (`Full`, `Lru`, `None`), lazy migrations (`with_migrator`), and profile switching.
+    - Added `SubSettings::is_table(&self) -> bool` helper.
 - **Closure-Based In-Place Mutation with `SettingsManager::update`**:
     - Added `SettingsManager::update<F>(&self, f: F) -> Result<Schema>` allowing developers to mutate settings using a closure with full compile-time struct field type-safety and IDE autocomplete.
     - Added `SettingsManager::save_all(&self, schema: &Schema) -> Result<()>` performing pre-validation, automatic secret/keychain routing, default value stripping, atomic disk writes, and change event dispatching.
