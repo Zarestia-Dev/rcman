@@ -872,3 +872,241 @@ fn test_subsettings_migration_upgrade_path() {
         assert!(!list.contains(&"sub.remotes.gdrive.token".to_string()));
     }
 }
+
+// =============================================================================
+// Regression Tests for Critical Secret Fixes & DX Helpers
+// =============================================================================
+
+#[test]
+fn test_get_all_and_update_preserves_secrets() {
+    let temp_dir = TempDir::new().unwrap();
+    let app_name = unique_app_name();
+    let config = SettingsConfig::builder(&app_name, "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
+        .with_credential_config(rcman::CredentialConfig::Custom(std::sync::Arc::new(
+            rcman::MemoryBackend::new(),
+        )))
+        .build();
+    let manager = SettingsManager::new(config).unwrap();
+
+    // 1. Save a secret setting
+    manager
+        .save_setting("api", "key", &json!("super_secret_token_xyz"))
+        .unwrap();
+
+    // 2. Calling get_all() should include the injected secret
+    let model = manager.get_all().unwrap();
+    assert_eq!(model.api.key, "super_secret_token_xyz");
+
+    // 3. Update an unrelated setting using manager.update()
+    manager
+        .update(|s| {
+            s.ui.theme = "light".to_string();
+        })
+        .unwrap();
+
+    // 4. Secret must NOT be deleted or reset to default
+    let updated_model = manager.get_all().unwrap();
+    assert_eq!(updated_model.ui.theme, "light");
+    assert_eq!(updated_model.api.key, "super_secret_token_xyz");
+
+    // Direct get of secret must also succeed
+    let key_val: String = manager.get("api.key").unwrap();
+    assert_eq!(key_val, "super_secret_token_xyz");
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Default)]
+struct TestSubWithOptionalSecret {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+impl rcman::SettingsSchema for TestSubWithOptionalSecret {
+    fn get_metadata() -> rcman::IndexMap<String, rcman::SettingMetadata> {
+        rcman::settings! {
+            "name" => rcman::SettingMetadata::text(""),
+            "password" => {
+                let s = rcman::SettingMetadata::text("")
+                    .nullable(true)
+                    .meta_bool("optional", true);
+                #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                let s = s.secret();
+                s
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_optional_secret_cleared_on_none() {
+    let temp_dir = TempDir::new().unwrap();
+    let app_name = unique_app_name();
+    let config = SettingsConfig::builder(&app_name, "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_credential_config(rcman::CredentialConfig::Custom(std::sync::Arc::new(
+            rcman::MemoryBackend::new(),
+        )))
+        .build();
+    let manager = SettingsManager::new(config).unwrap();
+
+    manager
+        .register_sub_settings(
+            rcman::SubSettingsConfig::new("connections").with_schema::<TestSubWithOptionalSecret>(),
+        )
+        .unwrap();
+
+    let sub = manager.sub_settings("connections").unwrap();
+
+    // 1. Save entry with Some("my_pass")
+    let entry1 = TestSubWithOptionalSecret {
+        name: "RemoteNAS".to_string(),
+        password: Some("my_pass".to_string()),
+    };
+    sub.set("RemoteNAS", &entry1).unwrap();
+
+    let loaded1: TestSubWithOptionalSecret = sub.get("RemoteNAS").unwrap();
+    assert_eq!(loaded1.password, Some("my_pass".to_string()));
+
+    // 2. Update entry with None (skipping password)
+    let entry2 = TestSubWithOptionalSecret {
+        name: "RemoteNAS".to_string(),
+        password: None,
+    };
+    sub.set("RemoteNAS", &entry2).unwrap();
+
+    // 3. Loading should NOT resurrect the old password
+    let loaded2: TestSubWithOptionalSecret = sub.get("RemoteNAS").unwrap();
+    assert_eq!(loaded2.password, None);
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_single_export_respects_secret_policy() {
+    let temp_dir = TempDir::new().unwrap();
+    let backup_dir = TempDir::new().unwrap();
+    let app_name = unique_app_name();
+    let config = SettingsConfig::builder(&app_name, "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_credential_config(rcman::CredentialConfig::Custom(std::sync::Arc::new(
+            rcman::MemoryBackend::new(),
+        )))
+        .build();
+    let manager = SettingsManager::new(config).unwrap();
+
+    manager
+        .register_sub_settings(
+            rcman::SubSettingsConfig::new("connections").with_schema::<TestSubWithOptionalSecret>(),
+        )
+        .unwrap();
+
+    let sub = manager.sub_settings("connections").unwrap();
+    sub.set(
+        "NAS",
+        &TestSubWithOptionalSecret {
+            name: "NAS".to_string(),
+            password: Some("secret_password_123".to_string()),
+        },
+    )
+    .unwrap();
+
+    // Export single entry with SecretBackupPolicy::Exclude (the default)
+    let backup_file = manager
+        .backup()
+        .create(
+            &rcman::BackupOptions::new()
+                .output_dir(backup_dir.path())
+                .export_type(rcman::ExportType::Single {
+                    settings_type: "connections".to_string(),
+                    name: "NAS".to_string(),
+                })
+                .secret_policy(rcman::SecretBackupPolicy::Exclude),
+        )
+        .unwrap();
+
+    let analysis = manager.backup().analyze(&backup_file).unwrap();
+    assert_eq!(analysis.manifest.contents.sub_settings.len(), 1);
+
+    // Verify zip content does NOT contain the secret password
+    let file = std::fs::File::open(&backup_file).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let mut data_zip_file = archive.by_name("data.zip").unwrap();
+    let mut data_bytes = Vec::new();
+    std::io::Read::read_to_end(&mut data_zip_file, &mut data_bytes).unwrap();
+
+    let mut inner_archive = zip::ZipArchive::new(std::io::Cursor::new(data_bytes)).unwrap();
+    let mut conn_file = inner_archive.by_name("connections/NAS.json").unwrap();
+    let mut content = String::new();
+    std::io::Read::read_to_string(&mut conn_file, &mut content).unwrap();
+
+    assert!(!content.contains("secret_password_123"));
+}
+
+#[test]
+fn test_secret_password_source_helpers() {
+    let env_src = rcman::SecretPasswordSource::env("RCMAN_TEST_PASS");
+    unsafe {
+        std::env::set_var("RCMAN_TEST_PASS", "env_pass_val");
+    }
+    assert_eq!(env_src.resolve().unwrap(), "env_pass_val");
+    unsafe {
+        std::env::remove_var("RCMAN_TEST_PASS");
+    }
+
+    let prov_src = rcman::SecretPasswordSource::provided("direct_pass_val");
+    assert_eq!(prov_src.resolve().unwrap(), "direct_pass_val");
+
+    let temp_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(temp_file.path(), "file_pass_val\n").unwrap();
+    let file_src = rcman::SecretPasswordSource::file(temp_file.path());
+    assert_eq!(file_src.resolve().unwrap(), "file_pass_val");
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_fresh_session_clear_purges_tracked_secrets() {
+    let memory_backend = std::sync::Arc::new(rcman::MemoryBackend::new());
+    let temp_dir = TempDir::new().unwrap();
+    let app_name = unique_app_name();
+
+    // 1. First manager session stores secrets
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_schema::<TestSettings>()
+            .with_credential_config(rcman::CredentialConfig::Custom(memory_backend.clone()))
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .save_setting("api", "key", &json!("api_secret_to_purge"))
+            .unwrap();
+
+        let creds = manager.credentials().unwrap();
+        assert_eq!(
+            creds.get("api.key").unwrap(),
+            Some("api_secret_to_purge".to_string())
+        );
+    }
+
+    // 2. Second fresh manager session with the same backend calls clear()
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_schema::<TestSettings>()
+            .with_credential_config(rcman::CredentialConfig::Custom(memory_backend.clone()))
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        let creds = manager.credentials().unwrap();
+
+        // Call clear
+        creds.clear().unwrap();
+
+        // Verify keys and __rcman_secrets__ are purged
+        assert_eq!(creds.get("api.key").unwrap(), None);
+        assert_eq!(creds.get("__rcman_secrets__").unwrap(), None);
+    }
+}

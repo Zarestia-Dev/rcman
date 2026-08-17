@@ -481,6 +481,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                         "Failed to clear credential for restored default secret {full_key}: {err}"
                     );
                 } else {
+                    let _ = creds.remove_tracked_secret(full_key, profile);
                     crate::utils::value::remove_path(value, full_key);
                 }
                 continue;
@@ -498,6 +499,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 continue;
             }
 
+            let _ = creds.add_tracked_secret(full_key, profile);
             crate::utils::value::remove_path(value, full_key);
             hydrated_count += 1;
         }

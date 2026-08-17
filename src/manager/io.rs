@@ -68,6 +68,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                     self.save_tracked_secrets(&tracked)?;
                 }
             }
+            self.settings_cache.invalidate();
             debug!("Secret {full_key} set to default, removed from keychain");
 
             if old_value != *value {
@@ -90,6 +91,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
         }
 
+        self.settings_cache.invalidate();
         debug!("Secret setting {full_key} stored in keychain");
 
         if old_value != *value {
@@ -132,46 +134,23 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     fn get_tracked_secrets(&self) -> Result<std::collections::HashSet<String>> {
         let creds = self.require_credentials()?;
         let profile = self.active_profile_name();
-        {
-            let cache_guard = creds
-                .tracked_secrets_cache
-                .read()
-                .map_err(|_| Error::LockPoisoned)?;
-            if let Some(cache) = cache_guard.get(&profile) {
-                return Ok(cache.clone());
+        let mut tracked = creds.get_tracked_secrets(profile.as_deref())?;
+
+        // Backward-compatible one-time fallback scan if __rcman_secrets__ is not yet initialized
+        if tracked.is_empty() && self.get_credential_with_profile("__rcman_secrets__")?.is_none() {
+            self.is_upgraded
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            for full_key in self.schema_metadata.keys() {
+                if let Ok(Some(_)) = self.get_credential_with_profile(full_key) {
+                    tracked.insert(full_key.clone());
+                }
+            }
+            if !tracked.is_empty() {
+                creds.save_tracked_secrets(&tracked, profile.as_deref())?;
             }
         }
 
-        let secrets =
-            if let Some(value_str) = self.get_credential_with_profile("__rcman_secrets__")? {
-                let list: Vec<String> = serde_json::from_str(&value_str).map_err(|e| {
-                    Error::Credential(format!("Failed to parse tracked secrets list: {e}"))
-                })?;
-                let set: std::collections::HashSet<String> = list.into_iter().collect();
-                let mut cache_guard = creds
-                    .tracked_secrets_cache
-                    .write()
-                    .map_err(|_| Error::LockPoisoned)?;
-                cache_guard.insert(profile, set.clone());
-                set
-            } else {
-                // Set the is_upgraded flag to indicate we did a fallback scan
-                self.is_upgraded
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-
-                // Backward-compatible one-time fallback scan:
-                // Scan all keys in the schema metadata to check what is in credentials
-                let mut initial_tracked = std::collections::HashSet::new();
-                for full_key in self.schema_metadata.keys() {
-                    if let Ok(Some(_)) = self.get_credential_with_profile(full_key) {
-                        initial_tracked.insert(full_key.clone());
-                    }
-                }
-                creds.save_tracked_secrets(&initial_tracked, profile.as_deref())?;
-                initial_tracked
-            };
-
-        Ok(secrets)
+        Ok(tracked)
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -379,8 +358,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 let old_value = if self.credentials.is_some() {
                     match self.get_credential_with_profile(full_key) {
                         Ok(Some(secret_value)) => Value::String(secret_value),
-                        Ok(None) => default_value.clone(),
-                        Err(_) => default_value.clone(),
+                        Ok(None) | Err(_) => default_value.clone(),
                     }
                 } else {
                     default_value.clone()
@@ -388,7 +366,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
                 if old_value != *new_val {
                     self.save_secret_setting(full_key, new_val, setting_meta)?;
-                    notifications.push((full_key.clone(), old_value, new_val.clone()));
                 }
                 continue;
             }
@@ -481,6 +458,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///     settings.theme = "dark".to_string();
     /// }).unwrap();
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or saving the settings fails.
     pub fn update<F>(&self, f: F) -> Result<Schema>
     where
         F: FnOnce(&mut Schema),
@@ -711,23 +692,37 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 };
 
                 if let Some(value) = stored.get(category).and_then(|c| c.get(key)).cloned() {
-                    let value_str = match &value {
-                        Value::String(s) => s.clone(),
-                        _ => value.to_string(),
-                    };
-                    self.store_credential_with_profile(full_key, &value_str)?;
-
-                    if let Some(cat_obj) = stored.get_mut(category).and_then(|c| c.as_object_mut())
-                    {
-                        cat_obj.remove(key);
-                        *file_modified = true;
-
-                        if tracked_secrets.insert(full_key.clone()) {
+                    if value == metadata.default {
+                        if let Some(cat_obj) =
+                            stored.get_mut(category).and_then(|c| c.as_object_mut())
+                        {
+                            cat_obj.remove(key);
+                            *file_modified = true;
+                        }
+                        let _ = self.remove_credential_with_profile(full_key);
+                        if tracked_secrets.remove(full_key) {
                             *list_modified = true;
                         }
-                        log::info!(
-                            "Migrated setting '{full_key}' to credential store (changed to secret)"
-                        );
+                    } else {
+                        let value_str = match &value {
+                            Value::String(s) => s.clone(),
+                            _ => value.to_string(),
+                        };
+                        self.store_credential_with_profile(full_key, &value_str)?;
+
+                        if let Some(cat_obj) =
+                            stored.get_mut(category).and_then(|c| c.as_object_mut())
+                        {
+                            cat_obj.remove(key);
+                            *file_modified = true;
+
+                            if tracked_secrets.insert(full_key.clone()) {
+                                *list_modified = true;
+                            }
+                            log::info!(
+                                "Migrated setting '{full_key}' to credential store (changed to secret)"
+                            );
+                        }
                     }
                 }
             }
@@ -757,7 +752,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                         let Some((category, key)) = Self::parse_setting_key(full_key) else {
                             continue;
                         };
-                        let value = Value::String(secret_value);
+                        let value = serde_json::from_str(&secret_value)
+                            .unwrap_or(Value::String(secret_value));
                         let default_value = &metadata.default;
 
                         // Only write to file if the value differs from default
@@ -957,7 +953,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             if !is_currently_secret {
                 if let Ok(Some(secret_value)) = creds.get_with_profile(full_key, profile) {
                     if let Some(metadata) = metadata {
-                        let value = Value::String(secret_value);
+                        let value = serde_json::from_str(&secret_value)
+                            .unwrap_or(Value::String(secret_value));
                         let default_value = &metadata.default;
 
                         if value != *default_value {

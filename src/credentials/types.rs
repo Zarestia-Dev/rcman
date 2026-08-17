@@ -52,6 +52,21 @@ pub enum SecretPasswordSource {
 }
 
 impl SecretPasswordSource {
+    /// Create an environment variable password source
+    pub fn env(var: impl Into<String>) -> Self {
+        Self::Environment(var.into())
+    }
+
+    /// Create a file password source
+    pub fn file(path: impl Into<PathBuf>) -> Self {
+        Self::File(path.into())
+    }
+
+    /// Create a directly provided password source
+    pub fn provided(pass: impl Into<String>) -> Self {
+        Self::Provided(pass.into())
+    }
+
     /// Resolve the password string from the configured source
     ///
     /// # Errors

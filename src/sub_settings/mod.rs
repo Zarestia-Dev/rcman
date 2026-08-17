@@ -543,33 +543,41 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         let profile = self.active_secret_profile();
 
         for (path, metadata) in secret_fields {
-            let Some(secret_value) = crate::utils::value::remove_path(value, path) else {
-                continue;
-            };
-
+            let secret_value_opt = crate::utils::value::remove_path(value, path);
             let credential_key = self.secret_credential_key(entry_name, path);
 
-            if secret_value == metadata.default {
-                creds.remove_with_profile(&credential_key, profile.as_deref())?;
-                creds.remove_tracked_secret(&credential_key, profile.as_deref())?;
-                continue;
+            match secret_value_opt {
+                Some(secret_value) if secret_value == metadata.default => {
+                    creds.remove_with_profile(&credential_key, profile.as_deref())?;
+                    creds.remove_tracked_secret(&credential_key, profile.as_deref())?;
+                }
+                Some(secret_value) => {
+                    let value_str = match secret_value {
+                        Value::String(s) => s,
+                        v => v.to_string(),
+                    };
+
+                    if let Ok(Some(existing_val)) =
+                        creds.get_with_profile(&credential_key, profile.as_deref())
+                        && existing_val == value_str
+                    {
+                        creds.add_tracked_secret(&credential_key, profile.as_deref())?;
+                        continue;
+                    }
+
+                    creds.store_with_profile(&credential_key, &value_str, profile.as_deref())?;
+                    creds.add_tracked_secret(&credential_key, profile.as_deref())?;
+                }
+                None => {
+                    // Field was absent from the value object.
+                    // If the value is an object and the struct omitted it (e.g. Option<T>::None with skip_serializing_if),
+                    // remove the credential from store to reflect the None state.
+                    if value.is_object() {
+                        creds.remove_with_profile(&credential_key, profile.as_deref())?;
+                        creds.remove_tracked_secret(&credential_key, profile.as_deref())?;
+                    }
+                }
             }
-
-            let value_str = match secret_value {
-                Value::String(s) => s,
-                v => v.to_string(),
-            };
-
-            if let Ok(Some(existing_val)) =
-                creds.get_with_profile(&credential_key, profile.as_deref())
-                && existing_val == value_str
-            {
-                creds.add_tracked_secret(&credential_key, profile.as_deref())?;
-                continue;
-            }
-
-            creds.store_with_profile(&credential_key, &value_str, profile.as_deref())?;
-            creds.add_tracked_secret(&credential_key, profile.as_deref())?;
         }
 
         Ok(())
@@ -602,8 +610,14 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         for (path, metadata) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
             let credential_key = self.secret_credential_key(entry_name, path);
             let secret = creds.get_with_profile(&credential_key, profile.as_deref())?;
-            let resolved = secret.map_or_else(|| metadata.default.clone(), Value::String);
-            crate::utils::value::set_path(value, path, resolved);
+            if let Some(s) = secret {
+                let resolved = serde_json::from_str(&s).unwrap_or(Value::String(s));
+                crate::utils::value::set_path(value, path, resolved);
+            } else if metadata.nullable || metadata.default.is_null() {
+                crate::utils::value::set_path(value, path, Value::Null);
+            } else {
+                crate::utils::value::set_path(value, path, metadata.default.clone());
+            }
         }
 
         Ok(())

@@ -192,6 +192,118 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(())
     }
 
+    /// Delete a profile for main settings and purge its credentials
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the profile to delete
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Profiles are not enabled
+    /// - The profile does not exist or is currently active
+    /// - Deletion fails
+    pub fn delete_profile(&self, name: &str) -> Result<()> {
+        let pm = self
+            .profile_manager
+            .as_ref()
+            .ok_or(Error::ProfilesNotEnabled)?;
+        pm.delete(name)?;
+
+        // Purge credentials associated with this profile
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        if let Some(ref creds) = self.credentials {
+            let profile_creds = creds.with_profile_context(name);
+            let _ = profile_creds.clear();
+        }
+
+        // Propagate to sub-settings
+        let sub_settings = self.sub_settings.read_recovered()?;
+        for (key, sub) in sub_settings.iter() {
+            match sub.profiles() {
+                Ok(pm) => match pm.delete(name) {
+                    Ok(()) => debug!("Deleted profile '{name}' in sub-settings '{key}'"),
+                    Err(e) => {
+                        warn!("Failed to delete profile '{name}' in sub-settings '{key}': {e}");
+                    }
+                },
+                Err(Error::ProfilesNotEnabled) => {
+                    debug!(
+                        "Skipping sub-settings '{key}' profile deletion because profiles are not enabled"
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to access profile manager for sub-settings '{key}': {e}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Rename a profile for main settings and migrate its credentials
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - The name of the profile to rename
+    /// * `to` - The new name for the profile
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Profiles are not enabled
+    /// - The source profile does not exist or target profile already exists
+    /// - Renaming fails
+    pub fn rename_profile(&self, from: &str, to: &str) -> Result<()> {
+        let pm = self
+            .profile_manager
+            .as_ref()
+            .ok_or(Error::ProfilesNotEnabled)?;
+        pm.rename(from, to)?;
+
+        // Migrate credentials associated with this profile
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        if let Some(ref creds) = self.credentials {
+            if let Ok(tracked) = creds.get_tracked_secrets(Some(from)) {
+                for key in &tracked {
+                    if let Ok(Some(val)) = creds.get_with_profile(key, Some(from)) {
+                        let _ = creds.store_with_profile(key, &val, Some(to));
+                        let _ = creds.remove_with_profile(key, Some(from));
+                    }
+                }
+                if !tracked.is_empty() {
+                    let _ = creds.save_tracked_secrets(&tracked, Some(to));
+                }
+            }
+            let from_creds = creds.with_profile_context(from);
+            let _ = from_creds.clear();
+        }
+
+        // Propagate to sub-settings
+        let sub_settings = self.sub_settings.read_recovered()?;
+        for (key, sub) in sub_settings.iter() {
+            match sub.profiles() {
+                Ok(pm) => match pm.rename(from, to) {
+                    Ok(()) => debug!("Renamed profile '{from}' to '{to}' in sub-settings '{key}'"),
+                    Err(e) => {
+                        warn!(
+                            "Failed to rename profile '{from}' to '{to}' in sub-settings '{key}': {e}"
+                        );
+                    }
+                },
+                Err(Error::ProfilesNotEnabled) => {
+                    debug!(
+                        "Skipping sub-settings '{key}' profile rename because profiles are not enabled"
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to access profile manager for sub-settings '{key}': {e}");
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// List all available profiles
     /// # Errors
     ///

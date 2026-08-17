@@ -679,9 +679,9 @@ window.with_webview(|webview| {
 
 The secondary "Encrypted File" tier requires a master password. To avoid hardcoding, you can resolve it at runtime:
 
-- `SecretPasswordSource::Env("VAR_NAME")`: Load from an environment variable.
-- `SecretPasswordSource::File(path)`: Read from a secure file (e.g., a Docker secret).
-- `SecretPasswordSource::Provided(string)`: Manually provided by the user.
+- `SecretPasswordSource::env("VAR_NAME")` or `SecretPasswordSource::Environment("VAR_NAME".into())`: Load from an environment variable.
+- `SecretPasswordSource::file(path)` or `SecretPasswordSource::File(path)`: Read from a secure file (e.g., a Docker secret).
+- `SecretPasswordSource::provided(string)` or `SecretPasswordSource::Provided(string)`: Manually provided by the user.
 
 ---
 

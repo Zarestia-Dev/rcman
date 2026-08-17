@@ -1,10 +1,10 @@
 //! OS Keychain backend using `keyring` (v4+)
 //!
 //! Supports native secure credential storage across desktop and mobile platforms:
-//! - **Linux**: Secret Service (D-Bus / Seahorse / KWallet)
-//! - **macOS / iOS**: Native Apple Keychain & Protected Data store
-//! - **Windows**: Windows Credential Manager
-//! - **Android**: Android KeyStore & SharedPreferences (requires `ndk_context` initialization)
+//! - **Linux**: Secret Service (D-Bus / Seahorse / `KWallet`)
+//! - **macOS / iOS**: Apple Keychain Services (`Security.framework`)
+//! - **Windows**: Windows Credential Manager (`wincred`)
+//! - **Android**: Android `KeyStore` & `SharedPreferences` (requires `ndk_context` initialization)
 
 use super::CredentialBackend;
 use crate::error::{Error, Result};
@@ -98,6 +98,8 @@ pub struct KeychainBackend {
     service_name: String,
     /// Cache of known keys (keychain doesn't support listing).
     known_keys: RwLock<HashSet<String>>,
+    /// Plaintext read-through cache to avoid redundant synchronous OS IPC calls on repeated reads.
+    read_cache: RwLock<std::collections::HashMap<String, String>>,
     /// Global lock to serialize keychain access on Linux to prevent zbus panics
     #[cfg(target_os = "linux")]
     lock: std::sync::Mutex<()>,
@@ -111,6 +113,7 @@ impl KeychainBackend {
         Self {
             service_name: service_name.into(),
             known_keys: RwLock::new(HashSet::new()),
+            read_cache: RwLock::new(std::collections::HashMap::new()),
             #[cfg(target_os = "linux")]
             lock: std::sync::Mutex::new(()),
         }
@@ -133,6 +136,9 @@ impl KeychainBackend {
         if let Ok(mut keys) = self.known_keys.write() {
             keys.remove(key);
         }
+        if let Ok(mut cache) = self.read_cache.write() {
+            cache.remove(key);
+        }
     }
 }
 
@@ -146,21 +152,46 @@ impl CredentialBackend for KeychainBackend {
         })?;
 
         self.track_key(key);
+        if let Ok(mut cache) = self.read_cache.write() {
+            cache.insert(key.to_string(), value.to_string());
+        }
         debug!("Credential stored in keychain: {key}");
         Ok(())
     }
 
     fn get(&self, key: &str) -> Result<Option<String>> {
+        // Fast path: check in-memory read cache
+        if let Ok(cache) = self.read_cache.read()
+            && let Some(cached) = cache.get(key)
+        {
+            return Ok(Some(cached.clone()));
+        }
+
         #[cfg(target_os = "linux")]
         let _guard = self.lock.lock().map_err(|_| Error::LockPoisoned)?;
+
+        // Double check cache under lock
+        if let Ok(cache) = self.read_cache.read()
+            && let Some(cached) = cache.get(key)
+        {
+            return Ok(Some(cached.clone()));
+        }
 
         match self.get_entry(key)?.get_password() {
             Ok(password) => {
                 self.track_key(key);
+                if let Ok(mut cache) = self.read_cache.write() {
+                    cache.insert(key.to_string(), password.clone());
+                }
                 debug!("Credential retrieved from keychain: {key}");
                 Ok(Some(password))
             }
-            Err(KeyringError::NoEntry) => Ok(None),
+            Err(KeyringError::NoEntry) => {
+                if let Ok(mut cache) = self.read_cache.write() {
+                    cache.remove(key);
+                }
+                Ok(None)
+            }
             Err(e) => {
                 warn!("Failed to retrieve credential {key} from keychain: {e}");
                 Err(Error::Credential(format!(
@@ -171,6 +202,10 @@ impl CredentialBackend for KeychainBackend {
     }
 
     fn remove(&self, key: &str) -> Result<()> {
+        if let Ok(mut cache) = self.read_cache.write() {
+            cache.remove(key);
+        }
+
         #[cfg(target_os = "linux")]
         let _guard = self.lock.lock().map_err(|_| Error::LockPoisoned)?;
 
