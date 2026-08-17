@@ -46,13 +46,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             // Try retrieving from keyring
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             if let Ok(Some(secret_value)) = self.get_credential_with_profile(key) {
-                let parsed =
-                    serde_json::from_str(&secret_value).unwrap_or(Value::String(secret_value));
-                return Ok(Some((parsed, false)));
-            }
-
-            if metadata.nullable || metadata.default.is_null() {
-                return Ok(Some((Value::Null, false)));
+                return Ok(Some((Value::String(secret_value), false)));
             }
 
             // Secret not found, use default
@@ -197,7 +191,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     pub fn get_all_data(&self) -> Result<Value> {
         self.ensure_cache_populated()?;
         self.settings_cache
-            .get_or_compute_merged(|stored| self.compute_merged_settings(stored))
+            .get_or_compute_merged(|stored| Self::merge_with_defaults(stored))
     }
 
     /// Get merged settings struct with caching.
@@ -210,37 +204,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         // Deserialize to concrete type
         serde_json::from_value(merged).map_err(|e| Error::Parse(e.to_string()))
-    }
-
-    /// Internal helper to compute merged settings with schema defaults and secrets.
-    pub(crate) fn compute_merged_settings(&self, stored: &Value) -> Result<Value> {
-        #[allow(unused_mut)]
-        let mut merged = Self::merge_with_defaults(stored)?;
-
-        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        if self.credentials.is_some() {
-            for (full_key, metadata) in self.schema_metadata.iter() {
-                if metadata.is_secret() {
-                    // Check env var override for secrets if enabled
-                    if self.config.env_overrides_secrets
-                        && let Some(env_value) = self.get_env_override(full_key)
-                    {
-                        crate::utils::value::set_path(&mut merged, full_key, env_value);
-                        continue;
-                    }
-
-                    if let Ok(Some(secret_value)) = self.get_credential_with_profile(full_key) {
-                        let parsed = serde_json::from_str(&secret_value)
-                            .unwrap_or(Value::String(secret_value));
-                        crate::utils::value::set_path(&mut merged, full_key, parsed);
-                    } else if metadata.nullable || metadata.default.is_null() {
-                        crate::utils::value::set_path(&mut merged, full_key, Value::Null);
-                    }
-                }
-            }
-        }
-
-        Ok(merged)
     }
 
     /// Internal helper to merge stored settings with schema defaults.

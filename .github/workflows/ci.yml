@@ -25,6 +25,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libdbus-1-dev pkg-config
 
+      - name: Setup macOS Keychain
+        if: runner.os == 'macOS'
+        run: |
+          security create-keychain -p "" ci.keychain
+          security default-keychain -s ci.keychain
+          security unlock-keychain -p "" ci.keychain
+          security set-keychain-settings -lut 21600 ci.keychain
+          security list-keychains -d user -s ci.keychain $(security list-keychains -d user | tr -d '"')
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 

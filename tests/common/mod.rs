@@ -172,23 +172,78 @@ impl SettingsSchema for TestSettings {
     }
 }
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
+// Global counter for unique test application names
+static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Generate a unique application name combining PID and an atomic counter.
+///
+/// Ensures each test runs in an isolated namespace (e.g., `rcman-test-<pid>-<count>`)
+/// avoiding collisions across parallel tests or persistent OS keyring stores.
+pub fn unique_app_name() -> String {
+    let count = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("rcman-test-{}-{}", std::process::id(), count)
+}
+
+/// RAII guard that automatically clears credentials for a specific test service on drop.
+///
+/// # Safety and Isolation Guarantees
+/// - **Zero-Collisions**: Each guard strictly owns a single `service_name` (e.g. `rcman-test-<pid>-<count>`).
+/// - **Strictly Scoped Deletion**: `CredentialsManager::clear()` removes only keys in the `<service_name>:*`
+///   namespace. It NEVER performs a broad wildcard search or deletes credentials of other applications
+///   or unrelated test runs, even if existing keys start with `rcman-test-`.
+/// - **Panic-Safe Cleanup**: Because cleanup is executed in `Drop`, test credentials in the OS keyring
+///   are purged even if the test panics or fails midway.
+#[derive(Debug)]
+pub struct TestCredentialsGuard {
+    service_name: String,
+}
+
+impl TestCredentialsGuard {
+    /// Create a new cleanup guard for the specified service name.
+    pub fn new(service_name: impl Into<String>) -> Self {
+        Self {
+            service_name: service_name.into(),
+        }
+    }
+
+    /// Access the underlying service name
+    pub fn service_name(&self) -> &str {
+        &self.service_name
+    }
+}
+
+impl Drop for TestCredentialsGuard {
+    fn drop(&mut self) {
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        {
+            let creds = rcman::CredentialManager::new(&self.service_name);
+            let _ = creds.clear();
+        }
+    }
+}
+
 // =============================================================================
 // Test Fixtures
 // =============================================================================
 
-/// Test fixture that provides a temporary directory and configured `SettingsManager`
+/// Test fixture that provides a temporary directory, configured `SettingsManager`, and credential guard
 pub struct TestFixture {
     pub temp_dir: TempDir,
     pub manager: SettingsManager<rcman::JsonStorage, TestSettings>,
     pub env_source: Arc<MockEnvSource>,
+    pub credentials_guard: TestCredentialsGuard,
 }
 
 impl TestFixture {
-    /// Create a new test fixture with default configuration
+    /// Create a new test fixture with default configuration and isolated credentials
     pub fn new() -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let env_source = Arc::new(MockEnvSource::new());
-        let config = SettingsConfig::builder("test-app", "1.0.0")
+        let app_name = unique_app_name();
+        let credentials_guard = TestCredentialsGuard::new(&app_name);
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
             .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
             .with_credentials()
@@ -200,14 +255,17 @@ impl TestFixture {
             temp_dir,
             manager,
             env_source,
+            credentials_guard,
         }
     }
 
-    /// Create a fixture with sub-settings configured
+    /// Create a fixture with sub-settings configured and isolated credentials
     pub fn with_sub_settings() -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let env_source = Arc::new(MockEnvSource::new());
-        let config = SettingsConfig::builder("test-app", "1.0.0")
+        let app_name = unique_app_name();
+        let credentials_guard = TestCredentialsGuard::new(&app_name);
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
             .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
             .with_credentials()
@@ -230,14 +288,17 @@ impl TestFixture {
             temp_dir,
             manager,
             env_source,
+            credentials_guard,
         }
     }
 
-    /// Create a fixture with environment variable prefix
+    /// Create a fixture with environment variable prefix and isolated credentials
     pub fn with_env_prefix(prefix: &str) -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let env_source = Arc::new(MockEnvSource::new());
-        let config = SettingsConfig::builder("test-app", "1.0.0")
+        let app_name = unique_app_name();
+        let credentials_guard = TestCredentialsGuard::new(&app_name);
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
             .with_config_dir(temp_dir.path())
             .with_schema::<TestSettings>()
             .with_env_prefix(prefix)
@@ -250,7 +311,13 @@ impl TestFixture {
             temp_dir,
             manager,
             env_source,
+            credentials_guard,
         }
+    }
+
+    /// Get the application name
+    pub fn app_name(&self) -> &str {
+        self.credentials_guard.service_name()
     }
 
     /// Get the config directory path

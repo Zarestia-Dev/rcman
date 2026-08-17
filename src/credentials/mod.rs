@@ -250,20 +250,19 @@ impl CredentialManager {
     pub fn store_with_profile(&self, key: &str, value: &str, profile: Option<&str>) -> Result<()> {
         let full_key = self.make_key_with_profile(key, profile);
 
-        // Attempt primary backend if not already marked as failed
-        if !self.is_primary_failed.load(Ordering::Relaxed) {
-            match self.primary.store(&full_key, value) {
-                Ok(()) => {
-                    log::debug!(
-                        "Stored credential '{key}' in {}",
-                        self.primary.backend_name()
-                    );
-                    return Ok(());
-                }
-                Err(e) => {
-                    log::debug!("Primary backend store for '{key}' failed: {e:?}");
-                    self.is_primary_failed.store(true, Ordering::Relaxed);
-                }
+        // Always attempt primary backend first
+        match self.primary.store(&full_key, value) {
+            Ok(()) => {
+                log::debug!(
+                    "Stored credential '{key}' in {}",
+                    self.primary.backend_name()
+                );
+                self.is_primary_failed.store(false, Ordering::Relaxed);
+                return Ok(());
+            }
+            Err(e) => {
+                log::debug!("Primary backend store for '{key}' failed: {e:?}");
+                self.is_primary_failed.store(true, Ordering::Relaxed);
             }
         }
 
@@ -304,16 +303,15 @@ impl CredentialManager {
     pub fn get_with_profile(&self, key: &str, profile: Option<&str>) -> Result<Option<String>> {
         let full_key = self.make_key_with_profile(key, profile);
 
-        // Try primary first if not already marked as failed
-        if !self.is_primary_failed.load(Ordering::Relaxed) {
-            match self.primary.get(&full_key) {
-                Ok(val) => {
-                    return Ok(val);
-                }
-                Err(e) => {
-                    log::debug!("Primary backend get for '{key}' failed: {e:?}");
-                    self.is_primary_failed.store(true, Ordering::Relaxed);
-                }
+        // Try primary first
+        match self.primary.get(&full_key) {
+            Ok(val) => {
+                self.is_primary_failed.store(false, Ordering::Relaxed);
+                return Ok(val);
+            }
+            Err(e) => {
+                log::debug!("Primary backend get for '{key}' failed: {e:?}");
+                self.is_primary_failed.store(true, Ordering::Relaxed);
             }
         }
 
@@ -385,12 +383,7 @@ impl CredentialManager {
     /// Returns an error if the cache invalidation fails.
     pub fn clear(&self) -> Result<()> {
         #[cfg(feature = "profiles")]
-        let profile_opt = self.profile_context.as_deref();
-        #[cfg(not(feature = "profiles"))]
-        let profile_opt = None;
-
-        #[cfg(feature = "profiles")]
-        let prefix = if let Some(profile_ctx) = profile_opt {
+        let prefix = if let Some(profile_ctx) = &self.profile_context {
             format!("{}:profiles:{}:", self.service_name, profile_ctx)
         } else {
             format!("{}:", self.service_name)
@@ -401,19 +394,6 @@ impl CredentialManager {
 
         let mut keys_to_remove = std::collections::HashSet::new();
 
-        // 1. Include persistent tracked secrets list (crucial for OS keychain backend)
-        if let Ok(tracked) = self.get_tracked_secrets(profile_opt) {
-            for key in tracked {
-                let full_key = self.make_key_with_profile(&key, profile_opt);
-                keys_to_remove.insert(full_key);
-            }
-        }
-
-        // Add the __rcman_secrets__ tracking key itself so it is cleared
-        let tracked_index_key = self.make_key_with_profile("__rcman_secrets__", profile_opt);
-        keys_to_remove.insert(tracked_index_key);
-
-        // 2. Discover keys from known/cached backends
         if let Ok(keys) = self.primary.list_keys() {
             for key in keys {
                 if key.starts_with(&prefix) {

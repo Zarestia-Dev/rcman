@@ -11,6 +11,8 @@
 
 mod common;
 
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+use common::{TestCredentialsGuard, unique_app_name};
 use rcman::{SettingsConfig, SettingsManager, SubSettingsConfig};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -708,8 +710,10 @@ fn test_secret_reset_is_profile_scoped() {
     }
 
     let temp_dir = TempDir::new().unwrap();
+    let app_name = unique_app_name();
+    let _guard = TestCredentialsGuard::new(&app_name);
 
-    let config = SettingsConfig::builder("test-app", "1.0.0")
+    let config = SettingsConfig::builder(&app_name, "1.0.0")
         .with_config_dir(temp_dir.path())
         .with_schema::<TestSettings>()
         .with_profiles()
@@ -866,10 +870,12 @@ impl SettingsSchema for ProfileSecretSettings {
 #[test]
 fn test_profile_restore_rehydrates_main_secrets_with_credentials() {
     let temp = tempdir().unwrap();
+    let app_name = unique_app_name();
+    let _guard = TestCredentialsGuard::new(&app_name);
     let source_config_dir = temp.path().join("source");
     fs::create_dir_all(&source_config_dir).unwrap();
 
-    let source_config = SettingsConfigBuilder::new("test-app", "1.0.0")
+    let source_config = SettingsConfigBuilder::new(&app_name, "1.0.0")
         .with_config_dir(&source_config_dir)
         .with_schema::<ProfileSecretSettings>()
         .with_profiles()
@@ -897,7 +903,7 @@ fn test_profile_restore_rehydrates_main_secrets_with_credentials() {
     let target_config_dir = temp.path().join("target");
     fs::create_dir_all(&target_config_dir).unwrap();
 
-    let target_config = SettingsConfigBuilder::new("test-app", "1.0.0")
+    let target_config = SettingsConfigBuilder::new(&app_name, "1.0.0")
         .with_config_dir(&target_config_dir)
         .with_schema::<ProfileSecretSettings>()
         .with_profiles()

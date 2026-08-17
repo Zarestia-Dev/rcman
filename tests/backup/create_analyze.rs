@@ -78,7 +78,7 @@ fn test_analyze_backup_contents() {
 
     let analysis = fixture.manager.backup().analyze(&backup_path).unwrap();
 
-    assert_eq!(analysis.manifest.backup.app_name, "test-app");
+    assert_eq!(analysis.manifest.backup.app_name, fixture.app_name());
     assert_eq!(analysis.manifest.backup.app_version, "1.0.0");
     assert!(analysis.is_valid);
     assert!(analysis.warnings.is_empty());
@@ -103,5 +103,5 @@ fn test_analyze_encrypted_backup() {
     let analysis = fixture.manager.backup().analyze(&backup_path).unwrap();
 
     assert!(analysis.requires_password);
-    assert_eq!(analysis.manifest.backup.app_name, "test-app");
+    assert_eq!(analysis.manifest.backup.app_name, fixture.app_name());
 }

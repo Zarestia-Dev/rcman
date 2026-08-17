@@ -1,5 +1,9 @@
 #![cfg(feature = "profiles")]
 
+mod common;
+
+#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+use common::{TestCredentialsGuard, unique_app_name};
 use rcman::{BackupOptions, RestoreOptions};
 #[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
 use rcman::{SettingMetadata, SettingsSchema, settings};
@@ -131,10 +135,12 @@ impl SettingsSchema for ProfileSecretSettings {
 #[test]
 fn test_profile_restore_rehydrates_main_secrets_with_credentials() {
     let temp = tempdir().unwrap();
+    let app_name = unique_app_name();
+    let _guard = TestCredentialsGuard::new(&app_name);
     let source_config_dir = temp.path().join("source");
     fs::create_dir_all(&source_config_dir).unwrap();
 
-    let source_config = SettingsConfigBuilder::new("test-app", "1.0.0")
+    let source_config = SettingsConfigBuilder::new(&app_name, "1.0.0")
         .with_config_dir(&source_config_dir)
         .with_schema::<ProfileSecretSettings>()
         .with_profiles()
@@ -162,7 +168,7 @@ fn test_profile_restore_rehydrates_main_secrets_with_credentials() {
     let target_config_dir = temp.path().join("target");
     fs::create_dir_all(&target_config_dir).unwrap();
 
-    let target_config = SettingsConfigBuilder::new("test-app", "1.0.0")
+    let target_config = SettingsConfigBuilder::new(&app_name, "1.0.0")
         .with_config_dir(&target_config_dir)
         .with_schema::<ProfileSecretSettings>()
         .with_profiles()

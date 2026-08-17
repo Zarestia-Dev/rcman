@@ -292,26 +292,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     let sub_export_dir = export_dir.join(settings_type);
                     crate::error::create_dir(&sub_export_dir)?;
 
-                    let mut value: serde_json::Value = sub.get_value(name)?;
-                    let sub_metadata = sub
-                        .schema_metadata()
-                        .unwrap_or_else(|| std::sync::Arc::new(IndexMap::new()));
-
-                    let should_include_secrets = match options.secret_policy {
-                        crate::SecretBackupPolicy::Exclude => false,
-                        crate::SecretBackupPolicy::Include => true,
-                        crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
-                    };
-
-                    let credential_key_prefix = format!("sub.{settings_type}.{name}");
-                    self.inject_or_remove_secrets(
-                        &mut value,
-                        &credential_key_prefix,
-                        &sub_metadata,
-                        should_include_secrets,
-                        None,
-                    );
-
+                    let value: serde_json::Value = sub.get_value(name)?;
                     // Use storage backend for format-agnostic export
                     let ext = self.manager.storage().extension();
                     let dest = sub_export_dir.join(format!("{name}.{ext}"));
