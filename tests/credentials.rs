@@ -901,3 +901,127 @@ fn test_subsettings_migration_upgrade_path() {
         assert!(!list.contains(&"sub.remotes.gdrive.token".to_string()));
     }
 }
+
+// =============================================================================
+// Runtime Keychain Disconnect Resilience & Zero-Stale Verification
+// =============================================================================
+
+#[test]
+fn test_runtime_keychain_disconnect_resilience_and_zero_stale() {
+    use rcman::CredentialBackend;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, RwLock};
+
+    struct SimulatedOsKeychain {
+        store: RwLock<std::collections::HashMap<String, String>>,
+        is_disconnected: AtomicBool,
+    }
+
+    impl CredentialBackend for SimulatedOsKeychain {
+        fn store(&self, key: &str, value: &str) -> rcman::Result<()> {
+            if self.is_disconnected.load(Ordering::Relaxed) {
+                return Err(rcman::Error::Credential(
+                    "OS Keychain daemon disconnected".into(),
+                ));
+            }
+            self.store
+                .write()
+                .unwrap()
+                .insert(key.to_string(), value.to_string());
+            Ok(())
+        }
+
+        fn get(&self, key: &str) -> rcman::Result<Option<String>> {
+            if self.is_disconnected.load(Ordering::Relaxed) {
+                return Err(rcman::Error::Credential(
+                    "OS Keychain daemon disconnected".into(),
+                ));
+            }
+            Ok(self.store.read().unwrap().get(key).cloned())
+        }
+
+        fn remove(&self, key: &str) -> rcman::Result<()> {
+            self.store.write().unwrap().remove(key);
+            Ok(())
+        }
+
+        fn list_keys(&self) -> rcman::Result<Vec<String>> {
+            Ok(self.store.read().unwrap().keys().cloned().collect())
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "simulated_os_keychain"
+        }
+    }
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let keychain_backend = Arc::new(SimulatedOsKeychain {
+        store: RwLock::new(std::collections::HashMap::new()),
+        is_disconnected: AtomicBool::new(false),
+    });
+
+    let config = SettingsConfig::builder("resilience-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
+        .with_credential_config(rcman::CredentialConfig::Custom(
+            keychain_backend.clone() as Arc<dyn CredentialBackend>
+        ))
+        .build();
+    let manager = SettingsManager::new(config).unwrap();
+
+    // 1. Store secret while OS Keychain is healthy
+    manager
+        .save_setting("api", "key", &json!("secret-token-123"))
+        .unwrap();
+
+    let creds = manager.credentials().unwrap();
+
+    // Verify it is in OS Keychain
+    assert_eq!(
+        creds.get("api.key").unwrap(),
+        Some("secret-token-123".to_string())
+    );
+
+    // 2. Simulate OS Keychain crash / disconnect during active session
+    keychain_backend
+        .is_disconnected
+        .store(true, Ordering::Relaxed);
+
+    // Manager should seamlessly fall back to volatile memory safety net without error
+    let recovered_val = creds.get("api.key").unwrap();
+    assert_eq!(
+        recovered_val,
+        Some("secret-token-123".to_string()),
+        "Should recover secret from in-memory safety net when OS Keychain is unavailable"
+    );
+
+    // Also verify via manager metadata retrieval
+    let meta = manager.metadata().unwrap();
+    assert_eq!(
+        meta.get("api.key").unwrap().value,
+        Some(json!("secret-token-123"))
+    );
+
+    // 3. Simulate OS Keychain coming back online with external modification
+    keychain_backend
+        .is_disconnected
+        .store(false, Ordering::Relaxed);
+    keychain_backend.store.write().unwrap().insert(
+        "resilience-app:api.key".to_string(),
+        "external-changed-token-456".to_string(),
+    );
+
+    // Zero-stale guarantee: Manager must prioritize the live OS Keychain value over in-memory cache
+    let fresh_val = creds.get("api.key").unwrap();
+    assert_eq!(
+        fresh_val,
+        Some("external-changed-token-456".to_string()),
+        "Must immediately return the latest OS Keychain value (zero stale data)"
+    );
+
+    let fresh_meta = manager.metadata().unwrap();
+    assert_eq!(
+        fresh_meta.get("api.key").unwrap().value,
+        Some(json!("external-changed-token-456"))
+    );
+}

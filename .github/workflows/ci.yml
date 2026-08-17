@@ -34,6 +34,12 @@ jobs:
           security set-keychain-settings -lut 21600 ci.keychain
           security list-keychains -d user -s ci.keychain $(security list-keychains -d user | tr -d '"')
 
+      - name: Setup Windows Credential Manager
+        if: runner.os == 'Windows'
+        run: |
+          Set-Service -Name "VaultSvc" -StartupType Automatic
+          Start-Service -Name "VaultSvc"
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 

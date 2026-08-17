@@ -258,6 +258,7 @@ impl CredentialManager {
                     self.primary.backend_name()
                 );
                 self.is_primary_failed.store(false, Ordering::Relaxed);
+                let _ = self.volatile.store(&full_key, value);
                 return Ok(());
             }
             Err(e) => {
@@ -271,6 +272,7 @@ impl CredentialManager {
             match fallback.store(&full_key, value) {
                 Ok(()) => {
                     log::debug!("Stored credential '{key}' in persistent fallback");
+                    let _ = self.volatile.store(&full_key, value);
                     return Ok(());
                 }
                 Err(e) => {
@@ -307,6 +309,7 @@ impl CredentialManager {
         match self.primary.get(&full_key) {
             Ok(Some(val)) => {
                 self.is_primary_failed.store(false, Ordering::Relaxed);
+                let _ = self.volatile.store(&full_key, &val);
                 return Ok(Some(val));
             }
             Ok(None) => {
@@ -321,7 +324,10 @@ impl CredentialManager {
         // Try fallback
         if let Some(ref fallback) = self.fallback {
             match fallback.get(&full_key) {
-                Ok(Some(val)) => return Ok(Some(val)),
+                Ok(Some(val)) => {
+                    let _ = self.volatile.store(&full_key, &val);
+                    return Ok(Some(val));
+                }
                 Ok(None) => {}
                 Err(e) => {
                     log::error!(
@@ -365,7 +371,13 @@ impl CredentialManager {
     /// Check if a credential exists
     #[must_use]
     pub fn exists(&self, key: &str) -> bool {
-        let full_key = self.make_key_with_profile(key, None);
+        self.exists_with_profile(key, None)
+    }
+
+    /// Check if a credential exists with optional profile context
+    #[must_use]
+    pub fn exists_with_profile(&self, key: &str, profile: Option<&str>) -> bool {
+        let full_key = self.make_key_with_profile(key, profile);
 
         if self.primary.exists(&full_key).unwrap_or(false) {
             return true;
@@ -926,5 +938,50 @@ mod tests {
         // Cleanup
         manager.remove("api_key").unwrap();
         assert_eq!(manager.get("api_key").unwrap(), None);
+    }
+
+    #[cfg(feature = "profiles")]
+    #[test]
+    fn test_exists_with_profile() {
+        let manager = CredentialManager::memory_only("test-app");
+        manager
+            .store_with_profile("token", "val-work", Some("work"))
+            .unwrap();
+
+        assert!(manager.exists_with_profile("token", Some("work")));
+        assert!(!manager.exists_with_profile("token", Some("personal")));
+        assert!(!manager.exists("token"));
+    }
+
+    #[test]
+    fn test_read_through_cache_populates_volatile() {
+        let primary = Arc::new(MemoryBackend::new());
+        primary.store("test-app:cached_key", "secret-val").unwrap();
+
+        let manager = CredentialManager {
+            primary,
+            fallback: None,
+            is_primary_failed: Arc::new(AtomicBool::new(false)),
+            service_name: "test-app".to_string(),
+            #[cfg(feature = "profiles")]
+            profile_context: None,
+            volatile: Arc::new(MemoryBackend::new()),
+            tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+        };
+
+        // Before read, volatile is empty
+        assert_eq!(manager.volatile.get("test-app:cached_key").unwrap(), None);
+
+        // Read from primary through manager
+        let val = manager.get("cached_key").unwrap();
+        assert_eq!(val, Some("secret-val".to_string()));
+
+        // After read, volatile is populated (read-through cache)
+        assert_eq!(
+            manager.volatile.get("test-app:cached_key").unwrap(),
+            Some("secret-val".to_string())
+        );
     }
 }

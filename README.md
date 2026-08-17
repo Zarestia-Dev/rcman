@@ -648,9 +648,11 @@ rcman implements a cascading fallback system to guarantee that secret operations
 | :--------------- | :------------------ | :---------- | :------------------------------------------------------------ |
 | **1. Primary**   | **OS Keychain**     | ✅ Yes      | Desktop/Mobile apps with native keyring support.              |
 | **2. Fallback**  | **Encrypted File**  | ✅ Yes      | Headless servers, Docker, or limited permission environments. |
-| **3. Emergency** | **Volatile Memory** | ❌ No       | Extreme cases where all persistent storage is unavailable.    |
+| **3. Emergency** | **Volatile Memory** | ❌ No       | In-memory safety net for runtime transient OS keyring drops.  |
 
-**Sticky Fallback:** If the Primary backend fails (e.g., "locked keychain" or "missing dbus" on Linux), the manager permanently switches to the Fallback tier for the remainder of the session to avoid repeated platform timeouts.
+- **In-Memory Safety Net (Write/Read-Through):** Successful write and read operations populate an in-process volatile safety net, ensuring secrets remain accessible during runtime if the OS keychain daemon temporarily disconnects or locks.
+- **Zero-Stale Data Guarantee:** `rcman` always queries the Primary backend (OS Keychain) first on reads. Live changes made externally in the OS keyring are immediately reflected; the in-memory cache never shadows active keyring modifications.
+- **Sticky Fallback:** If the Primary backend fails permanently (e.g., missing D-Bus on headless Linux), the manager switches to the Fallback tier for the remainder of the session to avoid repeated platform timeouts.
 
 #### Platform Support
 

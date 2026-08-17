@@ -38,6 +38,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Converted `SettingOption` (`label`, `description`), `TextConstraints` (`pattern`), and `ListConstraints` (`reserved`) to use `Cow<'static, str>` instead of heap-allocated `String`.
     - `opt()`, `SettingOption::new()`, `SettingMetadata::pattern()`, and `SettingMetadata::reserved()` now accept generic `Into<Cow<'static, str>>` parameters, allowing static string literals to be stored without heap allocation while seamlessly accepting dynamic strings.
     - Updated `rcman-derive` code generation to emit borrowed static string slices without `.to_string()` overhead.
+- **Credential In-Memory Safety Net & Zero-Stale Fallback Caching**:
+    - Implemented write-through and read-through in-memory caching in `CredentialManager` (`store_with_profile` and `get_with_profile`). Successful store and read operations now maintain an in-process volatile safety net to ensure uninterrupted secret availability if the OS keychain experiences transient disconnections during runtime.
+    - Guaranteed zero-stale-data priority: `get_with_profile` always queries the live OS keychain first so that external modifications are immediately recognized, using volatile memory purely as a fault-tolerant safety net.
 
 ### Changed
 
