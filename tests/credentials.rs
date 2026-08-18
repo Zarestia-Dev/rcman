@@ -146,6 +146,96 @@ fn test_reset_all_clears_secrets() {
     assert_eq!(api_key_value, Some(json!("")));
 }
 
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+#[cfg_attr(
+    feature = "keychain",
+    ignore = "Requires Secret Service daemon (not available in CI)"
+)]
+fn test_clear_from_fresh_manager_deletes_secrets_and_metadata() {
+    let app_name = unique_app_name();
+    let _guard = TestCredentialsGuard::new(&app_name);
+    let temp_dir = TempDir::new().unwrap();
+
+    // 1. Session 1: Store a secret
+    {
+        let config = SettingsConfig::builder(&app_name, "1.0.0")
+            .with_config_dir(temp_dir.path())
+            .with_schema::<TestSettings>()
+            .with_credentials()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .save_setting("api", "key", &json!("secret_to_purge"))
+            .unwrap();
+
+        let creds = manager.credentials().unwrap();
+        assert_eq!(
+            creds.get("api.key").unwrap(),
+            Some("secret_to_purge".to_string())
+        );
+    }
+
+    // 2. Fresh manager instance (simulating TestCredentialsGuard::drop) calls clear()
+    {
+        let fresh_creds = rcman::CredentialManager::new(&app_name);
+        fresh_creds.clear().unwrap();
+    }
+
+    // 3. Session 2: Verify secret and __rcman_secrets__ are purged
+    {
+        let check_creds = rcman::CredentialManager::new(&app_name);
+        assert_eq!(check_creds.get("api.key").unwrap(), None);
+        assert_eq!(check_creds.get("__rcman_secrets__").unwrap(), None);
+    }
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+#[cfg_attr(
+    feature = "keychain",
+    ignore = "Requires Secret Service daemon (not available in CI)"
+)]
+fn test_invalidate_cache_clears_credential_metadata_cache() {
+    let app_name = unique_app_name();
+    let _guard = TestCredentialsGuard::new(&app_name);
+    let temp_dir = TempDir::new().unwrap();
+
+    let config = SettingsConfig::builder(&app_name, "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
+        .with_credentials()
+        .build();
+    let manager = SettingsManager::new(config).unwrap();
+
+    // 1. Save initial secret
+    manager
+        .save_setting("api", "key", &json!("initial_secret"))
+        .unwrap();
+
+    let metadata = manager.metadata().unwrap();
+    assert_eq!(
+        metadata.get("api.key").unwrap().value,
+        Some(json!("initial_secret"))
+    );
+
+    // 2. Modify secret directly in credential store (simulating external update)
+    let raw_creds = rcman::CredentialManager::new(&app_name);
+    raw_creds
+        .store("api.key", "externally_updated_secret")
+        .unwrap();
+
+    // 3. Invalidate cache on the manager
+    manager.invalidate_cache();
+
+    // 4. Verify manager reads fresh value from credential store
+    let fresh_metadata = manager.metadata().unwrap();
+    assert_eq!(
+        fresh_metadata.get("api.key").unwrap().value,
+        Some(json!("externally_updated_secret"))
+    );
+}
+
 // =============================================================================
 // Secret Default Value Behavior
 // =============================================================================
@@ -906,6 +996,7 @@ fn test_subsettings_migration_upgrade_path() {
 // Runtime Keychain Disconnect Resilience & Zero-Stale Verification
 // =============================================================================
 
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 #[test]
 fn test_runtime_keychain_disconnect_resilience_and_zero_stale() {
     use rcman::CredentialBackend;

@@ -49,6 +49,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Re-exported `IndexMap` from the root of `rcman`.
     - Updated `#[derive(SettingsSchema)]` in `rcman-derive` to generate `IndexMap`, ensuring struct fields are returned and serialized in their exact declaration order.
 
+### Fixed
+
+- **Keychain Secret Cleanup & `CredentialManager::clear()` Fix**:
+    - Fixed `CredentialManager::clear()` to read the persisted `__rcman_secrets__` index and purge all recorded secret keys from the credential backends instead of relying solely on the in-memory key cache.
+    - Ensured `CredentialManager::clear()` explicitly removes the `__rcman_secrets__` metadata entry itself from the credential store.
+    - Added automatic profile tracking (`__rcman_profiles__`) in `CredentialManager` so that calling `clear()` on the root service context automatically discovers and purges secrets across all active and named profiles.
+    - Fixed startup fallback scan in `get_tracked_secrets` to avoid writing empty `__rcman_secrets__ = "[]"` entries into the OS keychain when no secret settings exist.
+
 ## [v0.2.2] - 2026-07-26
 
 ### Fixed

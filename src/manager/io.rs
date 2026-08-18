@@ -132,46 +132,32 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     fn get_tracked_secrets(&self) -> Result<std::collections::HashSet<String>> {
         let creds = self.require_credentials()?;
         let profile = self.active_profile_name();
+        let profile_ref = profile.as_deref();
+
+        // Check if __rcman_secrets__ exists in credential store
+        if self
+            .get_credential_with_profile("__rcman_secrets__")?
+            .is_none()
         {
-            let cache_guard = creds
-                .tracked_secrets_cache
-                .read()
-                .map_err(|_| Error::LockPoisoned)?;
-            if let Some(cache) = cache_guard.get(&profile) {
-                return Ok(cache.clone());
+            // Set the is_upgraded flag to indicate we did a fallback scan
+            self.is_upgraded
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+
+            // Backward-compatible one-time fallback scan:
+            // Scan all keys in the schema metadata to check what is in credentials
+            let mut initial_tracked = std::collections::HashSet::new();
+            for full_key in self.schema_metadata.keys() {
+                if let Ok(Some(_)) = self.get_credential_with_profile(full_key) {
+                    initial_tracked.insert(full_key.clone());
+                }
             }
+            if !initial_tracked.is_empty() {
+                creds.save_tracked_secrets(&initial_tracked, profile_ref)?;
+            }
+            return Ok(initial_tracked);
         }
 
-        let secrets =
-            if let Some(value_str) = self.get_credential_with_profile("__rcman_secrets__")? {
-                let list: Vec<String> = serde_json::from_str(&value_str).map_err(|e| {
-                    Error::Credential(format!("Failed to parse tracked secrets list: {e}"))
-                })?;
-                let set: std::collections::HashSet<String> = list.into_iter().collect();
-                let mut cache_guard = creds
-                    .tracked_secrets_cache
-                    .write()
-                    .map_err(|_| Error::LockPoisoned)?;
-                cache_guard.insert(profile, set.clone());
-                set
-            } else {
-                // Set the is_upgraded flag to indicate we did a fallback scan
-                self.is_upgraded
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-
-                // Backward-compatible one-time fallback scan:
-                // Scan all keys in the schema metadata to check what is in credentials
-                let mut initial_tracked = std::collections::HashSet::new();
-                for full_key in self.schema_metadata.keys() {
-                    if let Ok(Some(_)) = self.get_credential_with_profile(full_key) {
-                        initial_tracked.insert(full_key.clone());
-                    }
-                }
-                creds.save_tracked_secrets(&initial_tracked, profile.as_deref())?;
-                initial_tracked
-            };
-
-        Ok(secrets)
+        creds.get_tracked_secrets(profile_ref)
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -190,6 +176,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         #[cfg(feature = "profiles")]
         if let Some(pm) = &self.profile_manager {
             pm.invalidate_manifest();
+        }
+
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        if let Some(ref creds) = self.credentials
+            && let Err(e) = creds.invalidate_tracked_secrets_cache()
+        {
+            debug!("Failed to invalidate tracked secrets cache: {e}");
         }
 
         if let Ok(sub_settings) = self.sub_settings.read_recovered() {

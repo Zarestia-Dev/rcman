@@ -98,11 +98,15 @@ pub struct CredentialManager {
     volatile: Arc<MemoryBackend>,
 
     /// In-memory cache of keys stored in the credential store to optimize lookup and migration, keyed by profile context
-    pub(super) tracked_secrets_cache: Arc<
+    tracked_secrets_cache: Arc<
         std::sync::RwLock<
             std::collections::HashMap<Option<String>, std::collections::HashSet<String>>,
         >,
     >,
+
+    /// In-memory cache of tracked profile names to optimize profile lookups
+    #[cfg(feature = "profiles")]
+    tracked_profiles_cache: Arc<std::sync::RwLock<Option<std::collections::HashSet<String>>>>,
 }
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -122,6 +126,8 @@ impl CredentialManager {
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            #[cfg(feature = "profiles")]
+            tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -140,6 +146,8 @@ impl CredentialManager {
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            #[cfg(feature = "profiles")]
+            tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -165,6 +173,8 @@ impl CredentialManager {
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            #[cfg(feature = "profiles")]
+            tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -181,6 +191,8 @@ impl CredentialManager {
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            #[cfg(feature = "profiles")]
+            tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -200,6 +212,8 @@ impl CredentialManager {
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            #[cfg(feature = "profiles")]
+            tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -218,6 +232,7 @@ impl CredentialManager {
             profile_context: Some(profile_name.to_string()),
             volatile: self.volatile.clone(),
             tracked_secrets_cache: self.tracked_secrets_cache.clone(),
+            tracked_profiles_cache: self.tracked_profiles_cache.clone(),
         }
     }
 
@@ -399,6 +414,22 @@ impl CredentialManager {
     /// Returns an error if the cache invalidation fails.
     pub fn clear(&self) -> Result<()> {
         #[cfg(feature = "profiles")]
+        let profile = self.profile_context.as_deref();
+        #[cfg(not(feature = "profiles"))]
+        let profile: Option<&str> = None;
+
+        let mut keys_to_remove = std::collections::HashSet::new();
+
+        // 1. Fetch tracked secrets from the credential store (__rcman_secrets__)
+        if let Ok(tracked) = self.get_tracked_secrets(profile) {
+            for key in tracked {
+                let full_key = self.make_key_with_profile(&key, profile);
+                keys_to_remove.insert(full_key);
+            }
+        }
+
+        // 2. Also query list_keys on backends
+        #[cfg(feature = "profiles")]
         let prefix = if let Some(profile_ctx) = &self.profile_context {
             format!("{}:profiles:{}:", self.service_name, profile_ctx)
         } else {
@@ -407,8 +438,6 @@ impl CredentialManager {
 
         #[cfg(not(feature = "profiles"))]
         let prefix = format!("{}:", self.service_name);
-
-        let mut keys_to_remove = std::collections::HashSet::new();
 
         if let Ok(keys) = self.primary.list_keys() {
             for key in keys {
@@ -435,6 +464,10 @@ impl CredentialManager {
                 }
             }
         }
+
+        // 3. Always include __rcman_secrets__ itself in keys_to_remove
+        let rcman_secrets_key = self.make_key_with_profile("__rcman_secrets__", profile);
+        keys_to_remove.insert(rcman_secrets_key);
 
         // Track per-key failures so we can log a useful aggregate without
         // aborting the loop on the first error.
@@ -464,6 +497,17 @@ impl CredentialManager {
         if let Err(e) = self.invalidate_tracked_secrets_cache() {
             log::warn!("clear: failed to invalidate tracked_secrets_cache: {e}");
             return Err(e);
+        }
+
+        #[cfg(feature = "profiles")]
+        if self.profile_context.is_none() {
+            if let Ok(profiles) = self.get_tracked_profiles() {
+                for p in profiles {
+                    let profile_creds = self.with_profile_context(&p);
+                    let _ = profile_creds.clear();
+                }
+            }
+            let _ = self.remove("__rcman_profiles__");
         }
 
         if failure_count > 0 {
@@ -536,14 +580,7 @@ impl CredentialManager {
             }
         }
 
-        let mut cache_guard = self
-            .tracked_secrets_cache
-            .write()
-            .map_err(|_| crate::error::Error::LockPoisoned)?;
-        if let Some(cache) = cache_guard.get(&profile_key) {
-            return Ok(cache.clone());
-        }
-
+        // Perform I/O outside of the write lock to prevent blocking concurrent readers/writers
         let secrets = match self.get_with_profile("__rcman_secrets__", profile)? {
             Some(value_str) => {
                 let list: Vec<String> = serde_json::from_str(&value_str).map_err(|e| {
@@ -556,6 +593,10 @@ impl CredentialManager {
             None => std::collections::HashSet::new(),
         };
 
+        let mut cache_guard = self
+            .tracked_secrets_cache
+            .write()
+            .map_err(|_| crate::error::Error::LockPoisoned)?;
         cache_guard.insert(profile_key, secrets.clone());
         Ok(secrets)
     }
@@ -580,11 +621,80 @@ impl CredentialManager {
         })?;
         self.store_with_profile("__rcman_secrets__", &value_str, profile)?;
 
+        #[cfg(feature = "profiles")]
+        if let Some(profile_name) = profile {
+            let _ = self.add_tracked_profile(profile_name);
+        }
+
         let mut cache_guard = self
             .tracked_secrets_cache
             .write()
             .map_err(|_| crate::error::Error::LockPoisoned)?;
         cache_guard.insert(profile_key, secrets.clone());
+        Ok(())
+    }
+
+    /// Load the list of tracked profile names with stored credentials, utilizing the in-memory cache if available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading the credential store or parsing fails.
+    #[cfg(feature = "profiles")]
+    pub fn get_tracked_profiles(&self) -> Result<std::collections::HashSet<String>> {
+        {
+            let cache_guard = self
+                .tracked_profiles_cache
+                .read()
+                .map_err(|_| crate::error::Error::LockPoisoned)?;
+            if let Some(ref cache) = *cache_guard {
+                return Ok(cache.clone());
+            }
+        }
+
+        // Perform I/O outside of the write lock
+        let profiles: std::collections::HashSet<String> = match self.get("__rcman_profiles__")? {
+            Some(value_str) => {
+                let list: Vec<String> = serde_json::from_str(&value_str).map_err(|e| {
+                    crate::error::Error::Credential(format!(
+                        "Failed to parse tracked profiles list: {e}"
+                    ))
+                })?;
+                list.into_iter().collect()
+            }
+            None => std::collections::HashSet::new(),
+        };
+
+        let mut cache_guard = self
+            .tracked_profiles_cache
+            .write()
+            .map_err(|_| crate::error::Error::LockPoisoned)?;
+        *cache_guard = Some(profiles.clone());
+        Ok(profiles)
+    }
+
+    /// Register a profile name in the tracked profiles list and update the in-memory cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storing the profile list in credentials fails.
+    #[cfg(feature = "profiles")]
+    pub fn add_tracked_profile(&self, profile: &str) -> Result<()> {
+        let mut profiles = self.get_tracked_profiles()?;
+        if profiles.insert(profile.to_string()) {
+            let list: Vec<&String> = profiles.iter().collect();
+            let value_str = serde_json::to_string(&list).map_err(|e| {
+                crate::error::Error::Credential(format!(
+                    "Failed to serialize tracked profiles list: {e}"
+                ))
+            })?;
+            self.store("__rcman_profiles__", &value_str)?;
+
+            let mut cache_guard = self
+                .tracked_profiles_cache
+                .write()
+                .map_err(|_| crate::error::Error::LockPoisoned)?;
+            *cache_guard = Some(profiles);
+        }
         Ok(())
     }
 
@@ -614,17 +724,29 @@ impl CredentialManager {
         Ok(())
     }
 
-    /// Invalidate the tracked secrets cache (clears all profiles)
+    /// Invalidate the tracked secrets cache and profile cache (clears all in-memory caches)
     ///
     /// # Errors
     ///
-    /// Returns an error if the tracked secrets cache lock is poisoned.
+    /// Returns an error if the cache lock is poisoned.
     pub fn invalidate_tracked_secrets_cache(&self) -> Result<()> {
-        let mut cache_guard = self
-            .tracked_secrets_cache
-            .write()
-            .map_err(|_| crate::error::Error::LockPoisoned)?;
-        cache_guard.clear();
+        {
+            let mut cache_guard = self
+                .tracked_secrets_cache
+                .write()
+                .map_err(|_| crate::error::Error::LockPoisoned)?;
+            cache_guard.clear();
+        }
+
+        #[cfg(feature = "profiles")]
+        {
+            let mut profile_cache_guard = self
+                .tracked_profiles_cache
+                .write()
+                .map_err(|_| crate::error::Error::LockPoisoned)?;
+            *profile_cache_guard = None;
+        }
+
         Ok(())
     }
 
@@ -719,6 +841,8 @@ mod tests {
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            #[cfg(feature = "profiles")]
+            tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         };
 
         manager.remove("api_key").unwrap();
@@ -738,6 +862,8 @@ mod tests {
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            #[cfg(feature = "profiles")]
+            tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         };
 
         // Initially not failed
@@ -868,6 +994,8 @@ mod tests {
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            #[cfg(feature = "profiles")]
+            tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         };
 
         // Even though persistent backends fail, store should succeed using volatile memory
@@ -924,6 +1052,8 @@ mod tests {
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            #[cfg(feature = "profiles")]
+            tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         };
 
         // Primary store fails, stored in volatile memory
@@ -969,6 +1099,8 @@ mod tests {
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            #[cfg(feature = "profiles")]
+            tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         };
 
         // Before read, volatile is empty
