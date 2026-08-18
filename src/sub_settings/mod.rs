@@ -42,7 +42,7 @@ pub enum SubSettingsMode {
 }
 
 #[inline]
-fn is_table_mode(mode: &SubSettingsMode) -> bool {
+fn is_table_mode(mode: SubSettingsMode) -> bool {
     #[cfg(feature = "sqlite")]
     {
         matches!(mode, SubSettingsMode::Table)
@@ -340,8 +340,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         #[cfg(feature = "profiles")]
         let root_dir = if config.profiles_enabled {
             config_dir.join(&config.name)
-        } else if matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(&config.mode)
-        {
+        } else if matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(config.mode) {
             config_dir.to_path_buf()
         } else {
             config_dir.join(&config.name)
@@ -349,7 +348,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
         #[cfg(not(feature = "profiles"))]
         let root_dir =
-            if matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(&config.mode) {
+            if matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(config.mode) {
                 config_dir.to_path_buf()
             } else {
                 config_dir.join(&config.name)
@@ -359,7 +358,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         #[cfg(feature = "profiles")]
         let (base_dir, profile_manager) = if config.profiles_enabled {
             let is_single_file =
-                matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(&config.mode);
+                matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(config.mode);
             crate::profiles::migrate(
                 &root_dir,
                 &config.name,
@@ -409,7 +408,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
     /// Check if sub-settings are stored in a SQLite table
     pub fn is_table(&self) -> bool {
-        is_table_mode(&self.config.mode)
+        is_table_mode(self.config.mode)
     }
 
     #[cfg(feature = "profiles")]

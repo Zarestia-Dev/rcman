@@ -176,27 +176,24 @@ impl SubSettingsStore for TableStore {
             })
             .map_err(|e| Error::Config(format!("sqlite query: {e}")))?;
 
-        let content = match row_data {
-            Some(data) => data,
-            None => {
-                if !matches!(self.cache_strategy, CacheStrategy::None) {
-                    let mut state = self.state.write_recovered()?;
-                    if let Some(cache) = &mut state.cache {
-                        match cache {
-                            CacheType::Full(c) => {
-                                c.remove(key);
-                            }
-                            CacheType::Lru(c) => {
-                                c.pop(key);
-                            }
+        let Some(content) = row_data else {
+            if !matches!(self.cache_strategy, CacheStrategy::None) {
+                let mut state = self.state.write_recovered()?;
+                if let Some(cache) = &mut state.cache {
+                    match cache {
+                        CacheType::Full(c) => {
+                            c.remove(key);
+                        }
+                        CacheType::Lru(c) => {
+                            c.pop(key);
                         }
                     }
                 }
-                return Err(Error::SubSettingsEntryNotFound(format!(
-                    "{}/{}",
-                    self.name, key
-                )));
             }
+            return Err(Error::SubSettingsEntryNotFound(format!(
+                "{}/{}",
+                self.name, key
+            )));
         };
 
         let mut value: Value = serde_json::from_str(&content).map_err(Error::from)?;

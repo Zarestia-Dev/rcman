@@ -312,21 +312,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - Validation fails for any setting
-    /// - Storage write fails
-    /// - Keyring storage fails
-    pub fn save_all(&self, schema: &Schema) -> Result<()> {
-        let value = serde_json::to_value(schema).map_err(|e| Error::Parse(e.to_string()))?;
-        self.ensure_cache_populated()?;
-
-        // 1. Validation Pre-Pass: Validate all values before mutating any storage or keychain
+    fn validate_schema_values(&self, value: &Value) -> Result<()> {
         for (full_key, setting_meta) in self.schema_metadata.iter() {
-            let new_val = if let Some((category, setting_name)) = Self::parse_setting_key(full_key)
-            {
-                value.get(category).and_then(|c| c.get(setting_name))
+            let (category, setting_name) = match Self::parse_setting_key(full_key) {
+                Some((cat, name)) => (cat, name),
+                None => ("", full_key.as_str()),
+            };
+
+            let new_val = if category.is_empty() {
+                value.get(setting_name)
             } else {
-                value.get(full_key)
+                value.get(category).and_then(|c| c.get(setting_name))
             }
             .unwrap_or(&setting_meta.default);
 
@@ -343,6 +339,24 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Save all settings from a strongly-typed schema model instance atomically.
+    ///
+    /// Performs pre-validation, updates stored settings, routes secret settings to keychain,
+    /// removes default values to keep storage minimal, and dispatches change events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Validation fails for any setting
+    /// - Storage write fails
+    /// - Keyring storage fails
+    pub fn save_all(&self, schema: &Schema) -> Result<()> {
+        let value = serde_json::to_value(schema).map_err(|e| Error::Parse(e.to_string()))?;
+        self.ensure_cache_populated()?;
+        self.validate_schema_values(&value)?;
 
         let _write_guard = self
             .settings_write_lock
@@ -358,22 +372,25 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let mut stored_modified = false;
 
         for (full_key, setting_meta) in self.schema_metadata.iter() {
-            let new_val = if let Some((category, setting_name)) = Self::parse_setting_key(full_key)
-            {
-                value.get(category).and_then(|c| c.get(setting_name))
+            let default_value = &setting_meta.default;
+            let (category, setting_name) = match Self::parse_setting_key(full_key) {
+                Some((cat, name)) => (cat, name),
+                None => ("", full_key.as_str()),
+            };
+
+            let new_val = if category.is_empty() {
+                value.get(setting_name)
             } else {
-                value.get(full_key)
+                value.get(category).and_then(|c| c.get(setting_name))
             }
-            .unwrap_or(&setting_meta.default);
+            .unwrap_or(default_value);
 
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             if setting_meta.is_secret() {
-                let default_value = &setting_meta.default;
                 let old_value = if self.credentials.is_some() {
                     match self.get_credential_with_profile(full_key) {
                         Ok(Some(secret_value)) => Value::String(secret_value),
-                        Ok(None) => default_value.clone(),
-                        Err(_) => default_value.clone(),
+                        Ok(None) | Err(_) => default_value.clone(),
                     }
                 } else {
                     default_value.clone()
@@ -385,12 +402,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 }
                 continue;
             }
-
-            let default_value = &setting_meta.default;
-            let (category, setting_name) = match Self::parse_setting_key(full_key) {
-                Some((cat, name)) => (cat, name),
-                None => ("", full_key.as_str()),
-            };
 
             let old_value = if category.is_empty() {
                 stored
@@ -447,18 +458,21 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             self.settings_cache.update_stored(stored)?;
         }
 
-        for (key, old_v, new_v) in notifications {
-            self.events.notify(&key, &old_v, &new_v);
+        for (key, old, new) in notifications {
+            self.events.notify(&key, &old, &new);
         }
 
-        debug!("Settings model saved successfully");
         Ok(())
     }
 
-    /// Update settings in-place using a closure and atomically persist all changes.
+    /// Mutate settings using a closure with full compile-time struct field type-safety.
     ///
-    /// Fetches the current settings snapshot, yields a mutable reference to the closure,
-    /// validates the modified struct, and persists all changes (including secrets) to disk and keychain.
+    /// Loads current settings, applies the closure, validates, saves, routes secrets to keychain,
+    /// and dispatches change events for modified fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if loading current settings fails, validation fails, or saving fails.
     ///
     /// # Example
     ///

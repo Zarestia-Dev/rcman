@@ -1,10 +1,10 @@
 //! OS Keychain backend using `keyring` (v4+)
 //!
 //! Supports native secure credential storage across desktop and mobile platforms:
-//! - **Linux**: Secret Service (D-Bus / Seahorse / KWallet)
+//! - **Linux**: Secret Service (D-Bus / Seahorse / `KWallet`)
 //! - **macOS / iOS**: Native Apple Keychain & Protected Data store
 //! - **Windows**: Windows Credential Manager
-//! - **Android**: Android KeyStore & SharedPreferences (requires `ndk_context` initialization)
+//! - **Android**: Android `KeyStore` & `SharedPreferences` (requires `ndk_context` initialization)
 
 use super::CredentialBackend;
 use crate::error::{Error, Result};

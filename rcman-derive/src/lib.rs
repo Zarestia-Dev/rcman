@@ -8,7 +8,7 @@
 //! # Features
 //!
 //! - **Native Type Binding**: Automatically translates `String`, `PathBuf`, integers, floats, `bool`, and `Vec<T>` into their corresponding `rcman::SettingType`.
-//! - **Rich IDE IntelliSense Cards**: Generates clean Markdown documentation cards for `rust-analyzer` showing type, range, constraints, security, and custom metadata.
+//! - **Rich IDE `IntelliSense` Cards**: Generates clean Markdown documentation cards for `rust-analyzer` showing type, range, constraints, security, and custom metadata.
 //! - **Compile-Time `const` Keys**: Generates uppercase `pub const` key constants directly on derived types (e.g. `ServerSettings::PORT = "network.port"`).
 //! - **Tagged-Union `enum` Support**: Merges variant sub-schemas and generates discriminant selector metadata on enums annotated with `#[serde(tag = "...")]`.
 //! - **Strict Verification**: Prevents contradictory constraints at compile time (e.g. `min > max` or `options` on `bool`).
@@ -145,7 +145,7 @@ fn derive_settings_schema_impl(
             )),
         },
         Data::Enum(data_enum) => derive_enum_settings_schema(name, data_enum, &container_attrs),
-        _ => Err(syn::Error::new_spanned(
+        Data::Union(_) => Err(syn::Error::new_spanned(
             input,
             "SettingsSchema can only be derived for structs or tagged enums, not unions",
         )),
@@ -202,6 +202,71 @@ fn derive_struct_settings_schema(
     })
 }
 
+struct EnumVariantInfo {
+    extend: proc_macro2::TokenStream,
+    const_def: proc_macro2::TokenStream,
+    const_ref: (Vec<Attribute>, syn::Ident),
+}
+
+fn process_enum_variant(v: &syn::Variant) -> Result<EnumVariantInfo, syn::Error> {
+    let variant_ident = &v.ident;
+    let v_attrs = parse_variant_attrs(&v.attrs);
+    let cfg_attrs: Vec<_> = v
+        .attrs
+        .iter()
+        .filter(|a| a.path().is_ident("cfg"))
+        .cloned()
+        .collect();
+
+    let syn::Fields::Unnamed(fields_unnamed) = &v.fields else {
+        return Err(syn::Error::new_spanned(
+            v,
+            "SettingsSchema enum derive requires single-element tuple variants like `Variant(VariantType)`",
+        ));
+    };
+
+    if fields_unnamed.unnamed.len() != 1 {
+        return Err(syn::Error::new_spanned(
+            v,
+            "SettingsSchema enum derive requires exactly one inner type per variant",
+        ));
+    }
+
+    let inner_type = &fields_unnamed.unnamed.first().unwrap().ty;
+    let tag_value = v_attrs
+        .rename
+        .unwrap_or_else(|| to_snake_case(&variant_ident.to_string()));
+    let label_value = v_attrs
+        .label
+        .unwrap_or_else(|| to_title_case(&variant_ident.to_string()));
+    let const_name = format_ident!("{}", variant_ident.to_string().to_ascii_uppercase());
+
+    let variant_doc = format!(
+        "**Variant Discriminant**: `{tag_value}`\n\n- **Label**: {label_value}\n- **Inner Schema**: [`{}`]",
+        quote!(#inner_type)
+    );
+
+    let extend = quote! {
+        #(#cfg_attrs)*
+        {
+            map.extend(<#inner_type as rcman::SettingsSchema>::get_metadata());
+            options.push(rcman::opt(#tag_value, #label_value));
+        }
+    };
+
+    let const_def = quote! {
+        #(#cfg_attrs)*
+        #[doc = #variant_doc]
+        pub const #const_name: &'static str = #tag_value;
+    };
+
+    Ok(EnumVariantInfo {
+        extend,
+        const_def,
+        const_ref: (cfg_attrs, const_name),
+    })
+}
+
 fn derive_enum_settings_schema(
     name: &syn::Ident,
     data_enum: &syn::DataEnum,
@@ -217,59 +282,10 @@ fn derive_enum_settings_schema(
     let mut variant_const_refs = Vec::new();
 
     for v in &data_enum.variants {
-        let variant_ident = &v.ident;
-        let v_attrs = parse_variant_attrs(&v.attrs)?;
-
-        let cfg_attrs: Vec<_> = v
-            .attrs
-            .iter()
-            .filter(|a| a.path().is_ident("cfg"))
-            .cloned()
-            .collect();
-
-        let syn::Fields::Unnamed(fields_unnamed) = &v.fields else {
-            return Err(syn::Error::new_spanned(
-                v,
-                "SettingsSchema enum derive requires single-element tuple variants like `Variant(VariantType)`",
-            ));
-        };
-
-        if fields_unnamed.unnamed.len() != 1 {
-            return Err(syn::Error::new_spanned(
-                v,
-                "SettingsSchema enum derive requires exactly one inner type per variant",
-            ));
-        }
-
-        let inner_type = &fields_unnamed.unnamed.first().unwrap().ty;
-
-        let tag_value = v_attrs
-            .rename
-            .unwrap_or_else(|| to_snake_case(&variant_ident.to_string()));
-        let label_value = v_attrs
-            .label
-            .unwrap_or_else(|| to_title_case(&variant_ident.to_string()));
-
-        let const_name = format_ident!("{}", variant_ident.to_string().to_ascii_uppercase());
-        variant_const_refs.push((cfg_attrs.clone(), const_name.clone()));
-        let variant_doc = format!(
-            "**Variant Discriminant**: `{tag_value}`\n\n- **Label**: {label_value}\n- **Inner Schema**: [`{}`]",
-            quote!(#inner_type)
-        );
-
-        variant_extends.push(quote! {
-            #(#cfg_attrs)*
-            {
-                map.extend(<#inner_type as rcman::SettingsSchema>::get_metadata());
-                options.push(rcman::opt(#tag_value, #label_value));
-            }
-        });
-
-        const_variants.push(quote! {
-            #(#cfg_attrs)*
-            #[doc = #variant_doc]
-            pub const #const_name: &'static str = #tag_value;
-        });
+        let info = process_enum_variant(v)?;
+        variant_extends.push(info.extend);
+        const_variants.push(info.const_def);
+        variant_const_refs.push(info.const_ref);
     }
 
     let all_variants_elements: Vec<_> = variant_const_refs
@@ -444,6 +460,106 @@ fn generate_setting_doc_comment(
     lines.join("\n")
 }
 
+fn generate_field_const_key(
+    field: &Field,
+    attrs: &FieldAttrs,
+    container_attrs: &ContainerAttrs,
+    cfg_attrs: &[Attribute],
+) -> Option<(proc_macro2::TokenStream, (Vec<Attribute>, syn::Ident))> {
+    let field_name = field.ident.as_ref()?;
+    let const_ident = format_ident!("{}", field_name.to_string().to_ascii_uppercase());
+    let const_target = (cfg_attrs.to_vec(), const_ident.clone());
+    let category = resolve_field_category(attrs, container_attrs);
+    let key_name = attrs
+        .rename
+        .clone()
+        .unwrap_or_else(|| field_name.to_string());
+    let full_key = if category.is_empty() {
+        key_name
+    } else {
+        format!("{category}.{key_name}")
+    };
+
+    let user_docs = extract_field_docs(&field.attrs);
+    let doc_str = generate_setting_doc_comment(&full_key, field, attrs, &user_docs);
+
+    let const_decl = quote! {
+        #(#cfg_attrs)*
+        #[doc = #doc_str]
+        pub const #const_ident: &'static str = #full_key;
+    };
+
+    Some((const_decl, const_target))
+}
+
+struct SingleFieldComponents {
+    const_decl: Option<proc_macro2::TokenStream>,
+    const_target: Option<(Vec<Attribute>, syn::Ident)>,
+    metadata_entry: proc_macro2::TokenStream,
+    accessor_methods: Option<(
+        proc_macro2::TokenStream,
+        proc_macro2::TokenStream,
+        proc_macro2::TokenStream,
+    )>,
+    validation_stmt: Option<proc_macro2::TokenStream>,
+}
+
+fn process_single_struct_field(
+    field: &Field,
+    container_attrs: &ContainerAttrs,
+    used_method_names: &mut std::collections::HashMap<String, proc_macro2::Span>,
+) -> Result<Option<SingleFieldComponents>, syn::Error> {
+    let attrs = parse_field_attrs(&field.attrs)?;
+    if attrs.skip {
+        return Ok(None);
+    }
+
+    let cfg_attrs: Vec<_> = field
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .cloned()
+        .collect();
+
+    let (const_decl, const_target) = if let Some((decl, target)) =
+        generate_field_const_key(field, &attrs, container_attrs, &cfg_attrs)
+    {
+        (Some(decl), Some(target))
+    } else {
+        (None, None)
+    };
+
+    let raw_entry = process_field(field, &attrs, container_attrs, &cfg_attrs)?;
+    let metadata_entry = if cfg_attrs.is_empty() {
+        raw_entry
+    } else {
+        quote! {
+            #(#cfg_attrs)*
+            {
+                #raw_entry
+            }
+        }
+    };
+
+    let accessor_methods = generate_accessor_methods(
+        field,
+        &attrs,
+        container_attrs,
+        &cfg_attrs,
+        used_method_names,
+    )?;
+
+    let validation_stmt = generate_field_validation(field, &attrs, &cfg_attrs);
+
+    Ok(Some(SingleFieldComponents {
+        const_decl,
+        const_target,
+        metadata_entry,
+        accessor_methods,
+        validation_stmt,
+    }))
+}
+
 fn build_metadata_and_accessors(
     fields: &syn::punctuated::Punctuated<Field, syn::token::Comma>,
     container_attrs: &ContainerAttrs,
@@ -459,87 +575,21 @@ fn build_metadata_and_accessors(
     let mut errors = None::<syn::Error>;
 
     for field in fields {
-        let attrs = match parse_field_attrs(&field.attrs) {
-            Ok(attrs) => attrs,
-            Err(e) => {
-                if let Some(ref mut combined) = errors {
-                    combined.combine(e);
-                } else {
-                    errors = Some(e);
+        match process_single_struct_field(field, container_attrs, &mut used_method_names) {
+            Ok(Some(comp)) => {
+                if let (Some(decl), Some(target)) = (comp.const_decl, comp.const_target) {
+                    const_keys.push(decl);
+                    const_key_refs.push(target);
                 }
-                continue;
-            }
-        };
-
-        if attrs.skip {
-            continue;
-        }
-
-        let cfg_attrs: Vec<_> = field
-            .attrs
-            .iter()
-            .filter(|attr| attr.path().is_ident("cfg"))
-            .cloned()
-            .collect();
-
-        if let Some(field_name) = &field.ident {
-            let const_ident = format_ident!("{}", field_name.to_string().to_ascii_uppercase());
-            const_key_refs.push((cfg_attrs.clone(), const_ident.clone()));
-            let category = resolve_field_category(&attrs, container_attrs);
-            let key_name = attrs
-                .rename
-                .clone()
-                .unwrap_or_else(|| field_name.to_string());
-            let full_key = if category.is_empty() {
-                key_name
-            } else {
-                format!("{category}.{key_name}")
-            };
-
-            let user_docs = extract_field_docs(&field.attrs);
-            let doc_str = generate_setting_doc_comment(&full_key, field, &attrs, &user_docs);
-
-            const_keys.push(quote! {
-                #(#cfg_attrs)*
-                #[doc = #doc_str]
-                pub const #const_ident: &'static str = #full_key;
-            });
-        }
-
-        match process_field(field, &attrs, container_attrs, &cfg_attrs) {
-            Ok(entry) => {
-                if cfg_attrs.is_empty() {
-                    metadata_entries.push(entry);
-                } else {
-                    metadata_entries.push(quote! {
-                        #(#cfg_attrs)*
-                        {
-                            #entry
-                        }
-                    });
+                metadata_entries.push(comp.metadata_entry);
+                if let Some((snap, mgr_trait, mgr_impl)) = comp.accessor_methods {
+                    snapshot_methods.push(snap);
+                    manager_trait_methods.push(mgr_trait);
+                    manager_impl_methods.push(mgr_impl);
                 }
-            }
-            Err(e) => {
-                if let Some(ref mut combined) = errors {
-                    combined.combine(e);
-                } else {
-                    errors = Some(e);
+                if let Some(stmt) = comp.validation_stmt {
+                    validation_stmts.push(stmt);
                 }
-                continue;
-            }
-        }
-
-        match generate_accessor_methods(
-            field,
-            &attrs,
-            container_attrs,
-            &cfg_attrs,
-            &mut used_method_names,
-        ) {
-            Ok(Some((snapshot_method, manager_trait_method, manager_impl_method))) => {
-                snapshot_methods.push(snapshot_method);
-                manager_trait_methods.push(manager_trait_method);
-                manager_impl_methods.push(manager_impl_method);
             }
             Ok(None) => {}
             Err(e) => {
@@ -549,10 +599,6 @@ fn build_metadata_and_accessors(
                     errors = Some(e);
                 }
             }
-        }
-
-        if let Some(stmt) = generate_field_validation(field, &attrs, &cfg_attrs) {
-            validation_stmts.push(stmt);
         }
     }
 
@@ -587,13 +633,75 @@ fn build_metadata_and_accessors(
     })
 }
 
+fn generate_number_checks(
+    attrs: &FieldAttrs,
+    const_ident: &syn::Ident,
+    inner_ty: &syn::Type,
+) -> Vec<proc_macro2::TokenStream> {
+    let mut checks = Vec::new();
+    if let Some(min) = attrs.min {
+        let min_lit = proc_macro2::Literal::f64_unsuffixed(min);
+        checks.push(quote! {
+            if val < (#min_lit as #inner_ty) {
+                return Err(rcman::Error::InvalidSettingValue {
+                    key: Self::#const_ident.to_string(),
+                    reason: format!("Value ({}) must be at least {}", val, #min_lit),
+                });
+            }
+        });
+    }
+    if let Some(max) = attrs.max {
+        let max_lit = proc_macro2::Literal::f64_unsuffixed(max);
+        checks.push(quote! {
+            if val > (#max_lit as #inner_ty) {
+                return Err(rcman::Error::InvalidSettingValue {
+                    key: Self::#const_ident.to_string(),
+                    reason: format!("Value ({}) must be at most {}", val, #max_lit),
+                });
+            }
+        });
+    }
+    checks
+}
+
+fn generate_text_checks(
+    attrs: &FieldAttrs,
+    const_ident: &syn::Ident,
+) -> Vec<proc_macro2::TokenStream> {
+    let mut checks = Vec::new();
+    if let Some(pattern) = &attrs.pattern {
+        checks.push(quote! {
+            let re = rcman::regex::Regex::new(#pattern)
+                .map_err(|e| rcman::Error::Config(format!("Invalid regex pattern: {e}")))?;
+            if !re.is_match(text.as_str()) {
+                return Err(rcman::Error::InvalidSettingValue {
+                    key: Self::#const_ident.to_string(),
+                    reason: format!("Value does not match pattern: {}", #pattern),
+                });
+            }
+        });
+    }
+    if !attrs.options.is_empty() {
+        let allowed_values: Vec<&str> = attrs.options.iter().map(|(v, _)| v.as_str()).collect();
+        checks.push(quote! {
+            const ALLOWED_OPTIONS: &[&str] = &[#(#allowed_values),*];
+            if !ALLOWED_OPTIONS.contains(&text.as_str()) {
+                return Err(rcman::Error::InvalidSettingValue {
+                    key: Self::#const_ident.to_string(),
+                    reason: "Value must be one of the available options".to_string(),
+                });
+            }
+        });
+    }
+    checks
+}
+
 fn generate_field_validation(
     field: &Field,
     attrs: &FieldAttrs,
     cfg_attrs: &[Attribute],
 ) -> Option<proc_macro2::TokenStream> {
     let field_name = field.ident.as_ref()?;
-
     let const_ident = format_ident!("{}", field_name.to_string().to_ascii_uppercase());
     let field_type = &field.ty;
 
@@ -630,64 +738,11 @@ fn generate_field_validation(
     let inner_ty = extract_inner_type_from_option(field_type).unwrap_or(field_type);
     let type_info = classify_type(inner_ty);
 
-    let mut checks = Vec::new();
-
-    match type_info {
-        TypeInfo::Number => {
-            if let Some(min) = attrs.min {
-                let min_lit = proc_macro2::Literal::f64_unsuffixed(min);
-                checks.push(quote! {
-                    #[allow(clippy::unnecessary_cast)]
-                    if (val as f64) < #min_lit {
-                        return Err(rcman::Error::InvalidSettingValue {
-                            key: Self::#const_ident.to_string(),
-                            reason: format!("Value ({}) must be at least {}", val, #min_lit),
-                        });
-                    }
-                });
-            }
-            if let Some(max) = attrs.max {
-                let max_lit = proc_macro2::Literal::f64_unsuffixed(max);
-                checks.push(quote! {
-                    #[allow(clippy::unnecessary_cast)]
-                    if (val as f64) > #max_lit {
-                        return Err(rcman::Error::InvalidSettingValue {
-                            key: Self::#const_ident.to_string(),
-                            reason: format!("Value ({}) must be at most {}", val, #max_lit),
-                        });
-                    }
-                });
-            }
-        }
-        TypeInfo::Text => {
-            if let Some(pattern) = &attrs.pattern {
-                checks.push(quote! {
-                    let re = rcman::regex::Regex::new(#pattern)
-                        .map_err(|e| rcman::Error::Config(format!("Invalid regex pattern: {e}")))?;
-                    if !re.is_match(text.as_str()) {
-                        return Err(rcman::Error::InvalidSettingValue {
-                            key: Self::#const_ident.to_string(),
-                            reason: format!("Value does not match pattern: {}", #pattern),
-                        });
-                    }
-                });
-            }
-            if !attrs.options.is_empty() {
-                let allowed_values: Vec<&str> =
-                    attrs.options.iter().map(|(v, _)| v.as_str()).collect();
-                checks.push(quote! {
-                    const ALLOWED_OPTIONS: &[&str] = &[#(#allowed_values),*];
-                    if !ALLOWED_OPTIONS.contains(&text.as_str()) {
-                        return Err(rcman::Error::InvalidSettingValue {
-                            key: Self::#const_ident.to_string(),
-                            reason: "Value must be one of the available options".to_string(),
-                        });
-                    }
-                });
-            }
-        }
-        _ => {}
-    }
+    let checks = match type_info {
+        TypeInfo::Number => generate_number_checks(attrs, &const_ident, inner_ty),
+        TypeInfo::Text => generate_text_checks(attrs, &const_ident),
+        _ => Vec::new(),
+    };
 
     if checks.is_empty() {
         return None;
@@ -796,19 +851,19 @@ fn generate_accessor_methods(
 
     let user_docs = extract_field_docs(&field.attrs);
     let doc_str = generate_setting_doc_comment(&full_key, field, attrs, &user_docs);
-    let snapshot_getter_doc = format!("Get the in-memory value of `{full_key}`.\n\n{doc_str}");
-    let snapshot_setter_doc =
+    let snap_read_doc = format!("Get the in-memory value of `{full_key}`.\n\n{doc_str}");
+    let snap_write_doc =
         format!("Set the in-memory value of `{full_key}` (does not persist to disk).\n\n{doc_str}");
 
     let snapshot_method = quote! {
         #(#cfg_attrs)*
-        #[doc = #snapshot_getter_doc]
+        #[doc = #snap_read_doc]
         pub fn #getter_name(&self) -> &#field_type {
             &self.#field_name
         }
 
         #(#cfg_attrs)*
-        #[doc = #snapshot_setter_doc]
+        #[doc = #snap_write_doc]
         pub fn #setter_name(&mut self, value: #field_type) {
             self.#field_name = value;
         }
@@ -821,17 +876,17 @@ fn generate_accessor_methods(
         return Ok(Some((snapshot_method, quote! {}, quote! {})));
     }
 
-    let mgr_getter_doc =
+    let mgr_read_doc =
         format!("Read setting `{full_key}` directly from the settings manager.\n\n{doc_str}");
-    let mgr_setter_doc =
+    let mgr_write_doc =
         format!("Persist setting `{full_key}` directly to storage / keychain.\n\n{doc_str}");
 
     let manager_trait_method = quote! {
         #(#cfg_attrs)*
-        #[doc = #mgr_getter_doc]
+        #[doc = #mgr_read_doc]
         fn #getter_name(&self) -> rcman::Result<#field_type>;
         #(#cfg_attrs)*
-        #[doc = #mgr_setter_doc]
+        #[doc = #mgr_write_doc]
         fn #setter_name(&self, value: #field_type) -> rcman::Result<()>;
     };
 
@@ -1319,7 +1374,7 @@ struct VariantAttrs {
     label: Option<String>,
 }
 
-fn parse_variant_attrs(attrs: &[Attribute]) -> Result<VariantAttrs, syn::Error> {
+fn parse_variant_attrs(attrs: &[Attribute]) -> VariantAttrs {
     let mut result = VariantAttrs {
         rename: None,
         label: None,
@@ -1363,7 +1418,7 @@ fn parse_variant_attrs(attrs: &[Attribute]) -> Result<VariantAttrs, syn::Error> 
         }
     }
 
-    Ok(result)
+    result
 }
 
 fn to_snake_case(s: &str) -> String {
