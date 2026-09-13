@@ -184,6 +184,29 @@ pub enum Error {
 
     #[error("Lock error: {0}")]
     LockError(String),
+
+    // -------------------------------------------------------------------------
+    // Vault Errors (vault feature)
+    // -------------------------------------------------------------------------
+    #[cfg(feature = "vault")]
+    #[error("Configuration is locked. Key or password required to unlock")]
+    ConfigLocked,
+
+    #[cfg(feature = "vault")]
+    #[error("Configuration vault is already unlocked")]
+    VaultAlreadyUnlocked,
+
+    #[cfg(feature = "vault")]
+    #[error("Configuration vault is not enabled")]
+    VaultNotEnabled,
+
+    #[cfg(feature = "vault")]
+    #[error("Invalid vault envelope: {0}")]
+    InvalidVaultEnvelope(String),
+
+    #[cfg(feature = "vault")]
+    #[error("Vault error: {0}")]
+    Vault(String),
 }
 
 impl Error {
@@ -197,6 +220,7 @@ impl Error {
     }
 
     /// Check if this is a backup-related error
+    #[cfg(feature = "backup")]
     #[must_use]
     pub fn is_backup_error(&self) -> bool {
         matches!(
@@ -207,7 +231,30 @@ impl Error {
                 | Error::PasswordRequired
                 | Error::InvalidPassword
                 | Error::VersionMismatch { .. }
+                | Error::Archive(_)
+                | Error::Zip(_)
         )
+    }
+
+    /// Check if this is a vault-related error
+    #[cfg(feature = "vault")]
+    #[must_use]
+    pub fn is_vault_error(&self) -> bool {
+        matches!(
+            self,
+            Error::ConfigLocked
+                | Error::VaultAlreadyUnlocked
+                | Error::VaultNotEnabled
+                | Error::InvalidVaultEnvelope(_)
+                | Error::Vault(_)
+        )
+    }
+
+    /// Check if this error indicates that the configuration is locked
+    #[cfg(feature = "vault")]
+    #[must_use]
+    pub fn is_locked(&self) -> bool {
+        matches!(self, Error::ConfigLocked)
     }
 }
 

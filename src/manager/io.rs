@@ -210,6 +210,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// - Keyring storage or file writing fails
     /// - Serialization or parsing fails
     pub fn save_setting(&self, category: &str, key: &str, value: &Value) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let path = self.settings_path()?;
         let full_key = format!("{category}.{key}");
 
@@ -295,7 +300,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             stored_obj.remove(category);
         }
 
-        self.storage.write(&path, &stored)?;
+        self.write_settings_to_disk(&path, &stored)?;
         self.settings_cache.update_stored(stored)?;
 
         debug!("Setting {full_key} saved");
@@ -454,7 +459,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         if stored_modified {
             let path = self.settings_path()?;
-            self.storage.write(&path, &stored)?;
+            self.write_settings_to_disk(&path, &stored)?;
             self.settings_cache.update_stored(stored)?;
         }
 
@@ -524,6 +529,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if writing to storage fails or credential clearing fails.
     pub fn reset_all(&self) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let path = self.settings_path()?;
 
         self.ensure_cache_populated()?;
@@ -578,7 +588,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         }
 
         // Write empty object
-        self.storage.write(&path, &json!({}))?;
+        self.write_settings_to_disk(&path, &json!({}))?;
 
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         if let Some(ref creds) = self.credentials {
@@ -599,11 +609,59 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(())
     }
 
+    /// Read settings from disk, automatically decrypting if the file is an rcman vault.
+    pub(crate) fn read_settings_from_disk(&self, path: &std::path::Path) -> Result<Value> {
+        let value: Value = self.storage.read(path)?;
+
+        #[cfg(feature = "vault")]
+        if crate::vault::is_vault_value(&value) {
+            let envelope: crate::vault::VaultEnvelope = serde_json::from_value(value)
+                .map_err(|e| Error::InvalidVaultEnvelope(format!("Invalid vault envelope: {e}")))?;
+            let guard = self.vault.read().map_err(|_| Error::LockPoisoned)?;
+            let Some(ref vault) = *guard else {
+                return Err(Error::ConfigLocked);
+            };
+            if vault.is_locked() {
+                return Err(Error::ConfigLocked);
+            }
+            let decrypted_bytes = vault.decrypt_envelope(&envelope)?;
+            let decrypted_str = String::from_utf8(decrypted_bytes)
+                .map_err(|e| Error::Vault(format!("Decrypted settings is not UTF-8: {e}")))?;
+            return self.storage.deserialize(&decrypted_str);
+        }
+
+        Ok(value)
+    }
+
+    /// Write settings value to disk, automatically encrypting if vault is enabled.
+    pub(crate) fn write_settings_to_disk(
+        &self,
+        path: &std::path::Path,
+        value: &Value,
+    ) -> Result<()> {
+        #[cfg(feature = "vault")]
+        {
+            let guard = self.vault.read().map_err(|_| Error::LockPoisoned)?;
+            if let Some(ref vault) = *guard {
+                if vault.is_locked() {
+                    return Err(Error::ConfigLocked);
+                }
+                let serialized = self.storage.serialize(value)?;
+                let envelope = vault.encrypt_payload(serialized.as_bytes())?;
+                return self.storage.write(path, &envelope);
+            }
+        }
+
+        self.storage.write(path, value)
+    }
+
     /// Load settings from disk, applying migrations if needed.
     pub(crate) fn load_from_disk(&self) -> Result<CachedSettings> {
         let settings_path = self.settings_path()?;
-        let mut value: Value = match self.storage.read(&settings_path) {
+        let mut value: Value = match self.read_settings_from_disk(&settings_path) {
             Ok(v) => v,
+            #[cfg(feature = "vault")]
+            Err(Error::ConfigLocked) => return Err(Error::ConfigLocked),
             Err(Error::FileRead { .. } | Error::PathNotFound(_) | Error::Parse(_)) => {
                 // Start empty if not found or corrupted/invalid JSON
                 json!({})
@@ -617,7 +675,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             value = migrator(value);
             if value != original {
                 debug!("Migrated settings file");
-                self.storage.write(&settings_path, &value)?;
+                self.write_settings_to_disk(&settings_path, &value)?;
             }
         }
 
@@ -645,6 +703,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if loading from disk or parsing fails.
     pub fn ensure_cache_populated(&self) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         self.settings_cache.populate(|| self.load_from_disk())
     }
 
@@ -661,7 +724,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .map_err(|_| Error::Config("Settings write lock poisoned".into()))?;
 
         let path = self.settings_path()?;
-        let mut stored: Value = match self.storage.read(&path) {
+        let mut stored: Value = match self.read_settings_from_disk(&path) {
             Ok(v) => v,
             Err(_) => json!({}),
         };
@@ -696,7 +759,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             if let Some(obj) = stored.as_object_mut() {
                 obj.retain(|_, v| !v.as_object().is_some_and(serde_json::Map::is_empty));
             }
-            self.storage.write(&path, &stored)?;
+            self.write_settings_to_disk(&path, &stored)?;
             self.settings_cache.update_stored(stored)?;
         }
 

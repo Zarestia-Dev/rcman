@@ -54,6 +54,8 @@ fn test_hot_reload_applies_external_file_change() {
                 HotReloadEvent::ReloadFailed { reason, .. } => {
                     panic!("reload failed unexpectedly: {reason}");
                 }
+                #[cfg(feature = "vault")]
+                HotReloadEvent::SkippedLocked { .. } => {}
             }
         }
     }
@@ -136,6 +138,8 @@ fn test_hot_reload_rapid_consecutive_changes_apply_latest_value() {
                 HotReloadEvent::ReloadFailed { reason, .. } => {
                     panic!("reload failed unexpectedly: {reason}");
                 }
+                #[cfg(feature = "vault")]
+                HotReloadEvent::SkippedLocked { .. } => {}
             }
         }
     }

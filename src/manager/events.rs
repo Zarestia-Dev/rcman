@@ -24,6 +24,10 @@ pub struct EventManager {
 
     /// Validators per key
     validators: RwLock<HashMap<String, Vec<Validator>>>,
+
+    /// Vault lifecycle listeners
+    #[cfg(feature = "vault")]
+    vault_listeners: RwLock<Vec<crate::vault::VaultEventCallback>>,
 }
 
 impl EventManager {
@@ -34,6 +38,8 @@ impl EventManager {
             global_listeners: RwLock::new(Vec::new()),
             key_listeners: RwLock::new(HashMap::new()),
             validators: RwLock::new(HashMap::new()),
+            #[cfg(feature = "vault")]
+            vault_listeners: RwLock::new(Vec::new()),
         }
     }
 
@@ -165,6 +171,70 @@ impl EventManager {
             guard.clear();
         } else {
             log::warn!("Failed to clear key-specific listeners due to lock recovery error");
+        }
+        #[cfg(feature = "vault")]
+        if let Ok(mut guard) = self.vault_listeners.write_recovered() {
+            guard.clear();
+        } else {
+            log::warn!("Failed to clear vault listeners due to lock recovery error");
+        }
+    }
+
+    /// Register a listener for vault lifecycle events (unlock, lock, auto-lock, password change, etc.)
+    #[cfg(feature = "vault")]
+    pub fn on_vault_event<F>(&self, callback: F)
+    where
+        F: Fn(crate::vault::VaultEvent) + Send + Sync + 'static,
+    {
+        if let Ok(mut guard) = self.vault_listeners.write_recovered() {
+            guard.push(std::sync::Arc::new(callback));
+        } else {
+            log::warn!("Failed to register vault event listener due to lock recovery error");
+        }
+    }
+
+    /// Register a convenience callback invoked whenever the vault is locked (explicitly or via auto-lock)
+    #[cfg(feature = "vault")]
+    pub fn on_vault_lock<F>(&self, callback: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.on_vault_event(move |event| {
+            if matches!(
+                event,
+                crate::vault::VaultEvent::Locked | crate::vault::VaultEvent::AutoLocked
+            ) {
+                callback();
+            }
+        });
+    }
+
+    /// Register a convenience callback invoked whenever the vault is unlocked
+    #[cfg(feature = "vault")]
+    pub fn on_vault_unlock<F>(&self, callback: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.on_vault_event(move |event| {
+            if event == crate::vault::VaultEvent::Unlocked {
+                callback();
+            }
+        });
+    }
+
+    /// Dispatch a vault lifecycle event to all registered vault listeners
+    #[cfg(feature = "vault")]
+    pub fn notify_vault(&self, event: crate::vault::VaultEvent) {
+        let listeners: Vec<crate::vault::VaultEventCallback> =
+            if let Ok(guard) = self.vault_listeners.read_recovered() {
+                guard.clone()
+            } else {
+                log::warn!("Failed to read vault listeners due to lock recovery error");
+                return;
+            };
+
+        for callback in listeners {
+            callback(event);
         }
     }
 }

@@ -275,6 +275,9 @@ pub mod backup;
 #[cfg(feature = "profiles")]
 mod profiles;
 
+#[cfg(feature = "vault")]
+pub mod vault;
+
 mod credentials;
 
 // =============================================================================
@@ -395,6 +398,17 @@ pub use credentials::EncryptedFileBackend;
 /// Requires `keychain` or `encrypted-file` feature.
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 pub use credentials::CredentialManager;
+
+// -----------------------------------------------------------------------------
+// Vault (requires vault feature)
+// -----------------------------------------------------------------------------
+
+/// Vault module for encrypted configuration and locking.
+#[cfg(feature = "vault")]
+pub use vault::{
+    Argon2Params, Argon2Preset, VaultEnvelope, VaultEvent, VaultEventCallback, VaultInfo,
+    VaultState,
+};
 
 // -----------------------------------------------------------------------------
 // Derive Macro (requires derive feature)

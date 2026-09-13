@@ -41,16 +41,15 @@ pub enum SubSettingsMode {
     Table,
 }
 
-#[inline]
-fn is_table_mode(mode: SubSettingsMode) -> bool {
-    #[cfg(feature = "sqlite")]
-    {
-        matches!(mode, SubSettingsMode::Table)
-    }
-    #[cfg(not(feature = "sqlite"))]
-    {
-        let _ = mode;
-        false
+impl SubSettingsMode {
+    #[inline]
+    pub(crate) fn is_file_or_table(&self) -> bool {
+        match self {
+            Self::SingleFile => true,
+            #[cfg(feature = "sqlite")]
+            Self::Table => true,
+            Self::MultiFile => false,
+        }
     }
 }
 
@@ -244,6 +243,9 @@ pub struct SubSettings<S: StorageBackend = crate::storage::JsonStorage> {
 
     #[cfg(feature = "profiles")]
     root_dir: PathBuf,
+
+    #[cfg(feature = "vault")]
+    pub(crate) vault: crate::vault::SharedVault,
 }
 
 /// Action type for change callbacks
@@ -259,17 +261,17 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         config: &SubSettingsConfig,
         base_dir: PathBuf,
         storage: S,
+        #[cfg(feature = "vault")] vault: crate::vault::SharedVault,
     ) -> Box<dyn SubSettingsStore> {
         let extension = config.extension.as_deref().unwrap_or("json").to_string();
 
         match config.mode {
             SubSettingsMode::MultiFile => Box::new(MultiFileStore::new(
-                config.name.clone(),
+                config,
                 base_dir,
-                extension,
                 storage,
-                config.migrator.clone(),
-                config.cache_strategy,
+                #[cfg(feature = "vault")]
+                vault,
             )),
             SubSettingsMode::SingleFile => Box::new(SingleFileStore::new(
                 config.name.clone(),
@@ -277,22 +279,16 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
                 extension,
                 storage,
                 config.migrator.clone(),
+                #[cfg(feature = "vault")]
+                vault,
             )),
             #[cfg(feature = "sqlite")]
-            SubSettingsMode::Table => {
-                let table_name = config
-                    .table_name
-                    .clone()
-                    .unwrap_or_else(|| config.name.clone());
-                Box::new(table::TableStore::new(
-                    config.name.clone(),
-                    table_name,
-                    base_dir,
-                    extension,
-                    config.migrator.clone(),
-                    config.cache_strategy,
-                ))
-            }
+            SubSettingsMode::Table => Box::new(table::TableStore::new(
+                config,
+                base_dir,
+                #[cfg(feature = "vault")]
+                vault,
+            )),
         }
     }
 
@@ -317,6 +313,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))] credential_manager: Option<
             crate::credentials::CredentialManager,
         >,
+        #[cfg(feature = "vault")] vault: crate::vault::SharedVault,
     ) -> Result<Self> {
         if config.extension.is_none() {
             config.extension = Some(storage.extension().to_string());
@@ -340,25 +337,23 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         #[cfg(feature = "profiles")]
         let root_dir = if config.profiles_enabled {
             config_dir.join(&config.name)
-        } else if matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(config.mode) {
+        } else if config.mode.is_file_or_table() {
             config_dir.to_path_buf()
         } else {
             config_dir.join(&config.name)
         };
 
         #[cfg(not(feature = "profiles"))]
-        let root_dir =
-            if matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(config.mode) {
-                config_dir.to_path_buf()
-            } else {
-                config_dir.join(&config.name)
-            };
+        let root_dir = if config.mode.is_file_or_table() {
+            config_dir.to_path_buf()
+        } else {
+            config_dir.join(&config.name)
+        };
 
         // Determine initial base_dir (active profile or root)
         #[cfg(feature = "profiles")]
         let (base_dir, profile_manager) = if config.profiles_enabled {
-            let is_single_file =
-                matches!(config.mode, SubSettingsMode::SingleFile) || is_table_mode(config.mode);
+            let is_single_file = config.mode.is_file_or_table();
             crate::profiles::migrate(
                 &root_dir,
                 &config.name,
@@ -378,7 +373,13 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         #[cfg(not(feature = "profiles"))]
         let base_dir = root_dir.clone();
 
-        let store = Self::make_store(&config, base_dir, storage.clone());
+        let store = Self::make_store(
+            &config,
+            base_dir,
+            storage.clone(),
+            #[cfg(feature = "vault")]
+            Arc::clone(&vault),
+        );
 
         Ok(Self {
             config,
@@ -394,6 +395,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             profile_manager,
             #[cfg(feature = "profiles")]
             root_dir,
+            #[cfg(feature = "vault")]
+            vault,
         })
     }
 
@@ -406,9 +409,11 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         matches!(self.config.mode, SubSettingsMode::SingleFile)
     }
 
-    /// Check if sub-settings are stored in a SQLite table
+    /// Check if sub-settings are stored in a SQLite table.
+    #[cfg(feature = "sqlite")]
+    #[must_use]
     pub fn is_table(&self) -> bool {
-        is_table_mode(self.config.mode)
+        matches!(self.config.mode, SubSettingsMode::Table)
     }
 
     #[cfg(feature = "profiles")]
@@ -447,6 +452,18 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             .ok_or(Error::ProfilesNotEnabled)
     }
 
+    /// Check whether sub-settings storage is locked by a vault
+    #[cfg(feature = "vault")]
+    #[must_use]
+    pub fn is_locked(&self) -> bool {
+        if let Ok(guard) = self.vault.read()
+            && let Some(ref vault) = *guard
+        {
+            return vault.is_locked();
+        }
+        false
+    }
+
     /// Switch to a different profile
     ///
     /// # Arguments
@@ -461,12 +478,23 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     /// - Store re-creation fails
     #[cfg(feature = "profiles")]
     pub fn switch_profile(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let pm = self.profiles()?;
         pm.switch(name)?;
 
         // Re-create store pointing to new path
         let new_path = pm.profile_path(name);
-        let new_store = Self::make_store(&self.config, new_path, self.storage.clone());
+        let new_store = Self::make_store(
+            &self.config,
+            new_path,
+            self.storage.clone(),
+            #[cfg(feature = "vault")]
+            Arc::clone(&self.vault),
+        );
 
         let mut store_guard = self.store.write_recovered()?;
         *store_guard = new_store;
@@ -752,6 +780,11 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if the setting is not found or store access fails.
     pub fn get_value(&self, name: &str) -> Result<Value> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let store = self.store.read_recovered()?;
 
         // Try to get the entry from the store
@@ -808,6 +841,11 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     /// - Serialization fails
     /// - Store write fails
     pub fn set<T: Serialize + Sync>(&self, name: &str, value: &T) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let mut json_value =
             serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
 
@@ -839,6 +877,11 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if store write fails.
     pub fn delete(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         if !self.exists(name)? {
             return Ok(());
         }
@@ -858,6 +901,11 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if the store cannot be read.
     pub fn list(&self) -> Result<Vec<String>> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let store = self.store.read_recovered()?;
         store.list()
     }
@@ -871,6 +919,11 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if the store cannot be read.
     pub fn get_all_values(&self) -> Result<HashMap<String, Value>> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let mut result = {
             let store = self.store.read_recovered()?;
             store.get_all()?
@@ -893,6 +946,11 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if the store cannot be read or if an unexpected error occurs during lookup.
     pub fn exists(&self, name: &str) -> Result<bool> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let store = self.store.read_recovered()?;
         if store.exists(name)? {
             return Ok(true);
@@ -934,6 +992,8 @@ mod tests {
             JsonStorage::new(),
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             None,
+            #[cfg(feature = "vault")]
+            Arc::new(RwLock::new(None)),
         )
         .expect("failed to create SubSettings")
     }

@@ -3,7 +3,7 @@ members = [".", "rcman-derive"]
 
 [package]
 name = "rcman"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 authors = ["Hakan İSMAİL <hakanismail53@gmail.com>"]
 description = "Framework-agnostic settings management with schema, backup/restore, secrets and derive macro support"
@@ -19,7 +19,7 @@ all-features = true
 
 [features]
 default = ["json", "backup"]
-full = ["json", "toml", "yaml", "sqlite", "backup", "keychain", "encrypted-file", "derive", "profiles", "hot-reload"]
+full = ["json", "toml", "yaml", "sqlite", "backup", "keychain", "encrypted-file", "derive", "profiles", "hot-reload", "vault"]
 json = []
 toml = ["dep:toml"]
 yaml = ["dep:serde_yaml"]
@@ -34,6 +34,7 @@ keychain = [
     "dep:ndk-context",
 ]
 encrypted-file = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2"]
+vault = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2"]
 derive = ["dep:rcman-derive"]
 profiles = []
 hot-reload = ["dep:notify"]
@@ -112,6 +113,10 @@ required-features = ["backup"]
 name = "profiles_usage"
 required-features = ["profiles"]
 
+[[example]]
+name = "vault_usage"
+required-features = ["vault"]
+
 # -----------------------------------------------------------------------------
 # Integration tests — gated tests require their backing feature to compile.
 # -----------------------------------------------------------------------------
@@ -139,3 +144,7 @@ required-features = ["sqlite"]
 [[test]]
 name = "hot_reload"
 required-features = ["hot-reload"]
+
+[[test]]
+name = "vault"
+required-features = ["vault"]

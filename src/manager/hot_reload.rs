@@ -19,6 +19,9 @@ pub enum HotReloadEvent {
     ReloadFailed { path: PathBuf, reason: String },
     /// Watcher setup/runtime error.
     WatchError { reason: String },
+    /// Settings file changed on disk but reload was skipped because vault is locked.
+    #[cfg(feature = "vault")]
+    SkippedLocked { path: PathBuf },
 }
 
 enum WatcherKind {
@@ -179,6 +182,17 @@ fn run_reload_loop<S, Schema>(
             && Instant::now() >= suppress_until
             && Instant::now().duration_since(last_change) >= debounce_window
         {
+            #[cfg(feature = "vault")]
+            if manager.is_locked() {
+                manager.invalidate_cache();
+                callback(HotReloadEvent::SkippedLocked {
+                    path: watched_file.to_path_buf(),
+                });
+                pending_reload = false;
+                suppress_until = Instant::now() + self_write_suppression;
+                continue;
+            }
+
             manager.invalidate_cache();
 
             match manager.ensure_cache_populated() {

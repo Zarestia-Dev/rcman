@@ -38,8 +38,22 @@ This file provides guidance to AI coding agents (e.g. Antigravity, Claude Code, 
    - Maintain compile-time error reporting with `syn::Error` spans (no runtime panics in procedural macros).
    - Ensure `#[cfg(...)]` attributes on struct fields are forwarded properly to generated metadata entries and typed accessor methods.
 
-4. **Zero-Warning Code Quality**
-   - Any new code must compile under `cargo clippy --all-targets --all-features -- -D warnings` without any suppressed warnings unless explicitly justified.
+4. **Zero-Warning Code Quality & Dead Code Suppression Prohibition (CRITICAL)**
+   - **DO NOT** use `#[allow(dead_code)]`, `#[allow(unused)]`, or similar compiler warning suppression attributes to silence unused structs, methods, fields, functions, or imports.
+   - Every function, struct, field, or method introduced must be actively used or properly integrated.
+   - If an item is target- or feature-specific, use exact conditional compilation attributes (`#[cfg(feature = "...")]` or `#[cfg(not(feature = "..."))]`) instead of silencing warnings with `allow`.
+   - Unused code must be removed rather than suppressed. All code must compile cleanly under `cargo clippy --all-targets --all-features -- -D warnings` across all target configurations without suppressing dead code.
+
+5. **Precise & High-Quality Documentation (Rustdoc Standards)**
+   - **DO NOT** leave public APIs, structs, enums, traits, methods, or configuration fields undocumented.
+   - **Avoid Fluff & Redundancy**: Do not add noisy, superficial comments that merely restate the symbol's name (e.g., `/// The name` above `pub name: String` or `/// Gets the value` above `pub fn get_value()`).
+   - Keep documentation purposeful: document architectural intent, behavioral nuances, invariants, thread-safety semantics, and error conditions (`# Errors`).
+   - Include realistic doc-test examples (`# Examples`) for non-trivial APIs, and ensure all examples compile and pass `cargo test --doc`.
+
+6. **Feature-Gating Integrity & Prohibition of Dummy/Stub APIs (CRITICAL)**
+   - `rcman` is designed as a zero-cost, modular library for developers. When a feature flag (e.g., `vault`, `profiles`, `sqlite`, `backup`, `hot-reload`, `keychain`, `encrypted-file`) is disabled, public methods, types, enum variants, and fields belonging to that feature **MUST NOT** exist on structs or enums.
+   - **DO NOT** provide `#[cfg(not(feature = "..."))]` dummy/stub methods (e.g., methods returning `false`, `None`, empty lists, or no-op/dummy errors) to allow un-gated code to compile. Consumers must explicitly enable the relevant feature to access its API surface.
+   - Internal implementation code must use targeted `#[cfg(feature = "...")]` compilation checks rather than defining dummy variables or `unreachable!()` fallback branches.
 
 ---
 

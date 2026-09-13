@@ -82,6 +82,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// - The profile does not exist
     /// - The profile switch fails (e.g. IO error)
     pub fn switch_profile(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let pm = self
             .profile_manager
             .as_ref()
@@ -163,6 +168,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// - The profile already exists
     /// - Creation fails (e.g. IO error)
     pub fn create_profile(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let pm = self
             .profile_manager
             .as_ref()

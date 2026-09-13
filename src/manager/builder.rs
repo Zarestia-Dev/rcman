@@ -134,6 +134,46 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         self
     }
 
+    /// Enable vault encryption for the configuration file (requires `vault` feature).
+    #[cfg(feature = "vault")]
+    #[must_use]
+    pub fn with_vault(mut self) -> Self {
+        self.config_builder = self.config_builder.with_vault();
+        self
+    }
+
+    /// Enable vault encryption and supply an initial password (for headless or automated startup).
+    #[cfg(feature = "vault")]
+    #[must_use]
+    pub fn with_vault_password(mut self, password: impl Into<String>) -> Self {
+        self.config_builder = self.config_builder.with_vault_password(password);
+        self
+    }
+
+    /// Set an auto-lock inactivity timeout for the vault.
+    #[cfg(feature = "vault")]
+    #[must_use]
+    pub fn with_vault_lock_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.config_builder = self.config_builder.with_vault_lock_timeout(timeout);
+        self
+    }
+
+    /// Configure custom Argon2 KDF tuning parameters for the vault.
+    #[cfg(feature = "vault")]
+    #[must_use]
+    pub fn with_vault_kdf_params(mut self, params: crate::vault::Argon2Params) -> Self {
+        self.config_builder = self.config_builder.with_vault_kdf_params(params);
+        self
+    }
+
+    /// Configure a predefined Argon2 KDF preset for the vault.
+    #[cfg(feature = "vault")]
+    #[must_use]
+    pub fn with_vault_preset(mut self, preset: crate::vault::Argon2Preset) -> Self {
+        self.config_builder = self.config_builder.with_vault_preset(preset);
+        self
+    }
+
     /// Enable environment variable overrides.
     ///
     /// When set, settings can be overridden by environment variables.

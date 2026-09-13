@@ -23,6 +23,7 @@ A generic, **framework-agnostic** Rust library for managing application settings
 | Feature                 | Description                                              |
 | ----------------------- | -------------------------------------------------------- |
 | **Settings Management** | Load/save with rich schema metadata for UI rendering     |
+| **Configuration Vault** | Password-locked AES-256-GCM + Argon2id encryption with auto-lock |
 | **Sub-Settings**        | Per-entity configs (e.g., one JSON per remote)           |
 | **Profiles**            | Multiple named configurations (work, personal, etc.)     |
 | **Schema Migration**    | Lazy migration for transparent data upgrades             |
@@ -49,6 +50,7 @@ cargo add rcman
 | `toml`           | TOML storage                      | ❌       |
 | `yaml`           | YAML storage                      | ❌       |
 | `sqlite`         | SQLite database storage           | ❌       |
+| `vault`          | Password-locked AES-256-GCM + Argon2id configuration encryption | ❌ |
 | `backup`         | Backup/restore (zip)              | ✅       |
 | `derive`         | `#[derive(SettingsSchema)]` macro | ❌       |
 | `keychain`       | OS keychain support               | ❌       |
@@ -896,6 +898,57 @@ Callback emission rules:
 - `switch_profile(...)` (with `profiles`): emits callbacks for keys whose effective values differ between profiles.
 
 This makes callback streams deterministic and avoids noise for no-op operations.
+
+---
+
+### 9. Configuration Locking & Vault (AES-256-GCM + Argon2id)
+
+Lock your configuration files behind a master password. When locked, the on-disk file is stored as an encrypted vault envelope (`aes-256-gcm+argon2id`) and any read/write attempt returns `Err(Error::ConfigLocked)`.
+
+```rust
+use rcman::{SettingsManager, SettingsConfig};
+use std::time::Duration;
+
+let config = SettingsConfig::builder("my-app", "1.0.0")
+    .with_vault()
+    .with_vault_password("master_password")
+    .with_vault_lock_timeout(Duration::from_secs(300)) // Auto-lock after 5 min inactivity
+    .build();
+
+let manager = SettingsManager::new(config)?;
+
+// Transparently read/write while unlocked
+manager.save_setting("ui", "theme", &serde_json::json!("dark"))?;
+
+// Lock explicitly on demand (key is zeroized from memory)
+manager.lock()?;
+assert!(manager.is_locked());
+
+// Attempting access while locked fails safely
+let err = manager.get_all::<MyAppSettings>().unwrap_err();
+assert!(err.is_locked());
+
+// Unlock again
+manager.unlock("master_password")?;
+assert!(!manager.is_locked());
+
+// Dynamic management
+manager.change_vault_password("master_password", "new_password")?;
+manager.disable_vault("new_password")?; // Decrypt back to plaintext
+manager.enable_vault("new_password")?;  // Encrypt to vault envelope
+```
+
+- **Boot Detection**: rcman automatically detects vaulted files on disk at startup and boots into a locked state if no password is provided.
+- **Sub-Settings Inheritance**: Registered sub-settings (e.g. per-entity remote files) automatically inherit vault encryption when enabled on the manager.
+- **Inactivity Timeout**: Optional auto-lock timeout safely wipes keys and invalidates cache when idle.
+- **Memory Scrubbing**: Active key buffers are zeroized upon locking or dropping.
+- **Configurable KDF Presets**: Tailor Argon2id key derivation to your platform and use case:
+  - `Argon2Preset::Standard`: 19 MiB, 2 passes, 1 thread (default, OWASP recommended).
+  - `Argon2Preset::Fast`: 64 KiB, 1 pass, 1 thread (instant execution for test suites and interactive CLI tools).
+  - `Argon2Preset::Mobile`: 8 MiB, 1 pass, 1 thread (optimized for Android and iOS devices).
+  - `Argon2Preset::HighSecurity`: 64 MiB, 3 passes, 4 threads (hardened security for sensitive server environments).
+  - Custom: `builder.with_vault_kdf_params(Argon2Params::new(m_cost, t_cost, p_cost))`.
+- **Envelope Stored Parameters**: KDF parameters are serialized directly into the on-disk `VaultEnvelope` (`kdf_params`), ensuring envelopes created with custom or fast profiles unlock seamlessly without manual client reconfiguration.
 
 ---
 

@@ -22,6 +22,8 @@ pub struct SingleFileStore<S: StorageBackend> {
     extension: String,
     storage: S,
     migrator: Option<SubSettingsMigrator>,
+    #[cfg(feature = "vault")]
+    vault: crate::vault::SharedVault,
     state: RwLock<SingleFileStoreState>,
 }
 
@@ -32,6 +34,7 @@ impl<S: StorageBackend> SingleFileStore<S> {
         extension: String,
         storage: S,
         migrator: Option<SubSettingsMigrator>,
+        #[cfg(feature = "vault")] vault: crate::vault::SharedVault,
     ) -> Self {
         Self {
             name,
@@ -39,11 +42,59 @@ impl<S: StorageBackend> SingleFileStore<S> {
             extension,
             storage,
             migrator,
+            #[cfg(feature = "vault")]
+            vault,
             state: RwLock::new(SingleFileStoreState {
                 cache: None,
                 loaded_from_disk: false,
             }),
         }
+    }
+
+    #[cfg(feature = "vault")]
+    fn get_vault(&self) -> Result<Option<Arc<crate::vault::VaultState>>> {
+        self.vault
+            .read()
+            .map(|g| g.clone())
+            .map_err(|_| Error::LockPoisoned)
+    }
+
+    #[cfg(feature = "vault")]
+    fn is_locked(&self) -> bool {
+        if let Ok(guard) = self.vault.read()
+            && let Some(ref vault) = *guard
+        {
+            return vault.is_locked();
+        }
+        false
+    }
+
+    fn read_value(&self, path: &std::path::Path) -> Result<Value> {
+        let value: Value = self.storage.read(path)?;
+
+        #[cfg(feature = "vault")]
+        if crate::vault::is_vault_value(&value) {
+            let vault = self.get_vault()?.ok_or(Error::ConfigLocked)?;
+            if let Some(decrypted_str) = vault.decrypt_vault_value_to_str(&value)? {
+                return self.storage.deserialize(&decrypted_str);
+            }
+        }
+
+        Ok(value)
+    }
+
+    fn write_value<T: serde::Serialize>(&self, path: &std::path::Path, data: &T) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if let Some(ref vault) = self.get_vault()? {
+            if vault.is_locked() {
+                return Err(Error::ConfigLocked);
+            }
+            let serialized = self.storage.serialize(data)?;
+            let envelope = vault.encrypt_payload(serialized.as_bytes())?;
+            return self.storage.write(path, &envelope);
+        }
+
+        self.storage.write(path, data)
     }
 
     fn file_path(&self) -> PathBuf {
@@ -64,7 +115,7 @@ impl<S: StorageBackend> SingleFileStore<S> {
         let path = self.file_path();
 
         let mut file_data = match std::fs::metadata(&path) {
-            Ok(_) => self.storage.read::<Value>(&path)?,
+            Ok(_) => self.read_value(&path)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 state.loaded_from_disk = true;
                 state.cache = Some(HashMap::new());
@@ -78,7 +129,7 @@ impl<S: StorageBackend> SingleFileStore<S> {
             file_data = migrator(file_data);
             if file_data != original {
                 debug!("Migrated sub-settings file: {}", self.name);
-                self.storage.write(&path, &file_data)?;
+                self.write_value(&path, &file_data)?;
             }
         }
 
@@ -104,13 +155,18 @@ impl<S: StorageBackend> SingleFileStore<S> {
             crate::utils::security::ensure_secure_dir(parent)?;
         }
 
-        self.storage.write(&path, cache)?;
+        self.write_value(&path, cache)?;
         Ok(())
     }
 }
 
 impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     fn get(&self, key: &str) -> Result<Value> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         self.ensure_loaded()?;
 
         let state = self.state.read_recovered()?;
@@ -127,6 +183,11 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     }
 
     fn set(&self, key: &str, value: Value) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         self.ensure_loaded()?;
 
         let mut state = self.state.write_recovered()?;
@@ -154,6 +215,11 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     }
 
     fn remove(&self, key: &str) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         self.ensure_loaded()?;
 
         let mut state = self.state.write_recovered()?;
@@ -166,6 +232,11 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     }
 
     fn exists(&self, key: &str) -> Result<bool> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         self.ensure_loaded()?;
 
         let state = self.state.read_recovered()?;
@@ -177,6 +248,11 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     }
 
     fn list(&self) -> Result<Vec<String>> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         self.ensure_loaded()?;
 
         let state = self.state.read_recovered()?;
@@ -190,6 +266,11 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
     }
 
     fn get_all(&self) -> Result<HashMap<String, Value>> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         self.ensure_loaded()?;
 
         let state = self.state.read_recovered()?;
@@ -272,6 +353,8 @@ mod tests {
             "json".to_string(),
             storage,
             None,
+            #[cfg(feature = "vault")]
+            Arc::new(RwLock::new(None)),
         );
 
         store.set("remote", json!({"host": "localhost"})).unwrap();
@@ -292,6 +375,8 @@ mod tests {
             "json".to_string(),
             storage,
             None,
+            #[cfg(feature = "vault")]
+            Arc::new(RwLock::new(None)),
         );
 
         store.set("missing", Value::Null).unwrap();
@@ -307,6 +392,8 @@ mod tests {
             "json".to_string(),
             JsonStorage::new(),
             None,
+            #[cfg(feature = "vault")]
+            Arc::new(RwLock::new(None)),
         );
 
         store.set("_active", json!("Windows")).unwrap();
@@ -323,6 +410,8 @@ mod tests {
             "json".to_string(),
             JsonStorage::new(),
             None,
+            #[cfg(feature = "vault")]
+            Arc::new(RwLock::new(None)),
         );
 
         store

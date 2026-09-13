@@ -96,6 +96,10 @@ pub struct SettingsManager<
     #[cfg(feature = "profiles")]
     pub(super) profile_manager: Option<crate::profiles::ProfileManager<S>>,
 
+    /// Configuration vault state (when vault feature is enabled)
+    #[cfg(feature = "vault")]
+    pub(crate) vault: crate::vault::SharedVault,
+
     /// Marker for schema type
     pub(super) _schema: PhantomData<Schema>,
 }
@@ -194,12 +198,69 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             config.config_dir.display()
         );
 
+        #[cfg(feature = "vault")]
+        let vault = if config.vault_enabled {
+            let settings_path = settings_dir.join(&config.settings_file);
+            let mut detected_salt = None;
+            let mut detected_envelope = None;
+            let mut detected_kdf_params = config.vault_kdf_params;
+
+            if let Ok(value) = storage.read::<Value>(&settings_path)
+                && crate::vault::is_vault_value(&value)
+                && let Ok(envelope) = serde_json::from_value::<crate::vault::VaultEnvelope>(value)
+            {
+                if let Ok(salt) = envelope.decode_salt() {
+                    detected_salt = Some(salt);
+                }
+                detected_kdf_params = Some(envelope.kdf_params());
+                detected_envelope = Some(envelope);
+            }
+
+            let vault_state = Arc::new(crate::vault::VaultState::new(
+                detected_salt,
+                config.vault_lock_timeout,
+                detected_kdf_params,
+            ));
+
+            if let Some(ref password) = config.vault_password {
+                vault_state.unlock(password, detected_envelope.as_ref())?;
+            }
+
+            Some(vault_state)
+        } else {
+            let settings_path = settings_dir.join(&config.settings_file);
+            if let Ok(value) = storage.read::<Value>(&settings_path)
+                && crate::vault::is_vault_value(&value)
+                && let Ok(envelope) = serde_json::from_value::<crate::vault::VaultEnvelope>(value)
+            {
+                let detected_salt = envelope.decode_salt().ok();
+                let detected_kdf_params = Some(envelope.kdf_params());
+                Some(Arc::new(crate::vault::VaultState::new(
+                    detected_salt,
+                    None,
+                    detected_kdf_params,
+                )))
+            } else {
+                None
+            }
+        };
+
+        let events = Arc::new(EventManager::new());
+
+        #[cfg(feature = "vault")]
+        if let Some(ref v) = vault {
+            let events_clone = Arc::clone(&events);
+            v.set_event_callback(Some(Arc::new(move |event| {
+                events_clone.notify_vault(event);
+            })));
+        }
+
         let manager = Self {
             config,
             storage,
             settings_dir: RwLock::new(settings_dir),
             sub_settings: RwLock::new(HashMap::new()),
-            events: Arc::new(EventManager::new()),
+            events,
             settings_cache: SettingsCache::new(),
             settings_write_lock: Mutex::new(()),
             env_handler,
@@ -214,11 +275,20 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             external_providers: RwLock::new(Vec::new()),
             #[cfg(feature = "profiles")]
             profile_manager,
+            #[cfg(feature = "vault")]
+            vault: Arc::new(RwLock::new(vault)),
             _schema: PhantomData,
         };
 
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        manager.migrate_secret_keys()?;
+        {
+            #[cfg(feature = "vault")]
+            if !manager.is_locked() {
+                manager.migrate_secret_keys()?;
+            }
+            #[cfg(not(feature = "vault"))]
+            manager.migrate_secret_keys()?;
+        }
 
         Ok(manager)
     }

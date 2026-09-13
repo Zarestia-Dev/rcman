@@ -1,6 +1,7 @@
 use crate::CacheStrategy;
 use crate::error::{Error, Result};
 use crate::storage::is_valid_sqlite_identifier;
+use crate::sub_settings::SubSettingsConfig;
 use crate::sub_settings::store::SubSettingsStore;
 use crate::utils::security::{ensure_secure_dir, set_secure_file_permissions};
 use crate::utils::sync::RwLockExt;
@@ -34,28 +35,52 @@ pub struct TableStore {
     extension: String,
     migrator: Option<SubSettingsMigrator>,
     cache_strategy: CacheStrategy,
+    #[cfg(feature = "vault")]
+    vault: crate::vault::SharedVault,
     state: RwLock<TableStoreState>,
 }
 
 impl TableStore {
     /// Create a new `TableStore`.
     pub fn new(
-        name: String,
-        table_name: String,
+        config: &SubSettingsConfig,
         base_dir: PathBuf,
-        extension: String,
-        migrator: Option<SubSettingsMigrator>,
-        cache_strategy: CacheStrategy,
+        #[cfg(feature = "vault")] vault: crate::vault::SharedVault,
     ) -> Self {
+        let table_name = config
+            .table_name
+            .clone()
+            .unwrap_or_else(|| config.name.clone());
+        let extension = config.extension.as_deref().unwrap_or("db").to_string();
         Self {
-            name,
+            name: config.name.clone(),
             table_name,
             base_dir,
             extension,
-            migrator,
-            cache_strategy,
+            migrator: config.migrator.clone(),
+            cache_strategy: config.cache_strategy,
+            #[cfg(feature = "vault")]
+            vault,
             state: RwLock::new(TableStoreState { cache: None }),
         }
+    }
+
+    #[cfg(feature = "vault")]
+    fn get_vault(&self) -> Result<Option<Arc<crate::vault::VaultState>>> {
+        self.vault
+            .read()
+            .map(|g| g.clone())
+            .map_err(|_| Error::LockPoisoned)
+    }
+
+    #[cfg(feature = "vault")]
+    fn is_locked(&self) -> bool {
+        if let Ok(guard) = self.vault.read()
+            && let Some(ref vault) = *guard
+        {
+            return vault.is_locked();
+        }
+        false
     }
 
     fn file_path(&self) -> PathBuf {
@@ -130,6 +155,11 @@ impl TableStore {
 
 impl SubSettingsStore for TableStore {
     fn get(&self, key: &str) -> Result<Value> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         if !matches!(self.cache_strategy, CacheStrategy::None) {
             self.ensure_cache_populated()?;
             let mut state = self.state.write_recovered()?;
@@ -196,14 +226,43 @@ impl SubSettingsStore for TableStore {
             )));
         };
 
-        let mut value: Value = serde_json::from_str(&content).map_err(Error::from)?;
+        let raw_val: Value = serde_json::from_str(&content).map_err(Error::from)?;
+
+        #[cfg(feature = "vault")]
+        let mut value = if crate::vault::is_vault_value(&raw_val) {
+            let vault = self.get_vault()?.ok_or(Error::ConfigLocked)?;
+            if let Some(decrypted_str) = vault.decrypt_vault_value_to_str(&raw_val)? {
+                serde_json::from_str(&decrypted_str).map_err(Error::from)?
+            } else {
+                raw_val
+            }
+        } else {
+            raw_val
+        };
+
+        #[cfg(not(feature = "vault"))]
+        let mut value = raw_val;
 
         if let Some(migrator) = &self.migrator {
             let original = value.clone();
             value = migrator(value);
             if value != original {
                 debug!("Migrated sub-settings table entry: {key}");
+                #[cfg(feature = "vault")]
+                let new_content = if let Some(vault) = self.get_vault()? {
+                    if vault.is_locked() {
+                        return Err(Error::ConfigLocked);
+                    }
+                    let serialized = serde_json::to_string(&value).map_err(Error::from)?;
+                    let envelope = vault.encrypt_payload(serialized.as_bytes())?;
+                    serde_json::to_string(&envelope).map_err(Error::from)?
+                } else {
+                    serde_json::to_string(&value).map_err(Error::from)?
+                };
+
+                #[cfg(not(feature = "vault"))]
                 let new_content = serde_json::to_string(&value).map_err(Error::from)?;
+
                 let upsert_sql = format!(
                     "INSERT INTO {table} (key, data) VALUES (?1, ?2)
                      ON CONFLICT(key) DO UPDATE SET data = excluded.data",
@@ -232,11 +291,30 @@ impl SubSettingsStore for TableStore {
     }
 
     fn set(&self, key: &str, value: Value) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         if value.is_null() {
             return self.remove(key);
         }
 
+        #[cfg(feature = "vault")]
+        let content = if let Some(vault) = self.get_vault()? {
+            if vault.is_locked() {
+                return Err(Error::ConfigLocked);
+            }
+            let serialized = serde_json::to_string(&value).map_err(Error::from)?;
+            let envelope = vault.encrypt_payload(serialized.as_bytes())?;
+            serde_json::to_string(&envelope).map_err(Error::from)?
+        } else {
+            serde_json::to_string(&value).map_err(Error::from)?
+        };
+
+        #[cfg(not(feature = "vault"))]
         let content = serde_json::to_string(&value).map_err(Error::from)?;
+
         let conn = self.connect()?;
         self.ensure_schema(&conn)?;
 
@@ -272,6 +350,11 @@ impl SubSettingsStore for TableStore {
     }
 
     fn remove(&self, key: &str) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let path = self.file_path();
         if !path.exists() {
             return Err(Error::SubSettingsEntryNotFound(format!(
@@ -316,6 +399,11 @@ impl SubSettingsStore for TableStore {
     }
 
     fn exists(&self, key: &str) -> Result<bool> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         if !matches!(self.cache_strategy, CacheStrategy::None) {
             let state = self.state.read_recovered()?;
             if let Some(cache) = &state.cache {
@@ -362,6 +450,11 @@ impl SubSettingsStore for TableStore {
     }
 
     fn list(&self) -> Result<Vec<String>> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let path = self.file_path();
         if !path.exists() {
             return Ok(Vec::new());
@@ -392,6 +485,11 @@ impl SubSettingsStore for TableStore {
     }
 
     fn get_all(&self) -> Result<HashMap<String, Value>> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let path = self.file_path();
         if !path.exists() {
             return Ok(HashMap::new());
@@ -419,13 +517,42 @@ impl SubSettingsStore for TableStore {
         for row_res in rows {
             let (key, content) =
                 row_res.map_err(|e| Error::Config(format!("sqlite row read: {e}")))?;
-            let mut value: Value = serde_json::from_str(&content).map_err(Error::from)?;
+            let raw_val: Value = serde_json::from_str(&content).map_err(Error::from)?;
+
+            #[cfg(feature = "vault")]
+            let mut value = if crate::vault::is_vault_value(&raw_val) {
+                let vault = self.get_vault()?.ok_or(Error::ConfigLocked)?;
+                if let Some(decrypted_str) = vault.decrypt_vault_value_to_str(&raw_val)? {
+                    serde_json::from_str(&decrypted_str).map_err(Error::from)?
+                } else {
+                    raw_val
+                }
+            } else {
+                raw_val
+            };
+
+            #[cfg(not(feature = "vault"))]
+            let mut value = raw_val;
 
             if let Some(migrator) = &self.migrator {
                 let original = value.clone();
                 value = migrator(value);
                 if value != original {
+                    #[cfg(feature = "vault")]
+                    let new_content = if let Some(vault) = self.get_vault()? {
+                        if vault.is_locked() {
+                            return Err(Error::ConfigLocked);
+                        }
+                        let serialized = serde_json::to_string(&value).map_err(Error::from)?;
+                        let envelope = vault.encrypt_payload(serialized.as_bytes())?;
+                        serde_json::to_string(&envelope).map_err(Error::from)?
+                    } else {
+                        serde_json::to_string(&value).map_err(Error::from)?
+                    };
+
+                    #[cfg(not(feature = "vault"))]
                     let new_content = serde_json::to_string(&value).map_err(Error::from)?;
+
                     migrations_to_save.push((key.clone(), new_content));
                 }
             }

@@ -1,6 +1,7 @@
 use crate::CacheStrategy;
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
+use crate::sub_settings::SubSettingsConfig;
 use crate::sub_settings::store::SubSettingsStore;
 use crate::utils::sync::RwLockExt;
 use log::debug;
@@ -29,30 +30,79 @@ pub struct MultiFileStore<S: StorageBackend> {
     storage: S,
     migrator: Option<SubSettingsMigrator>,
     cache_strategy: CacheStrategy,
+    #[cfg(feature = "vault")]
+    vault: crate::vault::SharedVault,
     state: RwLock<MultiFileStoreState>,
 }
 
 impl<S: StorageBackend> MultiFileStore<S> {
     pub fn new(
-        name: String,
+        config: &SubSettingsConfig,
         base_dir: PathBuf,
-        extension: String,
         storage: S,
-        migrator: Option<SubSettingsMigrator>,
-        cache_strategy: CacheStrategy,
+        #[cfg(feature = "vault")] vault: crate::vault::SharedVault,
     ) -> Self {
+        let extension = config.extension.as_deref().unwrap_or("json").to_string();
         Self {
-            name,
+            name: config.name.clone(),
             base_dir,
             extension,
             storage,
-            migrator,
-            cache_strategy,
+            migrator: config.migrator.clone(),
+            cache_strategy: config.cache_strategy,
+            #[cfg(feature = "vault")]
+            vault,
             state: RwLock::new(MultiFileStoreState {
                 cache: None,
                 loaded_from_dir: false,
             }),
         }
+    }
+
+    #[cfg(feature = "vault")]
+    fn get_vault(&self) -> Result<Option<Arc<crate::vault::VaultState>>> {
+        self.vault
+            .read()
+            .map(|g| g.clone())
+            .map_err(|_| Error::LockPoisoned)
+    }
+
+    #[cfg(feature = "vault")]
+    fn is_locked(&self) -> bool {
+        if let Ok(guard) = self.vault.read()
+            && let Some(ref vault) = *guard
+        {
+            return vault.is_locked();
+        }
+        false
+    }
+
+    fn read_value(&self, path: &std::path::Path) -> Result<Value> {
+        let value: Value = self.storage.read(path)?;
+
+        #[cfg(feature = "vault")]
+        if crate::vault::is_vault_value(&value) {
+            let vault = self.get_vault()?.ok_or(Error::ConfigLocked)?;
+            if let Some(decrypted_str) = vault.decrypt_vault_value_to_str(&value)? {
+                return self.storage.deserialize(&decrypted_str);
+            }
+        }
+
+        Ok(value)
+    }
+
+    fn write_value<T: serde::Serialize>(&self, path: &std::path::Path, data: &T) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if let Some(ref vault) = self.get_vault()? {
+            if vault.is_locked() {
+                return Err(Error::ConfigLocked);
+            }
+            let serialized = self.storage.serialize(data)?;
+            let envelope = vault.encrypt_payload(serialized.as_bytes())?;
+            return self.storage.write(path, &envelope);
+        }
+
+        self.storage.write(path, data)
     }
 
     fn file_path(&self, key: &str) -> PathBuf {
@@ -152,6 +202,11 @@ impl<S: StorageBackend> MultiFileStore<S> {
 
 impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
     fn get(&self, key: &str) -> Result<Value> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         self.ensure_cache_populated()?;
 
         {
@@ -194,14 +249,14 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
             )));
         }
 
-        let mut value: Value = self.storage.read(&path)?;
+        let mut value: Value = self.read_value(&path)?;
 
         if let Some(migrator) = &self.migrator {
             let original = value.clone();
             value = migrator(value);
             if value != original {
                 debug!("Migrated sub-settings entry: {key}");
-                self.storage.write(&path, &value)?;
+                self.write_value(&path, &value)?;
             }
         }
 
@@ -222,6 +277,11 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
     }
 
     fn set(&self, key: &str, value: Value) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         if value.is_null() {
             return self.remove(key);
         }
@@ -232,7 +292,7 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
             crate::utils::security::ensure_secure_dir(&self.base_dir)?;
         }
 
-        self.storage.write(&path, &value)?;
+        self.write_value(&path, &value)?;
 
         if !matches!(self.cache_strategy, CacheStrategy::None) {
             let mut state = self.state.write_recovered()?;
@@ -254,6 +314,11 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
     }
 
     fn remove(&self, key: &str) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let path = self.file_path(key);
 
         if path.exists() {
@@ -275,6 +340,11 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
     }
 
     fn exists(&self, key: &str) -> Result<bool> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         self.ensure_cache_populated()?;
 
         {
@@ -304,6 +374,11 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
     }
 
     fn list(&self) -> Result<Vec<String>> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         if matches!(self.cache_strategy, CacheStrategy::None) {
             if !self.base_dir.exists() {
                 return Ok(Vec::new());
@@ -349,6 +424,11 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
     }
 
     fn get_all(&self) -> Result<HashMap<String, Value>> {
+        #[cfg(feature = "vault")]
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let keys = self.list()?;
         let mut result = HashMap::with_capacity(keys.len());
 
@@ -435,13 +515,13 @@ mod tests {
         let reads = Arc::new(AtomicUsize::new(0));
         let storage = CountingStorage::new(writes.clone(), reads.clone());
 
+        let config = SubSettingsConfig::new("remotes").with_cache(CacheStrategy::Full);
         let store = MultiFileStore::new(
-            "remotes".to_string(),
+            &config,
             dir.path().to_path_buf(),
-            "json".to_string(),
             storage,
-            None,
-            CacheStrategy::Full,
+            #[cfg(feature = "vault")]
+            Arc::new(RwLock::new(None)),
         );
 
         store.set("remote1", json!({"type": "gdrive"})).unwrap();
@@ -472,13 +552,13 @@ mod tests {
         let reads = Arc::new(AtomicUsize::new(0));
         let storage = CountingStorage::new(writes.clone(), reads.clone());
 
+        let config = SubSettingsConfig::new("remotes").with_cache(CacheStrategy::Lru(2));
         let store = MultiFileStore::new(
-            "remotes".to_string(),
+            &config,
             dir.path().to_path_buf(),
-            "json".to_string(),
             storage,
-            None,
-            CacheStrategy::Lru(2),
+            #[cfg(feature = "vault")]
+            Arc::new(RwLock::new(None)),
         );
 
         store.set("a", json!(1)).unwrap();

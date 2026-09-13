@@ -33,6 +33,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
     ///
     /// Returns an error if the backup cannot be read or the restore operation fails.
     pub fn restore(&self, options: &RestoreOptions) -> Result<RestoreResult> {
+        #[cfg(feature = "vault")]
+        if self.manager.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         let mode_str = if options.flags.control.dry_run {
             "[DRY RUN] "
         } else {
@@ -291,11 +296,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 } else {
                     self.hydrate_main_settings_secrets(&mut value, None);
 
-                    // Write using the configured storage backend (handles conversion!)
+                    // Write using the configured storage backend (and encrypt if target vault is active)
                     self.manager
                         .manager
-                        .storage()
-                        .write(&settings_dest, &value)?;
+                        .write_settings_to_disk(&settings_dest, &value)?;
                     result.restored.push(dest_filename.to_string());
                     debug!("Restored {dest_filename}");
                 }
@@ -398,8 +402,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
                         self.manager
                             .manager
-                            .storage()
-                            .write(&dest_settings, &value)?;
+                            .write_settings_to_disk(&dest_settings, &value)?;
                         result.restored.push(restore_id);
                         debug!("Restored settings for profile {target_profile_name}");
                     }
@@ -435,19 +438,15 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
             // Check if we are dealing with a profiled backup for this entry
             #[cfg(feature = "profiles")]
-            let is_profiled_backup = matches!(
+            if matches!(
                 self.analysis.manifest.contents.sub_settings.get(&sub_type),
                 Some(SubSettingsManifestEntry::Profiled { .. })
-            );
-            #[cfg(not(feature = "profiles"))]
-            let is_profiled_backup = false;
-
-            if is_profiled_backup {
-                #[cfg(feature = "profiles")]
+            ) {
                 self.restore_profiled_sub_settings(&sub_ctx, &sub_src_dir, result)?;
-            } else {
-                self.restore_flat_sub_settings(&sub_ctx, &sub_src_dir, result)?;
+                continue;
             }
+
+            self.restore_flat_sub_settings(&sub_ctx, &sub_src_dir, result)?;
         }
         Ok(())
     }
@@ -629,10 +628,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
         // Restore .profiles.{ext} if target supports it
         if target_profiles_enabled {
-            #[cfg(feature = "profiles")]
             let ext = sub_ctx.sub.storage().extension();
-            #[cfg(not(feature = "profiles"))]
-            let ext = "json"; // fallback
 
             let manifest_filename = format!(".profiles.{ext}");
             let profiles_manifest = sub_src_dir.join(&manifest_filename);

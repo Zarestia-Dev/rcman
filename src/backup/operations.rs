@@ -38,11 +38,11 @@ struct SecretContext<'a> {
 
 /// Helper to collect settings files for backup (handles both profiled and flat)
 /// Returns (`source_path`, `relative_dest_path`) pairs
-#[cfg_attr(not(feature = "profiles"), allow(unused_variables))]
 fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
     config: &crate::config::SettingsConfig<S, Schema>,
     options: &BackupOptions,
 ) -> Vec<(PathBuf, PathBuf)> {
+    let _ = options;
     let mut files = Vec::new();
 
     #[cfg(feature = "profiles")]
@@ -129,6 +129,11 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
     /// * `Error::ZipCreate` - Failed to create zip file
     /// * `Error::ZipWrite` - Failed to write zip file
     pub fn create(&self, options: &BackupOptions) -> Result<PathBuf> {
+        #[cfg(feature = "vault")]
+        if self.manager.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+
         info!("Creating backup with options: {:?}", options.export_type);
 
         // Validate password if provided
@@ -489,19 +494,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         dest: &Path,
         ctx: &SecretContext<'_>,
     ) -> Result<u64> {
-        let content = std::fs::read(src).map_err(|e| Error::FileRead {
-            path: src.to_path_buf(),
-            source: e,
-        })?;
-
-        let content_str = String::from_utf8(content).map_err(|e| Error::FileRead {
-            path: src.to_path_buf(),
-            source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-        })?;
-
-        // Use generic storage from manager config (assumed consistent)
-        let storage = &self.manager.config().storage;
-        let mut value: serde_json::Value = storage.deserialize(&content_str)?;
+        let mut value = self.manager.read_settings_from_disk(src)?;
 
         self.inject_or_remove_secrets(
             &mut value,
@@ -511,6 +504,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             ctx.credential_profile,
         );
 
+        let storage = &self.manager.config().storage;
         let serialized = storage.serialize(&value)?;
         crate::error::write_file(dest, &serialized)?;
 
@@ -523,8 +517,9 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         prefix: &str,
         metadata: &IndexMap<String, crate::SettingMetadata>,
         should_include: bool,
-        #[allow(unused_variables)] credential_profile: Option<&str>,
+        credential_profile: Option<&str>,
     ) {
+        let _ = credential_profile;
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         let creds_opt = self.manager.credentials();
 
@@ -605,15 +600,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
     ) -> Result<(u64, u32, Option<SubSettingsManifestEntry>)> {
         // Check if profiles are enabled
         #[cfg(feature = "profiles")]
-        let profiles_enabled = sub.profiles_enabled();
-        #[cfg(not(feature = "profiles"))]
-        let profiles_enabled = false;
-
-        if profiles_enabled {
-            #[cfg(feature = "profiles")]
+        if sub.profiles_enabled() {
             return Self::gather_profiled_sub_settings(export_dir, sub_type, sub, storage, options);
-            #[cfg(not(feature = "profiles"))]
-            unreachable!()
         }
 
         // Non-profiled sub-settings
@@ -636,17 +624,11 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
                 // Process secrets entry-by-entry with sub-settings schema paths.
                 // Single-file structure is typically: { "entry": { ...fields... } }
-                let raw = std::fs::read(&path).map_err(|e| Error::FileRead {
-                    path: path.clone(),
-                    source: e,
-                })?;
-                let raw_str = String::from_utf8(raw).map_err(|e| Error::FileRead {
-                    path: path.clone(),
-                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                })?;
-
-                let storage_impl = &self.manager.config().storage;
-                let mut root_value: serde_json::Value = storage_impl.deserialize(&raw_str)?;
+                let raw_entries = {
+                    let store = sub.store.read_recovered()?;
+                    store.get_all()?
+                };
+                let mut root_value = serde_json::Value::Object(raw_entries.into_iter().collect());
 
                 let should_include_secrets = match options.secret_policy {
                     crate::SecretBackupPolicy::Exclude => false,
@@ -668,7 +650,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     }
                 }
 
-                let content = storage_impl.serialize(&root_value)?;
+                let content = storage.serialize(&root_value)?;
                 crate::error::write_file(&dest, &content)?;
                 let size = content.len() as u64;
 

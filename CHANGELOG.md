@@ -4,6 +4,54 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Configuration Vault & Envelope (`vault` feature)**:
+    - Added comprehensive at-rest configuration encryption using AES-256-GCM authenticated encryption and Argon2id key derivation.
+    - Implemented `VaultEnvelope` containing format version, algorithm identifier (`aes-256-gcm+argon2id`), cryptographic salt, nonce, ciphertext, and optional KDF parameters.
+    - Seamless in-memory unlocked caching: once unlocked, reads, writes, and validation operate with zero runtime decryption overhead.
+    - Granular vault lifecycle management on `SettingsManager`:
+        - `enable_vault(&self, password: &str) -> Result<()>`: Migrates existing plaintext configurations on disk into encrypted vault envelopes.
+        - `enable_vault_with_params(&self, password: &str, params: Argon2Params) -> Result<()>`: Enables vault with custom Argon2id derivation parameters.
+        - `disable_vault(&self, password: &str) -> Result<()>`: Decrypts all configuration files back to plain text formats.
+        - `unlock(&self, password: &str) -> Result<()>`: Validates master password and enables transparent configuration access (with `unlock_vault` preserved as a convenience alias).
+        - `lock(&self) -> Result<()>`: Purges decrypted caches and securely wipes in-memory cryptographic keys from RAM (with `lock_vault` preserved as a convenience alias).
+        - `verify_vault_password(&self, password: &str) -> Result<bool>`: Verifies a candidate master password without unlocking or mutating vault state (ideal for confirmation modals).
+        - `vault_info(&self) -> Option<VaultInfo>`: Provides a complete diagnostic snapshot (`enabled`, `is_locked`, `lock_timeout`, `kdf_params`, `time_since_last_activity`).
+        - `set_vault_lock_timeout(&self, timeout: Option<Duration>) -> Result<()>` and `vault_lock_timeout(&self) -> Option<Duration>`: Runtime auto-lock timeout adjustment.
+        - `touch_vault(&self) -> Result<()>`: Resets the inactivity timer without performing file I/O.
+        - `change_vault_password(&self, old_pw: &str, new_pw: &str) -> Result<()>`: Re-encrypts all configuration stores with new salt, nonce, and derived key.
+        - `is_vault_enabled(&self) -> bool` and `is_locked(&self) -> bool`: State inspection helpers.
+    - Automatic error gating: attempting to read or mutate settings while locked returns `Error::ConfigLocked`.
+- **Vault-Aware Hot-Reload Coordination (`hot-reload` feature)**:
+    - Added `HotReloadEvent::SkippedLocked`: when an external file modification occurs while the vault is locked, the in-memory cache is invalidated and the event is emitted without failing or spamming errors. Decryption occurs transparently once the user unlocks.
+- **Vault State & Store Deduplication**:
+    - Centralized `decrypt_vault_value_to_str` and `encrypt_value` in `VaultState`, deduplicating vault I/O logic across `SingleFileStore`, `MultiFileStore`, and `TableStore`.
+    - Implemented `Display` for `VaultEvent` and added constant-time key comparisons.
+- **Configurable Argon2id Parameters & Developer Presets**:
+    - Added `Argon2Params` struct (`m_cost`, `t_cost`, `p_cost`) with predefined presets:
+        - `Argon2Preset::Standard`: 19 MiB RAM, 2 iterations, 1 lane (OWASP production recommendation, default).
+        - `Argon2Preset::Fast`: 64 KiB RAM, 1 iteration, 1 lane (near-instant execution for local development and test suites).
+        - `Argon2Preset::Mobile`: 8 MiB RAM, 1 iteration, 1 lane (memory-conscious for Android and iOS devices).
+        - `Argon2Preset::HighSecurity`: 64 MiB RAM, 3 iterations, 4 lanes (hardened protection for servers).
+    - Presets and parameters are serialized directly within `VaultEnvelope.kdf_params`, ensuring cross-platform portability and automatic parameter auto-detection upon unlock.
+    - Added `.with_vault_preset(...)` and `.with_vault_kdf_params(...)` across `SettingsConfigBuilder` and `SettingsManagerBuilder`.
+- **Vault Lifecycle Event System (`EventManager`)**:
+    - Added `VaultEvent` enum (`Unlocked`, `Locked`, `AutoLocked`, `PasswordChanged`, `Enabled`, `Disabled`).
+    - Added `EventManager::on_vault_event`, `EventManager::on_vault_lock`, and `EventManager::on_vault_unlock` reactive listener methods.
+    - Auto-lock detection automatically dispatches `VaultEvent::AutoLocked` when the configured inactivity threshold is exceeded.
+- **Full Multi-Profile & Sub-Settings Vault Synchronization**:
+    - `enable_vault`, `disable_vault`, `change_vault_password`, and `set_vault_password` atomically synchronize all existing profiles (main settings and sub-settings) on disk.
+    - Direct store-level re-encryption preserves existing keychain credentials, prevents redundant keychain writes, and avoids firing spurious `SubSettingsAction::Updated` notifications during key rotation.
+- **Sub-Settings & Named Profiles Vault Inheritance**:
+    - Sub-settings stores (`SingleFileStore`, `MultiFileStore`, and `TableStore`) automatically inherit the parent manager's vault configuration.
+    - Profiles automatically inherit vault encryption; profile switching transparently operates with the active master key.
+- **Seamless Vault Backup & Restore Integration**:
+    - Backups generated from an unlocked vaulted manager export clean, decrypted configuration files so that `.rcman` zip archive encryption and `SecretBackupPolicy` (Include/Exclude/EncryptedOnly) operate on true configuration fields.
+    - Restoring a backup archive onto an active vaulted manager automatically re-encrypts imported configuration files into `VaultEnvelope` format on disk.
+
 ## [0.2.3] - 2026-08-20
 
 ### Added
