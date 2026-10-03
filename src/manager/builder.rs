@@ -134,7 +134,11 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         self
     }
 
-    /// Enable vault encryption for the configuration file (requires `vault` feature).
+    /// Configure vault support without encrypting existing plaintext settings.
+    ///
+    /// Existing encrypted settings are detected automatically. Use
+    /// `SettingsManager::enable_vault` to encrypt an existing configuration,
+    /// or `with_vault_password` to supply a password at startup.
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault(mut self) -> Self {
@@ -148,6 +152,38 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     pub fn with_vault_password(mut self, password: impl Into<String>) -> Self {
         self.config_builder = self.config_builder.with_vault_password(password);
         self
+    }
+
+    /// Read a vault startup password from a file, environment variable, or supplied value.
+    ///
+    /// Resolution happens immediately; missing sources return an error instead of
+    /// silently falling back to an unencrypted configuration. File sources strip
+    /// trailing line endings while preserving spaces in the password.
+    ///
+    /// # Errors
+    /// Returns an error if the source cannot be read or contains an empty password.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "vault")]
+    /// # fn example() -> rcman::Result<()> {
+    /// let manager = rcman::SettingsManager::builder("my-app", "1.0")
+    ///     .with_vault_password_source(rcman::SecretPasswordSource::file(
+    ///         "/run/secrets/settings-password",
+    ///     ))?
+    ///     .build()?;
+    /// assert!(!manager.is_locked());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "vault")]
+    pub fn with_vault_password_source(
+        mut self,
+        source: crate::credentials::SecretPasswordSource,
+    ) -> crate::Result<Self> {
+        self.config_builder = self.config_builder.with_vault_password_source(source)?;
+        Ok(self)
     }
 
     /// Set an auto-lock inactivity timeout for the vault.

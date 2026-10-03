@@ -231,11 +231,7 @@ impl SubSettingsStore for TableStore {
         #[cfg(feature = "vault")]
         let mut value = if crate::vault::is_vault_value(&raw_val) {
             let vault = self.get_vault()?.ok_or(Error::ConfigLocked)?;
-            if let Some(decrypted_str) = vault.decrypt_vault_value_to_str(&raw_val)? {
-                serde_json::from_str(&decrypted_str).map_err(Error::from)?
-            } else {
-                raw_val
-            }
+            vault.decrypt_value(&raw_val)?
         } else {
             raw_val
         };
@@ -248,28 +244,7 @@ impl SubSettingsStore for TableStore {
             value = migrator(value);
             if value != original {
                 debug!("Migrated sub-settings table entry: {key}");
-                #[cfg(feature = "vault")]
-                let new_content = if let Some(vault) = self.get_vault()? {
-                    if vault.is_locked() {
-                        return Err(Error::ConfigLocked);
-                    }
-                    let serialized = serde_json::to_string(&value).map_err(Error::from)?;
-                    let envelope = vault.encrypt_payload(serialized.as_bytes())?;
-                    serde_json::to_string(&envelope).map_err(Error::from)?
-                } else {
-                    serde_json::to_string(&value).map_err(Error::from)?
-                };
-
-                #[cfg(not(feature = "vault"))]
-                let new_content = serde_json::to_string(&value).map_err(Error::from)?;
-
-                let upsert_sql = format!(
-                    "INSERT INTO {table} (key, data) VALUES (?1, ?2)
-                     ON CONFLICT(key) DO UPDATE SET data = excluded.data",
-                    table = self.table_name
-                );
-                conn.execute(&upsert_sql, rusqlite::params![key, new_content])
-                    .map_err(|e| Error::Config(format!("sqlite upsert: {e}")))?;
+                self.set(key, value.clone())?;
             }
         }
 

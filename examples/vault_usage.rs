@@ -56,9 +56,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   Vault enabled: {}", manager.is_vault_enabled());
     println!("   Initial locked state: {}\n", manager.is_locked());
 
-    // Unlock the new vault
-    println!("📝 Step 2: Unlock vault and save sensitive configuration");
-    manager.unlock(password)?;
+    // Encrypt the existing configuration with a new vault
+    println!("📝 Step 2: Enable vault and save sensitive configuration");
+    manager.enable_vault(password)?;
     assert!(!manager.is_locked());
 
     manager.save_setting("api", "endpoint", &json!("https://api.secure.internal"))?;

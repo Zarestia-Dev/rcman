@@ -124,14 +124,16 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
             mode_str,
         };
 
-        // Restore main settings
-        ctx.restore_main_settings(&mut result)?;
-
-        // Restore sub-settings
-        ctx.restore_sub_settings_entries(&mut result)?;
-
-        // Restore external configs
-        ctx.restore_external_configs_entries(&mut result)?;
+        let restored = (|| -> Result<()> {
+            ctx.restore_main_settings(&mut result)?;
+            ctx.restore_sub_settings_entries(&mut result)?;
+            ctx.restore_external_configs_entries(&mut result)
+        })();
+        // A failed restore may already have written some files.
+        if !options.flags.control.dry_run {
+            self.manager.invalidate_cache();
+        }
+        restored?;
 
         info!(
             "Restore complete: {} restored, {} skipped",

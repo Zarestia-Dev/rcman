@@ -5,6 +5,8 @@ use crate::config::CredentialConfig;
 use crate::config::{SettingMetadata, SettingsConfig, SettingsSchema};
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 use crate::credentials::CredentialManager;
+#[cfg(feature = "vault")]
+use crate::error::Error;
 use crate::error::Result;
 use crate::manager::EventManager;
 use crate::manager::cache::SettingsCache;
@@ -136,37 +138,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         // Initialize credential manager if enabled and feature is available
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        let credentials = match &config.credential_config {
-            CredentialConfig::Disabled => None,
-            CredentialConfig::Default => {
-                log::debug!("Credential management enabled with default backend");
-                Some(CredentialManager::new(&config.app_name))
-            }
-            #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
-            CredentialConfig::WithFallback {
-                fallback_path,
-                password,
-            } => {
-                log::debug!(
-                    "Credential management enabled with keychain and encrypted file fallback"
-                );
-                let path = fallback_path
-                    .clone()
-                    .unwrap_or_else(|| config.config_dir.join("secrets.enc"));
-                Some(CredentialManager::with_fallback(
-                    &config.app_name,
-                    path,
-                    password,
-                ))
-            }
-            CredentialConfig::Custom(backend) => {
-                log::debug!("Credential management enabled with custom backend");
-                Some(CredentialManager::with_backend(
-                    &config.app_name,
-                    backend.clone(),
-                ))
-            }
-        };
+        let credentials = Self::initialize_credentials(&config);
 
         // Initialize profile manager if profiles are enabled
         #[cfg(feature = "profiles")]
@@ -199,61 +171,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         );
 
         #[cfg(feature = "vault")]
-        let vault = if config.vault_enabled {
-            let settings_path = settings_dir.join(&config.settings_file);
-            let mut detected_salt = None;
-            let mut detected_envelope = None;
-            let mut detected_kdf_params = config.vault_kdf_params;
-
-            if let Ok(value) = storage.read::<Value>(&settings_path)
-                && crate::vault::is_vault_value(&value)
-                && let Ok(envelope) = serde_json::from_value::<crate::vault::VaultEnvelope>(value)
-            {
-                if let Ok(salt) = envelope.decode_salt() {
-                    detected_salt = Some(salt);
-                }
-                detected_kdf_params = Some(envelope.kdf_params());
-                detected_envelope = Some(envelope);
-            }
-
-            let vault_state = Arc::new(crate::vault::VaultState::new(
-                detected_salt,
-                config.vault_lock_timeout,
-                detected_kdf_params,
-            ));
-
-            if let Some(ref password) = config.vault_password {
-                vault_state.unlock(password, detected_envelope.as_ref())?;
-            }
-
-            Some(vault_state)
-        } else {
-            let settings_path = settings_dir.join(&config.settings_file);
-            if let Ok(value) = storage.read::<Value>(&settings_path)
-                && crate::vault::is_vault_value(&value)
-                && let Ok(envelope) = serde_json::from_value::<crate::vault::VaultEnvelope>(value)
-            {
-                let detected_salt = envelope.decode_salt().ok();
-                let detected_kdf_params = Some(envelope.kdf_params());
-                Some(Arc::new(crate::vault::VaultState::new(
-                    detected_salt,
-                    None,
-                    detected_kdf_params,
-                )))
-            } else {
-                None
-            }
-        };
+        let vault = Self::initialize_vault(&config, &storage, &settings_dir)?;
 
         let events = Arc::new(EventManager::new());
-
-        #[cfg(feature = "vault")]
-        if let Some(ref v) = vault {
-            let events_clone = Arc::clone(&events);
-            v.set_event_callback(Some(Arc::new(move |event| {
-                events_clone.notify_vault(event);
-            })));
-        }
 
         let manager = Self {
             config,
@@ -280,6 +200,16 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             _schema: PhantomData,
         };
 
+        #[cfg(feature = "vault")]
+        if let Some(vault) = manager
+            .vault
+            .read()
+            .map_err(|_| Error::LockPoisoned)?
+            .as_ref()
+        {
+            manager.configure_vault_events(vault);
+        }
+
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         {
             #[cfg(feature = "vault")]
@@ -290,8 +220,48 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             manager.migrate_secret_keys()?;
         }
 
+        #[cfg(feature = "vault")]
+        if manager.config.vault_password.is_some() {
+            manager.persist_vault()?;
+        }
+
         Ok(manager)
     }
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn initialize_credentials(config: &SettingsConfig<S, Schema>) -> Option<CredentialManager> {
+        match &config.credential_config {
+            CredentialConfig::Disabled => None,
+            CredentialConfig::Default => {
+                log::debug!("Credential management enabled with default backend");
+                Some(CredentialManager::new(&config.app_name))
+            }
+            #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+            CredentialConfig::WithFallback {
+                fallback_path,
+                password,
+            } => {
+                log::debug!(
+                    "Credential management enabled with keychain and encrypted file fallback"
+                );
+                let path = fallback_path
+                    .clone()
+                    .unwrap_or_else(|| config.config_dir.join("secrets.enc"));
+                Some(CredentialManager::with_fallback(
+                    &config.app_name,
+                    path,
+                    password,
+                ))
+            }
+            CredentialConfig::Custom(backend) => {
+                log::debug!("Credential management enabled with custom backend");
+                Some(CredentialManager::with_backend(
+                    &config.app_name,
+                    backend.clone(),
+                ))
+            }
+        }
+    }
+
     /// Get the configuration
     pub fn config(&self) -> &SettingsConfig<S, Schema> {
         &self.config

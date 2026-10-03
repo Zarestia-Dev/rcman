@@ -43,7 +43,7 @@ pub enum SubSettingsMode {
 
 impl SubSettingsMode {
     #[inline]
-    pub(crate) fn is_file_or_table(&self) -> bool {
+    pub(crate) fn is_file_or_table(self) -> bool {
         match self {
             Self::SingleFile => true,
             #[cfg(feature = "sqlite")]

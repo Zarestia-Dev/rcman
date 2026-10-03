@@ -379,7 +379,7 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
             return Err(Error::ConfigLocked);
         }
 
-        if matches!(self.cache_strategy, CacheStrategy::None) {
+        if !matches!(self.cache_strategy, CacheStrategy::Full) {
             if !self.base_dir.exists() {
                 return Ok(Vec::new());
             }
@@ -433,9 +433,8 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         let mut result = HashMap::with_capacity(keys.len());
 
         for key in keys {
-            if let Ok(value) = self.get(key.as_str()) {
-                result.insert(key, value);
-            }
+            let value = self.get(key.as_str())?;
+            result.insert(key, value);
         }
 
         Ok(result)

@@ -925,7 +925,7 @@ manager.lock()?;
 assert!(manager.is_locked());
 
 // Attempting access while locked fails safely
-let err = manager.get_all::<MyAppSettings>().unwrap_err();
+let err = manager.get_all().unwrap_err();
 assert!(err.is_locked());
 
 // Unlock again
@@ -938,9 +938,31 @@ manager.disable_vault("new_password")?; // Decrypt back to plaintext
 manager.enable_vault("new_password")?;  // Encrypt to vault envelope
 ```
 
+For an existing application, register all sub-settings before calling
+`enable_vault(password)`. The migration covers both single-file and multi-file
+stores and their profiles. `.with_vault()` alone leaves plaintext configurations
+usable; `unlock(password)` opens an already encrypted vault.
+
+For headless startup, use the same password-source type as credential storage:
+
+```rust
+use rcman::{SecretPasswordSource, SettingsManager, SubSettingsConfig};
+
+let manager = SettingsManager::builder("my-app", "1.0.0")
+    .with_sub_settings(SubSettingsConfig::singlefile("connections"))
+    .with_vault_password_source(SecretPasswordSource::file("/run/secrets/vault"))?
+    .build()?;
+```
+
+Missing or empty password sources return an error. Vault password files strip
+trailing CR/LF characters while preserving spaces. Timeout changes require an
+unlocked vault and are persisted before updating the running timer. Applications
+should serialize vault migrations with settings edits; migration rollback handles
+reported write failures but is not a crash-atomic transaction across files.
+
 - **Boot Detection**: rcman automatically detects vaulted files on disk at startup and boots into a locked state if no password is provided.
 - **Sub-Settings Inheritance**: Registered sub-settings (e.g. per-entity remote files) automatically inherit vault encryption when enabled on the manager.
-- **Inactivity Timeout**: Optional auto-lock timeout safely wipes keys and invalidates cache when idle.
+- **Inactivity Timeout**: Optional auto-lock timeout wipes the active key and blocks settings access when idle.
 - **Memory Scrubbing**: Active key buffers are zeroized upon locking or dropping.
 - **Configurable KDF Presets**: Tailor Argon2id key derivation to your platform and use case:
   - `Argon2Preset::Standard`: 19 MiB, 2 passes, 1 thread (default, OWASP recommended).

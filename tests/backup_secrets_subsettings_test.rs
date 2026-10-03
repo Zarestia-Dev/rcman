@@ -3,6 +3,8 @@
 //! Tests verifying that secrets in sub-settings (connections, remotes, backend)
 //! are properly included/excluded based on the SecretBackupPolicy
 
+#![cfg(feature = "backup")]
+
 mod common;
 
 use common::TestFixture;

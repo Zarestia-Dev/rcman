@@ -5,7 +5,8 @@ use crate::vault::crypto::{
     constant_time_eq, decrypt, derive_key, encrypt, generate_nonce, generate_salt, zeroize_bytes,
 };
 use crate::vault::envelope::{Argon2Params, VaultEnvelope};
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 /// Secure wrapper around a 32-byte cryptographic key that zeroizes memory on drop
@@ -90,6 +91,13 @@ pub struct VaultState {
     last_activity: RwLock<Instant>,
     kdf_params: RwLock<Argon2Params>,
     event_callback: RwLock<Option<VaultEventCallback>>,
+    watchdog_running: Arc<AtomicBool>,
+}
+
+impl Drop for VaultState {
+    fn drop(&mut self) {
+        self.watchdog_running.store(false, Ordering::Release);
+    }
 }
 
 impl VaultState {
@@ -106,6 +114,63 @@ impl VaultState {
             last_activity: RwLock::new(Instant::now()),
             kdf_params: RwLock::new(kdf_params.unwrap_or_default()),
             event_callback: RwLock::new(None),
+            watchdog_running: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Start the background auto-lock watchdog thread if not already running.
+    ///
+    /// The watchdog periodically inspects elapsed inactivity time and triggers
+    /// auto-lock when `elapsed > lock_timeout`, emitting `VaultEvent::AutoLocked`.
+    pub fn start_watchdog(self: &Arc<Self>) {
+        if self.lock_timeout().is_none() || self.watchdog_running.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let weak = Arc::downgrade(self);
+        let is_running = Arc::clone(&self.watchdog_running);
+
+        let spawned = std::thread::Builder::new()
+            .name("rcman-vault-watchdog".to_string())
+            .spawn(move || {
+                while is_running.load(Ordering::Relaxed) {
+                    let Some(vault) = weak.upgrade() else {
+                        break;
+                    };
+
+                    let (is_locked, did_auto_lock) = vault.is_locked_transition();
+                    if did_auto_lock {
+                        log::debug!("rcman: vault auto-locked due to inactivity timeout");
+                    }
+
+                    let sleep_dur = if let Some(timeout) = vault.lock_timeout() {
+                        if is_locked {
+                            Duration::from_millis(500)
+                        } else {
+                            let elapsed = vault
+                                .last_activity
+                                .read()
+                                .map_or(Duration::MAX, |t| t.elapsed());
+                            if elapsed >= timeout {
+                                Duration::from_millis(50)
+                            } else {
+                                let rem = timeout.saturating_sub(elapsed);
+                                rem.min(Duration::from_millis(500))
+                                    .max(Duration::from_millis(50))
+                            }
+                        }
+                    } else {
+                        Duration::from_millis(500)
+                    };
+
+                    drop(vault);
+                    std::thread::sleep(sleep_dur);
+                }
+                is_running.store(false, Ordering::Release);
+            });
+        if let Err(error) = spawned {
+            self.watchdog_running.store(false, Ordering::Release);
+            log::error!("Failed to start vault auto-lock watchdog: {error}");
         }
     }
 
@@ -141,21 +206,20 @@ impl VaultState {
     ///
     /// Returns a tuple `(is_locked, did_auto_lock_transition)`.
     pub fn is_locked_transition(&self) -> (bool, bool) {
-        let timeout_opt = self.lock_timeout();
-        let did_auto_lock = if let Some(timeout) = timeout_opt {
+        let did_auto_lock = if let Some(timeout) = self.lock_timeout() {
+            // Serialize the transition with encryption and explicit locking. Reading
+            // activity under this guard prevents expiring a concurrent successful write.
+            let Ok(mut status) = self.status.write() else {
+                return (true, false);
+            };
             let elapsed = self
                 .last_activity
                 .read()
                 .map_or(Duration::MAX, |t| t.elapsed());
-
-            if elapsed > timeout {
-                let was_unlocked = self
-                    .status
-                    .read()
-                    .is_ok_and(|s| matches!(*s, VaultStatus::Unlocked { .. }));
-
-                if was_unlocked {
-                    self.lock_internal();
+            if elapsed >= timeout {
+                if let VaultStatus::Unlocked { salt, .. } = &*status {
+                    let salt = *salt;
+                    *status = VaultStatus::Locked { salt: Some(salt) };
                     true
                 } else {
                     false
@@ -231,17 +295,6 @@ impl VaultState {
             lock_timeout: self.lock_timeout(),
             kdf_params: self.kdf_params(),
             time_since_last_activity,
-        }
-    }
-
-    /// Internal lock implementation
-    fn lock_internal(&self) {
-        if let Ok(mut guard) = self.status.write() {
-            let current_salt = match &*guard {
-                VaultStatus::Locked { salt } => *salt,
-                VaultStatus::Unlocked { salt, .. } => Some(*salt),
-            };
-            *guard = VaultStatus::Locked { salt: current_salt };
         }
     }
 
@@ -340,11 +393,15 @@ impl VaultState {
                 let ciphertext = encrypt(&key.0, &nonce, plaintext)?;
                 self.touch();
                 let params = self.kdf_params();
-                Ok(VaultEnvelope::with_params(
+                let timeout_ms = self
+                    .lock_timeout()
+                    .and_then(|d| u64::try_from(d.as_millis()).ok());
+                Ok(VaultEnvelope::with_params_and_timeout(
                     salt,
                     &nonce,
                     &ciphertext,
                     Some(params),
+                    timeout_ms,
                 ))
             }
             VaultStatus::Locked { .. } => Err(Error::ConfigLocked),

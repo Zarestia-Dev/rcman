@@ -16,6 +16,9 @@ pub mod hot_reload;
 #[cfg(feature = "profiles")]
 pub mod profiles;
 
+#[cfg(feature = "vault")]
+mod vault;
+
 // Re-export core types
 pub use self::core::SettingsManager;
 pub use self::events::EventManager;

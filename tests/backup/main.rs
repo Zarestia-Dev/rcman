@@ -14,6 +14,8 @@
 //! live at `tests/common/mod.rs` and are referenced with `#[path]` so all
 //! integration test crates can share them.
 
+#![cfg(feature = "backup")]
+
 #[path = "../common/mod.rs"]
 mod common;
 

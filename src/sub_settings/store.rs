@@ -21,6 +21,19 @@ pub trait SubSettingsStore: Send + Sync {
     /// Get all entries
     fn get_all(&self) -> Result<std::collections::HashMap<String, Value>>;
 
+    /// Rewrite a complete migration snapshot using the current vault key.
+    ///
+    /// Unlike ordinary updates, this must persist unchanged values without reading
+    /// data encrypted with the previous key. Write failures are returned to the caller.
+    #[cfg(feature = "vault")]
+    fn rewrite(&self, entries: std::collections::HashMap<String, Value>) -> Result<()> {
+        self.invalidate_cache();
+        for (key, value) in entries {
+            self.set(&key, value)?;
+        }
+        Ok(())
+    }
+
     /// Invalidate any internal cache
     fn invalidate_cache(&self);
 

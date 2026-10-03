@@ -568,7 +568,7 @@ fn test_vault_backup_and_restore_roundtrip() {
 
     // Step 5: Restore backup onto dest_manager
     let restore_mgr = dest_manager.backup();
-    let restore_options = rcman::RestoreOptions::from_path(&backup_path);
+    let restore_options = rcman::RestoreOptions::from_path(&backup_path).overwrite(true);
     let result = restore_mgr.restore(&restore_options).unwrap();
     assert!(!result.restored.is_empty());
 
@@ -1013,4 +1013,420 @@ fn test_vault_hot_reload_locked_coordination() {
     // Unlocking must reload the updated settings seamlessly
     manager.unlock("reload_pwd").unwrap();
     assert_eq!(manager.get_all().unwrap().ui.theme, "system");
+}
+
+#[test]
+fn test_vault_with_vault_without_password_on_plaintext_does_not_lock() {
+    let temp = TempDir::new().unwrap();
+    let config = SettingsConfig::builder("vault-plaintext-app", "1.0.0")
+        .with_config_dir(temp.path())
+        .with_schema::<TestSettings>()
+        .with_vault()
+        .build();
+
+    let manager = SettingsManager::new(config).unwrap();
+    assert!(!manager.is_vault_enabled());
+    assert!(!manager.is_locked());
+
+    // Settings can be saved and read normally in plaintext
+    manager
+        .save_setting("ui", "theme", &json!("light"))
+        .unwrap();
+    assert_eq!(manager.get_all().unwrap().ui.theme, "light");
+
+    let file_path = temp.path().join("settings.json");
+    let content = std::fs::read_to_string(&file_path).unwrap();
+    assert!(!is_vault_content(&content));
+}
+
+#[test]
+fn test_vault_active_auto_lock_watchdog_proactive_event() {
+    let temp = TempDir::new().unwrap();
+    let config = SettingsConfig::builder("vault-watchdog-app", "1.0.0")
+        .with_config_dir(temp.path())
+        .with_schema::<TestSettings>()
+        .with_vault()
+        .with_vault_password("watchdog_pwd")
+        .with_vault_lock_timeout(Duration::from_millis(80))
+        .build();
+
+    let manager = SettingsManager::new(config).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    manager.events().on_vault_event(move |event| {
+        let _ = tx.send(event);
+    });
+
+    // Do NOT call manager.is_locked()!
+    // The background watchdog must proactively detect inactivity and fire AutoLocked!
+    let event = rx
+        .recv_timeout(Duration::from_millis(600))
+        .expect("Watchdog thread must proactively dispatch VaultEvent::AutoLocked without polling");
+
+    assert_eq!(event, rcman::vault::VaultEvent::AutoLocked);
+    assert!(manager.is_locked());
+}
+
+#[test]
+fn test_vault_timeout_persisted_in_envelope_and_restored_on_reboot() {
+    let temp = TempDir::new().unwrap();
+    let timeout = Duration::from_millis(150);
+
+    // Boot 1: Plaintext boot, runtime vault enable with timeout
+    {
+        let config = SettingsConfig::builder("vault-envelope-timeout-app", "1.0.0")
+            .with_config_dir(temp.path())
+            .with_schema::<TestSettings>()
+            .with_vault()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager.enable_vault("reboot_pass").unwrap();
+        manager.set_vault_lock_timeout(Some(timeout)).unwrap();
+        assert_eq!(manager.vault_lock_timeout(), Some(timeout));
+    }
+
+    // Boot 2: Restart without providing vault_lock_timeout in builder
+    {
+        let config = SettingsConfig::builder("vault-envelope-timeout-app", "1.0.0")
+            .with_config_dir(temp.path())
+            .with_schema::<TestSettings>()
+            .with_vault()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        assert!(manager.is_vault_enabled());
+        assert!(manager.is_locked());
+        // Timeout must have been restored from the on-disk envelope!
+        assert_eq!(manager.vault_lock_timeout(), Some(timeout));
+    }
+}
+
+#[test]
+fn single_file_vault_migration_survives_rotation_and_restart() {
+    let temp = TempDir::new().unwrap();
+    let build = || {
+        SettingsManager::builder("single-file-vault", "1.0")
+            .with_config_dir(temp.path())
+            .with_schema::<TestSettings>()
+            .with_vault_preset(Argon2Preset::Fast)
+            .with_sub_settings(SubSettingsConfig::singlefile("connections"))
+            .build()
+            .unwrap()
+    };
+    let manager = build();
+    let sub = manager.sub_settings("connections").unwrap();
+    sub.set("server", &json!({"host": "private.example"}))
+        .unwrap();
+    sub.set("_active", &json!("server")).unwrap();
+    let path = temp.path().join("connections.json");
+
+    manager.enable_vault("first").unwrap();
+    let encrypted = std::fs::read_to_string(&path).unwrap();
+    assert!(is_vault_content(&encrypted));
+    assert!(!encrypted.contains("private.example"));
+
+    manager.change_vault_password("first", "second").unwrap();
+    assert_ne!(std::fs::read_to_string(&path).unwrap(), encrypted);
+    drop(sub);
+    drop(manager);
+
+    let manager = build();
+    assert!(manager.unlock("first").is_err());
+    manager.unlock("second").unwrap();
+    let sub = manager.sub_settings("connections").unwrap();
+    assert_eq!(
+        sub.get::<serde_json::Value>("_active").unwrap(),
+        json!("server")
+    );
+    assert_eq!(
+        sub.get::<serde_json::Value>("server").unwrap()["host"],
+        "private.example"
+    );
+    manager.disable_vault("second").unwrap();
+    assert!(!is_vault_content(&std::fs::read_to_string(&path).unwrap()));
+    sub.invalidate_cache();
+    assert_eq!(
+        sub.get::<serde_json::Value>("_active").unwrap(),
+        json!("server")
+    );
+}
+
+#[test]
+fn vault_migration_rejects_unreadable_sub_settings_before_encrypting() {
+    let temp = TempDir::new().unwrap();
+    let manager = SettingsManager::builder("broken-sub", "1.0")
+        .with_config_dir(temp.path())
+        .with_vault_preset(Argon2Preset::Fast)
+        .with_sub_settings(SubSettingsConfig::new("remotes"))
+        .build()
+        .unwrap();
+    let path = temp.path().join("remotes/broken.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "{broken").unwrap();
+    assert!(manager.enable_vault("password").is_err());
+    assert!(!manager.is_vault_enabled());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "{broken");
+}
+
+#[test]
+fn empty_single_file_is_encrypted_during_vault_migration() {
+    let temp = TempDir::new().unwrap();
+    std::fs::write(temp.path().join("empty.json"), "{}").unwrap();
+    let manager = SettingsManager::builder("empty-sub", "1.0")
+        .with_config_dir(temp.path())
+        .with_vault_preset(Argon2Preset::Fast)
+        .with_sub_settings(SubSettingsConfig::singlefile("empty"))
+        .build()
+        .unwrap();
+    manager.enable_vault("password").unwrap();
+    assert!(is_vault_content(
+        &std::fs::read_to_string(temp.path().join("empty.json")).unwrap()
+    ));
+    manager.change_vault_password("password", "new").unwrap();
+    manager.disable_vault("new").unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("empty.json")).unwrap())
+            .unwrap();
+    assert_eq!(value, json!({}));
+}
+
+#[test]
+fn startup_password_source_encrypts_existing_sub_settings_and_preserves_spaces() {
+    let temp = TempDir::new().unwrap();
+    let password_path = temp.path().join("password");
+    std::fs::write(&password_path, " password with spaces \r\n").unwrap();
+    std::fs::write(
+        temp.path().join("connections.json"),
+        r#"{"_active":"server"}"#,
+    )
+    .unwrap();
+    let manager = SettingsManager::builder("startup-vault", "1.0")
+        .with_config_dir(temp.path())
+        .with_vault_preset(Argon2Preset::Fast)
+        .with_vault_password_source(rcman::SecretPasswordSource::file(&password_path))
+        .unwrap()
+        .with_sub_settings(SubSettingsConfig::singlefile("connections"))
+        .build()
+        .unwrap();
+    assert!(is_vault_content(
+        &std::fs::read_to_string(temp.path().join("connections.json")).unwrap()
+    ));
+    manager.lock().unwrap();
+    assert!(manager.unlock("password with spaces").is_err());
+    manager.unlock(" password with spaces ").unwrap();
+    assert_eq!(
+        manager
+            .sub_settings("connections")
+            .unwrap()
+            .get::<serde_json::Value>("_active")
+            .unwrap(),
+        json!("server")
+    );
+    assert!(
+        SettingsManager::builder("missing", "1.0")
+            .with_vault_password_source(rcman::SecretPasswordSource::file(
+                temp.path().join("missing")
+            ))
+            .is_err()
+    );
+    assert!(
+        SettingsManager::builder("empty", "1.0")
+            .with_vault_password_source(rcman::SecretPasswordSource::provided(""))
+            .is_err()
+    );
+}
+
+#[test]
+fn vault_migration_includes_entries_evicted_from_lru_cache() {
+    let temp = TempDir::new().unwrap();
+    let manager = SettingsManager::builder("lru-vault", "1.0")
+        .with_config_dir(temp.path())
+        .with_vault_preset(Argon2Preset::Fast)
+        .with_sub_settings(
+            SubSettingsConfig::new("remotes").with_cache(rcman::CacheStrategy::Lru(1)),
+        )
+        .build()
+        .unwrap();
+    let remotes = manager.sub_settings("remotes").unwrap();
+    for name in ["one", "two", "three"] {
+        remotes.set(name, &json!({"host": name})).unwrap();
+    }
+    manager.enable_vault("password").unwrap();
+    manager.change_vault_password("password", "new").unwrap();
+    for name in ["one", "two", "three"] {
+        let content =
+            std::fs::read_to_string(temp.path().join(format!("remotes/{name}.json"))).unwrap();
+        assert!(is_vault_content(&content));
+        assert_eq!(
+            remotes.get::<serde_json::Value>(name).unwrap()["host"],
+            name
+        );
+    }
+}
+
+#[cfg(feature = "profiles")]
+#[test]
+fn single_file_profiles_are_migrated_and_active_profile_is_preserved() {
+    let temp = TempDir::new().unwrap();
+    let manager = SettingsManager::builder("profiles-vault", "1.0")
+        .with_config_dir(temp.path())
+        .with_vault_preset(Argon2Preset::Fast)
+        .with_sub_settings(SubSettingsConfig::singlefile("backend").with_profiles())
+        .build()
+        .unwrap();
+    let backend = manager.sub_settings("backend").unwrap();
+    let original = backend.profiles().unwrap().active().unwrap();
+    backend.set("port", &json!(1234)).unwrap();
+    backend.profiles().unwrap().create("work").unwrap();
+    backend.switch_profile("work").unwrap();
+    backend.set("port", &json!(5678)).unwrap();
+    manager.enable_vault("password").unwrap();
+    manager.change_vault_password("password", "new").unwrap();
+    assert_eq!(backend.profiles().unwrap().active().unwrap(), "work");
+    for (profile, port) in [(&original, 1234), (&String::from("work"), 5678)] {
+        backend.switch_profile(profile).unwrap();
+        assert_eq!(
+            backend.get::<serde_json::Value>("port").unwrap(),
+            json!(port)
+        );
+        let path = backend
+            .profiles()
+            .unwrap()
+            .profile_path(profile)
+            .join("backend.json");
+        assert!(is_vault_content(&std::fs::read_to_string(path).unwrap()));
+    }
+    manager.disable_vault("new").unwrap();
+    backend.switch_profile(&original).unwrap();
+    assert_eq!(
+        backend.get::<serde_json::Value>("port").unwrap(),
+        json!(1234)
+    );
+}
+
+#[test]
+fn failed_vault_migrations_restore_previous_password_and_data() {
+    use rcman::{JsonStorage, StorageBackend};
+    use std::sync::atomic::AtomicBool;
+
+    #[derive(Clone)]
+    struct FailOnceStorage(Arc<AtomicBool>);
+
+    impl StorageBackend for FailOnceStorage {
+        fn extension(&self) -> &str {
+            "json"
+        }
+        fn serialize<T: serde::Serialize>(&self, data: &T) -> rcman::Result<String> {
+            JsonStorage::new().serialize(data)
+        }
+        fn deserialize<T: serde::de::DeserializeOwned>(&self, content: &str) -> rcman::Result<T> {
+            JsonStorage::new().deserialize(content)
+        }
+        fn write<T: serde::Serialize>(
+            &self,
+            path: &std::path::Path,
+            data: &T,
+        ) -> rcman::Result<()> {
+            if path.file_name().is_some_and(|name| name == "tokens.json")
+                && self.0.swap(false, Ordering::SeqCst)
+            {
+                return Err(Error::FileWrite {
+                    path: path.to_path_buf(),
+                    source: std::io::Error::other("injected write failure"),
+                });
+            }
+            JsonStorage::new().write(path, data)
+        }
+    }
+
+    let temp = TempDir::new().unwrap();
+    let fail = Arc::new(AtomicBool::new(false));
+    let manager = SettingsManager::builder("rollback", "1.0")
+        .with_config_dir(temp.path())
+        .with_storage_instance(FailOnceStorage(Arc::clone(&fail)))
+        .with_vault_preset(Argon2Preset::Fast)
+        .with_sub_settings(SubSettingsConfig::singlefile("tokens"))
+        .build()
+        .unwrap();
+    let tokens = manager.sub_settings("tokens").unwrap();
+    tokens.set("token", &json!("secret")).unwrap();
+    fail.store(true, Ordering::SeqCst);
+    assert!(manager.enable_vault("old").is_err());
+    assert!(!manager.is_vault_enabled());
+    assert!(!is_vault_content(
+        &std::fs::read_to_string(temp.path().join("tokens.json")).unwrap()
+    ));
+
+    manager.enable_vault("old").unwrap();
+    fail.store(true, Ordering::SeqCst);
+    assert!(manager.change_vault_password("old", "new").is_err());
+    manager.lock().unwrap();
+    assert!(manager.unlock("new").is_err());
+    manager.unlock("old").unwrap();
+    assert_eq!(
+        tokens.get::<serde_json::Value>("token").unwrap(),
+        json!("secret")
+    );
+
+    fail.store(true, Ordering::SeqCst);
+    assert!(manager.disable_vault("old").is_err());
+    assert!(manager.is_vault_enabled());
+    manager.lock().unwrap();
+    manager.unlock("old").unwrap();
+    assert_eq!(
+        tokens.get::<serde_json::Value>("token").unwrap(),
+        json!("secret")
+    );
+}
+
+#[test]
+fn timeout_changes_require_unlock_and_zero_timeout_is_persisted() {
+    let temp = TempDir::new().unwrap();
+    let manager = SettingsManager::builder("timeout", "1.0")
+        .with_config_dir(temp.path())
+        .with_vault_preset(Argon2Preset::Fast)
+        .with_vault_password("password")
+        .build()
+        .unwrap();
+    manager.lock().unwrap();
+    assert!(matches!(
+        manager.set_vault_lock_timeout(Some(Duration::from_secs(10))),
+        Err(Error::ConfigLocked)
+    ));
+    assert_eq!(manager.vault_lock_timeout(), None);
+    manager.unlock("password").unwrap();
+    manager
+        .set_vault_lock_timeout(Some(Duration::ZERO))
+        .unwrap();
+    assert!(manager.is_locked());
+    drop(manager);
+    let manager = SettingsManager::builder("timeout", "1.0")
+        .with_config_dir(temp.path())
+        .build()
+        .unwrap();
+    assert_eq!(manager.vault_lock_timeout(), Some(Duration::ZERO));
+}
+
+#[test]
+fn malformed_envelope_cannot_unlock_or_initialize_a_vault() {
+    let temp = TempDir::new().unwrap();
+    let manager = SettingsManager::builder("corrupt-envelope", "1.0")
+        .with_config_dir(temp.path())
+        .with_vault_preset(Argon2Preset::Fast)
+        .with_vault_password("password")
+        .build()
+        .unwrap();
+    manager.lock().unwrap();
+    std::fs::write(
+        temp.path().join("settings.json"),
+        r#"{"__rcman_vault__":1}"#,
+    )
+    .unwrap();
+    assert!(manager.unlock("anything").is_err());
+    assert!(manager.is_locked());
+    assert!(
+        SettingsManager::builder("corrupt-envelope", "1.0")
+            .with_config_dir(temp.path())
+            .build()
+            .is_err()
+    );
 }

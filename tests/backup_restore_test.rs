@@ -6,6 +6,8 @@
 //! - Restoring from backups
 //! - Sub-settings inclusion in backups
 
+#![cfg(feature = "backup")]
+
 mod common;
 
 use common::TestFixture;

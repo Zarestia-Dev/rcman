@@ -252,6 +252,15 @@ impl SettingsConfig {
     }
 }
 
+#[cfg(feature = "vault")]
+#[derive(Clone, Default)]
+struct VaultConfig {
+    enabled: bool,
+    password: Option<String>,
+    lock_timeout: Option<std::time::Duration>,
+    kdf_params: Option<crate::vault::Argon2Params>,
+}
+
 /// Builder for creating `SettingsConfig` with a fluent API.
 ///
 /// This is the recommended way to create a settings manager.
@@ -310,13 +319,7 @@ pub struct SettingsConfigBuilder<S: StorageBackend = JsonStorage, Schema: Settin
     #[cfg(feature = "hot-reload")]
     hot_reload: Option<HotReloadConfig>,
     #[cfg(feature = "vault")]
-    vault_enabled: bool,
-    #[cfg(feature = "vault")]
-    vault_password: Option<String>,
-    #[cfg(feature = "vault")]
-    vault_lock_timeout: Option<std::time::Duration>,
-    #[cfg(feature = "vault")]
-    vault_kdf_params: Option<crate::vault::Argon2Params>,
+    vault: VaultConfig,
     credential_config: CredentialConfig,
     env_overrides_secrets: bool,
     resolve_env_credentials: bool,
@@ -349,9 +352,9 @@ impl<S: StorageBackend, Schema: SettingsSchema> std::fmt::Debug
         debug.field("profile_migrator", &self.profile_migrator);
 
         #[cfg(feature = "vault")]
-        debug.field("vault_enabled", &self.vault_enabled);
+        debug.field("vault_enabled", &self.vault.enabled);
         #[cfg(feature = "vault")]
-        debug.field("vault_kdf_params", &self.vault_kdf_params);
+        debug.field("vault_kdf_params", &self.vault.kdf_params);
 
         debug.field("migrator", &self.migrator.as_ref().map(|_| "Some(Fn)"));
         debug.finish_non_exhaustive()
@@ -378,13 +381,7 @@ impl SettingsConfigBuilder {
             #[cfg(feature = "hot-reload")]
             hot_reload: None,
             #[cfg(feature = "vault")]
-            vault_enabled: false,
-            #[cfg(feature = "vault")]
-            vault_password: None,
-            #[cfg(feature = "vault")]
-            vault_lock_timeout: None,
-            #[cfg(feature = "vault")]
-            vault_kdf_params: None,
+            vault: VaultConfig::default(),
             credential_config: CredentialConfig::Disabled,
             env_overrides_secrets: false,
             resolve_env_credentials: false,
@@ -539,11 +536,14 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         self
     }
 
-    /// Enable vault encryption for the configuration file (requires `vault` feature)
+    /// Configure vault support without encrypting existing plaintext settings.
+    ///
+    /// Encrypted files are detected automatically. Call `SettingsManager::enable_vault`
+    /// to encrypt an existing configuration, or provide a startup password.
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault(mut self) -> Self {
-        self.vault_enabled = true;
+        self.vault.enabled = true;
         self
     }
 
@@ -551,17 +551,60 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault_password(mut self, password: impl Into<String>) -> Self {
-        self.vault_enabled = true;
-        self.vault_password = Some(password.into());
+        self.vault.enabled = true;
+        self.vault.password = Some(password.into());
         self
+    }
+
+    /// Read a vault startup password from a file, environment variable, or supplied value.
+    ///
+    /// Resolution happens immediately; missing sources return an error instead of
+    /// silently falling back to an unencrypted configuration. File sources strip
+    /// trailing line endings while preserving spaces in the password.
+    ///
+    /// # Errors
+    /// Returns an error if the source cannot be read or contains an empty password.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "vault")]
+    /// # fn example() -> rcman::Result<()> {
+    /// let manager = rcman::SettingsManager::builder("my-app", "1.0")
+    ///     .with_vault_password_source(rcman::SecretPasswordSource::file(
+    ///         "/run/secrets/settings-password",
+    ///     ))?
+    ///     .build()?;
+    /// assert!(!manager.is_locked());
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "vault")]
+    pub fn with_vault_password_source(
+        self,
+        source: crate::credentials::SecretPasswordSource,
+    ) -> crate::Result<Self> {
+        let password = match source {
+            crate::credentials::SecretPasswordSource::Provided(password) => password,
+            crate::credentials::SecretPasswordSource::File(path) => std::fs::read_to_string(&path)
+                .map(|password| password.trim_end_matches(['\r', '\n']).to_string())
+                .map_err(|source| crate::Error::FileRead { path, source })?,
+            source => source.resolve()?,
+        };
+        if password.is_empty() {
+            return Err(crate::Error::Config(
+                "Vault password source is empty".into(),
+            ));
+        }
+        Ok(self.with_vault_password(password))
     }
 
     /// Set an auto-lock inactivity timeout for the vault
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault_lock_timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.vault_enabled = true;
-        self.vault_lock_timeout = Some(timeout);
+        self.vault.enabled = true;
+        self.vault.lock_timeout = Some(timeout);
         self
     }
 
@@ -569,8 +612,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault_kdf_params(mut self, params: crate::vault::Argon2Params) -> Self {
-        self.vault_enabled = true;
-        self.vault_kdf_params = Some(params);
+        self.vault.enabled = true;
+        self.vault.kdf_params = Some(params);
         self
     }
 
@@ -779,13 +822,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             #[cfg(feature = "hot-reload")]
             hot_reload,
             #[cfg(feature = "vault")]
-            vault_enabled,
-            #[cfg(feature = "vault")]
-            vault_password,
-            #[cfg(feature = "vault")]
-            vault_lock_timeout,
-            #[cfg(feature = "vault")]
-            vault_kdf_params,
+            vault,
             credential_config,
             env_overrides_secrets,
             resolve_env_credentials,
@@ -810,13 +847,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             #[cfg(feature = "hot-reload")]
             hot_reload,
             #[cfg(feature = "vault")]
-            vault_enabled,
-            #[cfg(feature = "vault")]
-            vault_password,
-            #[cfg(feature = "vault")]
-            vault_lock_timeout,
-            #[cfg(feature = "vault")]
-            vault_kdf_params,
+            vault,
             credential_config,
             env_overrides_secrets,
             resolve_env_credentials,
@@ -861,13 +892,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             #[cfg(feature = "hot-reload")]
             hot_reload,
             #[cfg(feature = "vault")]
-            vault_enabled,
-            #[cfg(feature = "vault")]
-            vault_password,
-            #[cfg(feature = "vault")]
-            vault_lock_timeout,
-            #[cfg(feature = "vault")]
-            vault_kdf_params,
+            vault,
             credential_config,
             env_overrides_secrets,
             resolve_env_credentials,
@@ -891,13 +916,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             #[cfg(feature = "hot-reload")]
             hot_reload,
             #[cfg(feature = "vault")]
-            vault_enabled,
-            #[cfg(feature = "vault")]
-            vault_password,
-            #[cfg(feature = "vault")]
-            vault_lock_timeout,
-            #[cfg(feature = "vault")]
-            vault_kdf_params,
+            vault,
             credential_config,
             env_overrides_secrets,
             resolve_env_credentials,
@@ -1039,13 +1058,13 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             #[cfg(feature = "hot-reload")]
             hot_reload: self.hot_reload,
             #[cfg(feature = "vault")]
-            vault_enabled: self.vault_enabled,
+            vault_enabled: self.vault.enabled,
             #[cfg(feature = "vault")]
-            vault_password: self.vault_password,
+            vault_password: self.vault.password,
             #[cfg(feature = "vault")]
-            vault_lock_timeout: self.vault_lock_timeout,
+            vault_lock_timeout: self.vault.lock_timeout,
             #[cfg(feature = "vault")]
-            vault_kdf_params: self.vault_kdf_params,
+            vault_kdf_params: self.vault.kdf_params,
         }
     }
 }

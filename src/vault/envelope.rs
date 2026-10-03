@@ -110,6 +110,9 @@ pub struct VaultEnvelope {
     /// Key derivation parameters used to derive the AES key (optional for backwards compatibility)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kdf_params: Option<Argon2Params>,
+    /// Inactivity auto-lock timeout in milliseconds (optional for backwards compatibility)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_timeout_ms: Option<u64>,
 }
 
 impl VaultEnvelope {
@@ -117,6 +120,27 @@ impl VaultEnvelope {
     #[must_use]
     pub fn new(salt: &[u8; 16], nonce: &[u8; 12], ciphertext: &[u8]) -> Self {
         Self::with_params(salt, nonce, ciphertext, None)
+    }
+
+    /// Create a new vault envelope with explicit KDF parameters and optional timeout
+    #[must_use]
+    pub fn with_params_and_timeout(
+        salt: &[u8; 16],
+        nonce: &[u8; 12],
+        ciphertext: &[u8],
+        kdf_params: Option<Argon2Params>,
+        lock_timeout_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            __rcman_vault__: 1,
+            version: VAULT_VERSION,
+            algorithm: VAULT_ALGORITHM.to_string(),
+            salt: BASE64.encode(salt),
+            nonce: BASE64.encode(nonce),
+            ciphertext: BASE64.encode(ciphertext),
+            kdf_params,
+            lock_timeout_ms,
+        }
     }
 
     /// Create a new vault envelope with explicit KDF parameters
@@ -127,15 +151,13 @@ impl VaultEnvelope {
         ciphertext: &[u8],
         kdf_params: Option<Argon2Params>,
     ) -> Self {
-        Self {
-            __rcman_vault__: 1,
-            version: VAULT_VERSION,
-            algorithm: VAULT_ALGORITHM.to_string(),
-            salt: BASE64.encode(salt),
-            nonce: BASE64.encode(nonce),
-            ciphertext: BASE64.encode(ciphertext),
-            kdf_params,
-        }
+        Self::with_params_and_timeout(salt, nonce, ciphertext, kdf_params, None)
+    }
+
+    /// Retrieve the configured auto-lock timeout, if present
+    #[must_use]
+    pub fn lock_timeout(&self) -> Option<std::time::Duration> {
+        self.lock_timeout_ms.map(std::time::Duration::from_millis)
     }
 
     /// Retrieve the effective Argon2 parameters (falling back to standard defaults if absent)

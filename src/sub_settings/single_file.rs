@@ -281,6 +281,15 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
         }
     }
 
+    #[cfg(feature = "vault")]
+    fn rewrite(&self, entries: HashMap<String, Value>) -> Result<()> {
+        let mut state = self.state.write_recovered()?;
+        self.save_to_disk(&entries)?;
+        state.cache = Some(entries);
+        state.loaded_from_disk = true;
+        Ok(())
+    }
+
     fn invalidate_cache(&self) {
         if let Ok(mut state) = self.state.write_recovered() {
             state.loaded_from_disk = false;
