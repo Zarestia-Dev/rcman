@@ -225,6 +225,8 @@ impl<S: StorageBackend> ProfileManager<S> {
         enabled: bool,
         migrator: &crate::profiles::ProfileMigrator,
     ) -> Result<(PathBuf, Option<Self>)> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(config_dir)?;
         if enabled {
             // Run migration if needed
             // For main settings, we assume multi-file mode (false) and no specific extension (None)
@@ -340,6 +342,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Returns an error if the manifest cannot be read.
     pub fn active_path(&self) -> Result<PathBuf> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         let active = self.active()?;
         Ok(self.profile_path(&active))
     }
@@ -414,6 +420,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Returns an error if the manifest cannot be read.
     pub fn active(&self) -> Result<String> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         self.ensure_manifest()?;
         let guard = self.manifest.read_recovered()?;
         Ok(guard.as_ref().ok_or(Error::NotInitialized)?.active.clone())
@@ -429,6 +439,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Returns an error if the manifest cannot be read.
     pub fn list(&self) -> Result<Vec<String>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         self.ensure_manifest()?;
         let guard = self.manifest.read_recovered()?;
         Ok(guard
@@ -452,6 +466,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Returns an error if the manifest cannot be read.
     pub fn exists(&self, name: &str) -> Result<bool> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         self.ensure_manifest()?;
         let guard = self.manifest.read_recovered()?;
         Ok(guard
@@ -472,6 +490,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Returns an error if the profile cannot be created.
     pub fn create(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         validate_profile_name(name)?;
         self.ensure_manifest()?;
 
@@ -521,6 +543,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Returns an error if the profile cannot be switched.
     pub fn switch(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         self.ensure_manifest()?;
 
         let from = {
@@ -576,6 +602,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Returns an error if the profile cannot be deleted.
     pub fn delete(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         self.ensure_manifest()?;
 
         {
@@ -633,6 +663,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Returns an error if the profile cannot be renamed.
     pub fn rename(&self, from: &str, to: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         validate_profile_name(to)?;
         self.ensure_manifest()?;
 
@@ -706,6 +740,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Returns an error if the profile cannot be duplicated.
     pub fn duplicate(&self, source: &str, target: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         validate_profile_name(target)?;
         self.ensure_manifest()?;
 
@@ -788,6 +826,11 @@ impl<S: StorageBackend> ProfileManager<S> {
     pub fn rollback_to_flat(&self) -> Result<()> {
         use crate::profiles::rollback_migration;
 
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
+
         // Need to construct the root_dir from profiles_dir parent
         let root_dir = self
             .profiles_dir
@@ -827,6 +870,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     where
         F: FnOnce() -> bool,
     {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         // If manifest exists, nothing to migrate
         if self.manifest_path.exists() {
             self.ensure_manifest()?;
@@ -879,6 +926,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Returns an error if the manifest cannot be saved.
     pub fn complete_migration(&self) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         self.save_manifest()?;
         info!("Profile migration complete for '{}'", self.target_name);
         Ok(())
@@ -890,6 +941,10 @@ impl<S: StorageBackend> ProfileManager<S> {
     ///
     /// Returns an error if the manifest cannot be read.
     pub fn manifest(&self) -> Result<ProfileManifest> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(
+            self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
+        )?;
         self.ensure_manifest()?;
         let guard = self.manifest.read_recovered()?;
         Ok(guard.as_ref().ok_or(Error::NotInitialized)?.clone())

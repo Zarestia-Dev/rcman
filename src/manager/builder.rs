@@ -146,7 +146,11 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         self
     }
 
-    /// Enable vault encryption and supply an initial password (for headless or automated startup).
+    /// Supply a password to unlock an existing vault or encrypt settings at startup.
+    ///
+    /// Manager construction consumes and zeroizes its password buffer, including
+    /// on failure. `manager.config().vault_password` is `None` after construction;
+    /// caller-owned copies are unaffected.
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault_password(mut self, password: impl Into<String>) -> Self {
@@ -158,7 +162,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     ///
     /// Resolution happens immediately; missing sources return an error instead of
     /// silently falling back to an unencrypted configuration. File sources strip
-    /// trailing line endings while preserving spaces in the password.
+    /// trailing line endings while preserving spaces in the password. Manager
+    /// construction consumes and zeroizes the resolved password buffer.
     ///
     /// # Errors
     /// Returns an error if the source cannot be read or contains an empty password.

@@ -88,6 +88,54 @@ impl TableStore {
             .join(format!("{}.{}", self.name, self.extension))
     }
 
+    /// Export rows through a read-only connection, without schema setup or migrations.
+    #[cfg(feature = "backup")]
+    pub(crate) fn backup_entries(&self) -> Result<HashMap<String, Value>> {
+        let path = self.file_path();
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+        if !is_valid_sqlite_identifier(&self.table_name) {
+            return Err(Error::Config("Invalid SQLite table name".into()));
+        }
+        let conn = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| Error::Config(format!("sqlite backup open: {e}")))?;
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [&self.table_name],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::Config(format!("sqlite backup schema: {e}")))?;
+        if !table_exists {
+            return Ok(HashMap::new());
+        }
+        let mut stmt = conn
+            .prepare(&format!("SELECT key, data FROM {}", self.table_name))
+            .map_err(|e| Error::Config(format!("sqlite backup query: {e}")))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| Error::Config(format!("sqlite backup rows: {e}")))?;
+        let mut entries = HashMap::new();
+        for row in rows {
+            let (name, content) =
+                row.map_err(|e| Error::Config(format!("sqlite backup row: {e}")))?;
+            let value: Value = serde_json::from_str(&content)?;
+            #[cfg(feature = "vault")]
+            let value = if crate::vault::is_vault_value(&value) {
+                self.get_vault()?
+                    .ok_or(Error::ConfigLocked)?
+                    .decrypt_value(&value)?
+            } else {
+                value
+            };
+            entries.insert(name, value);
+        }
+        Ok(entries)
+    }
+
     fn connect(&self) -> Result<Connection> {
         if !is_valid_sqlite_identifier(&self.table_name) {
             return Err(Error::Config(format!(
@@ -97,6 +145,8 @@ impl TableStore {
         }
 
         let path = self.file_path();
+        #[cfg(feature = "backup")]
+        crate::backup::transaction::capture_file(&path)?;
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
             && !parent.exists()

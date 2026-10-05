@@ -210,6 +210,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// - Keyring storage or file writing fails
     /// - Serialization or parsing fails
     pub fn save_setting(&self, category: &str, key: &str, value: &Value) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -359,6 +361,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// - Storage write fails
     /// - Keyring storage fails
     pub fn save_all(&self, schema: &Schema) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let value = serde_json::to_value(schema).map_err(|e| Error::Parse(e.to_string()))?;
         self.ensure_cache_populated()?;
         self.validate_schema_values(&value)?;
@@ -497,6 +501,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     where
         F: FnOnce(&mut Schema),
     {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let mut current = self.get_all()?;
         f(&mut current);
         self.save_all(&current)?;
@@ -510,6 +516,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Returns an error if the setting key is not found in the schema,
     /// or if saving the default value fails.
     pub fn reset_setting(&self, category: &str, key: &str) -> Result<Value> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let metadata_key = format!("{category}.{key}");
         let default_value = self
             .schema_metadata
@@ -529,6 +537,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if writing to storage fails or credential clearing fails.
     pub fn reset_all(&self) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -537,6 +547,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let path = self.settings_path()?;
 
         self.ensure_cache_populated()?;
+
+        let _write_guard = self
+            .settings_write_lock
+            .lock()
+            .map_err(|_| Error::Config("Settings write lock poisoned".into()))?;
 
         let stored = self
             .settings_cache
@@ -639,6 +654,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         path: &std::path::Path,
         value: &Value,
     ) -> Result<()> {
+        #[cfg(feature = "backup")]
+        crate::backup::transaction::capture_file(path)?;
         #[cfg(feature = "vault")]
         {
             let guard = self.vault.read().map_err(|_| Error::LockPoisoned)?;
@@ -703,6 +720,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if loading from disk or parsing fails.
     pub fn ensure_cache_populated(&self) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);

@@ -704,11 +704,11 @@ The secondary "Encrypted File" tier requires a master password. To avoid hardcod
 Create, analyze, and restore encrypted backups using the builder pattern:
 
 ```rust
-use rcman::{BackupOptions, RestoreOptions};
+use rcman::{BackupOptions, ExportType, RestoreOptions};
 
 // Create full backup with builder pattern
 let backup_path = manager.backup()
-    .create(BackupOptions::new()
+    .create(&BackupOptions::new()
         .output_dir("./backups")
         .password("backup_password")
         .note("Weekly backup")
@@ -722,7 +722,7 @@ let backup_path = manager.backup()
 
 // Create partial backup (only specific sub-settings)
 let remotes_backup = manager.backup()
-    .create(BackupOptions::new()
+    .create(&BackupOptions::new()
         .output_dir("./backups")
         .export_type(ExportType::SettingsOnly)
         .include_settings(false)  // Don't include main settings
@@ -733,9 +733,9 @@ let remotes_backup = manager.backup()
 // Create backup for specific profiles (requires `profiles` feature)
 #[cfg(feature = "profiles")]
 let profile_backup = manager.backup()
-    .create(BackupOptions::new()
+    .create(&BackupOptions::new()
         .output_dir("./backups")
-        .include_profiles(vec!["work".to_string()]) // Only backup 'work' profile
+        .include_profile("work") // Only backup 'work' profile
         .filename_suffix("work_only"))
     ?;
 
@@ -743,14 +743,14 @@ let profile_backup = manager.backup()
 let analysis = manager.backup().analyze(&backup_path)?;
 println!("Encrypted: {}", analysis.requires_password);
 println!("Valid: {}", analysis.is_valid);
-println!("Created by app v{}", analysis.manifest.app_version);
+println!("Created by app v{}", analysis.manifest.backup.app_version);
 if !analysis.warnings.is_empty() {
     println!("Warnings: {:?}", analysis.warnings);
 }
 
 // Restore with builder pattern
 manager.backup()
-    .restore(RestoreOptions::from_path(&backup_path)
+    .restore(&RestoreOptions::from_path(&backup_path)
         .password("backup_password")
         .overwrite(true))
     ?;
@@ -760,14 +760,14 @@ use rcman::SecretBackupPolicy;
 
 // 1) Never include secrets (default)
 let _redacted = manager.backup().create(
-    BackupOptions::new()
+    &BackupOptions::new()
         .output_dir("./backups")
         .secret_policy(SecretBackupPolicy::Exclude),
 )?;
 
 // 2) Include only when backup is encrypted
 let _safe = manager.backup().create(
-    BackupOptions::new()
+    &BackupOptions::new()
         .output_dir("./backups")
         .password("backup_password")
         .secret_policy(SecretBackupPolicy::EncryptedOnly),
@@ -775,14 +775,14 @@ let _safe = manager.backup().create(
 
 // 3) Always include secrets (plaintext if no backup password)
 let _unsafe = manager.backup().create(
-    BackupOptions::new()
+    &BackupOptions::new()
         .output_dir("./backups")
         .secret_policy(SecretBackupPolicy::Include),
 )?;
 
 // For non-full exports, explicitly select external configs by id
 let _partial_with_external = manager.backup().create(
-    BackupOptions::new()
+    &BackupOptions::new()
         .output_dir("./backups")
         .export_type(ExportType::SettingsOnly)
         .include_settings(false)
@@ -800,6 +800,43 @@ When credentials are enabled, restore also rehydrates secret values back into cr
 | `EncryptedOnly` | Yes             | Included                    |
 | `EncryptedOnly` | No              | Redacted (`null` / omitted) |
 | `Include`       | Yes / No        | Included                    |
+
+#### Vaults, secrets, and portability
+
+An enabled vault must be unlocked before export or restore. Managed settings are
+exported as values after applying `SecretBackupPolicy`; their vault envelopes are
+not copied into the archive. Set `BackupOptions::password` to encrypt the backup
+independently of the vault password. Without it, exported values are unencrypted,
+even when the source uses a vault.
+
+Restore writes managed settings using the destination's storage backend and vault.
+A destination vault may use a different password from the source. Secret fields
+require a configured credential store and are routed there during restore.
+External files, command output, and provider content are copied as supplied;
+schema secret filtering and vault conversion do not apply to their contents.
+Restore extracts archive entries into a temporary directory, including plaintext
+entries from encrypted archives; this directory is cleaned up when the operation
+returns. Older backups containing raw vault envelopes must be re-exported from
+an unlocked source before restoring.
+
+#### Restore failures and concurrent access
+
+Restore validates selected payloads before modifying managed settings. If a managed
+write fails, rcman attempts to restore previous files and credentials. A rollback
+failure is reported along with the original error; recoverable snapshots are
+retained. This does not provide crash recovery across multiple files.
+
+External imports run after managed settings commit. An external import failure
+returns an error explicitly stating that managed settings were restored; they are
+not rolled back. Use `.dry_run(true)` to preview selected items, and inspect
+`RestoreResult::has_conflicts()` for skipped or pending items.
+
+During a managed backup snapshot or restore transaction, conflicting managed calls
+on overlapping configuration directories or the same credential namespace return
+`Error::Config` immediately. Retry after the operation finishes. Unrelated managers
+can continue working. Nested backup/restore on the same resources is rejected.
+Direct backend access, other processes, and vault auto-lock are outside this
+coordination, so callers must coordinate independent writers.
 
 ---
 
@@ -903,7 +940,10 @@ This makes callback streams deterministic and avoids noise for no-op operations.
 
 ### 9. Configuration Locking & Vault (AES-256-GCM + Argon2id)
 
-Lock your configuration files behind a master password. When locked, the on-disk file is stored as an encrypted vault envelope (`aes-256-gcm+argon2id`) and any read/write attempt returns `Err(Error::ConfigLocked)`.
+The `vault` feature encrypts managed settings on disk with AES-256-GCM and derives
+the encryption key from a password using Argon2id. Files remain encrypted while
+the manager is unlocked. Locking removes the active key, invalidates manager caches,
+and makes managed settings reads and writes return `Error::ConfigLocked`.
 
 ```rust
 use rcman::{SettingsManager, SettingsConfig};
@@ -917,15 +957,17 @@ let config = SettingsConfig::builder("my-app", "1.0.0")
 
 let manager = SettingsManager::new(config)?;
 
-// Transparently read/write while unlocked
-manager.save_setting("ui", "theme", &serde_json::json!("dark"))?;
+// Read the merged settings as JSON; schema defaults apply when a schema is registered.
+let settings = manager.get_all_data()?;
+assert!(settings.is_object());
+assert!(manager.config().vault_password.is_none());
 
 // Lock explicitly on demand (key is zeroized from memory)
 manager.lock()?;
 assert!(manager.is_locked());
 
 // Attempting access while locked fails safely
-let err = manager.get_all().unwrap_err();
+let err = manager.get_all_data().unwrap_err();
 assert!(err.is_locked());
 
 // Unlock again
@@ -940,8 +982,8 @@ manager.enable_vault("new_password")?;  // Encrypt to vault envelope
 
 For an existing application, register all sub-settings before calling
 `enable_vault(password)`. The migration covers both single-file and multi-file
-stores and their profiles. `.with_vault()` alone leaves plaintext configurations
-usable; `unlock(password)` opens an already encrypted vault.
+stores, SQLite table stores, and their profiles. `.with_vault()` alone leaves
+plaintext configurations usable; `unlock(password)` opens an already encrypted vault.
 
 For headless startup, use the same password-source type as credential storage:
 
@@ -955,20 +997,31 @@ let manager = SettingsManager::builder("my-app", "1.0.0")
 ```
 
 Missing or empty password sources return an error. Vault password files strip
-trailing CR/LF characters while preserving spaces. Timeout changes require an
-unlocked vault and are persisted before updating the running timer. Applications
+trailing CR/LF characters while preserving spaces. The startup password is consumed
+and zeroized during manager construction; `manager.config().vault_password` is
+`None`, including while unlocked. Copies held by the caller, environment variables,
+and password files remain under the application's control.
+
+With profiles enabled, switching to an empty profile writes an encrypted settings
+envelope before activating it. Locking, unlocking, and restarting therefore work
+before the first setting is saved. For configurations created by older versions,
+startup also checks other main-settings profiles when the active profile has no
+envelope.
+
+Timeout changes require an unlocked vault and are persisted before updating the
+running timer. Applications
 should serialize vault migrations with settings edits; migration rollback handles
 reported write failures but is not a crash-atomic transaction across files.
 
 - **Boot Detection**: rcman automatically detects vaulted files on disk at startup and boots into a locked state if no password is provided.
 - **Sub-Settings Inheritance**: Registered sub-settings (e.g. per-entity remote files) automatically inherit vault encryption when enabled on the manager.
 - **Inactivity Timeout**: Optional auto-lock timeout wipes the active key and blocks settings access when idle.
-- **Memory Scrubbing**: Active key buffers are zeroized upon locking or dropping.
+- **Memory Handling**: The active key buffer is zeroized upon locking or dropping. Values already returned to callers are not erased by locking.
 - **Configurable KDF Presets**: Tailor Argon2id key derivation to your platform and use case:
-  - `Argon2Preset::Standard`: 19 MiB, 2 passes, 1 thread (default, OWASP recommended).
-  - `Argon2Preset::Fast`: 64 KiB, 1 pass, 1 thread (instant execution for test suites and interactive CLI tools).
-  - `Argon2Preset::Mobile`: 8 MiB, 1 pass, 1 thread (optimized for Android and iOS devices).
-  - `Argon2Preset::HighSecurity`: 64 MiB, 3 passes, 4 threads (hardened security for sensitive server environments).
+  - `Argon2Preset::Standard`: 19 MiB, 2 passes, 1 lane (default).
+  - `Argon2Preset::Fast`: 64 KiB, 1 pass, 1 lane (for tests and demos, not production data).
+  - `Argon2Preset::Mobile`: 8 MiB, 1 pass, 1 lane (lower memory cost for constrained devices).
+  - `Argon2Preset::HighSecurity`: 64 MiB, 3 passes, 4 lanes (higher derivation cost).
   - Custom: `builder.with_vault_kdf_params(Argon2Params::new(m_cost, t_cost, p_cost))`.
 - **Envelope Stored Parameters**: KDF parameters are serialized directly into the on-disk `VaultEnvelope` (`kdf_params`), ensuring envelopes created with custom or fast profiles unlock seamlessly without manual client reconfiguration.
 

@@ -32,21 +32,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         config: &crate::config::SettingsConfig<S, Schema>,
         storage: &S,
         settings_dir: &std::path::Path,
+        password: Option<&str>,
     ) -> Result<Option<Arc<crate::vault::VaultState>>> {
-        let settings_path = settings_dir.join(&config.settings_file);
-        let mut detected_salt = None;
-        let mut detected_envelope = None;
-        let mut detected_kdf_params = config.vault_kdf_params;
-
-        if let Ok(value) = storage.read::<Value>(&settings_path)
-            && crate::vault::is_vault_value(&value)
-        {
-            let envelope: crate::vault::VaultEnvelope = serde_json::from_value(value)
-                .map_err(|error| Error::InvalidVaultEnvelope(error.to_string()))?;
-            detected_salt = Some(envelope.decode_salt()?);
-            detected_kdf_params = Some(envelope.kdf_params());
-            detected_envelope = Some(envelope);
-        }
+        let detected_envelope = Self::find_vault_envelope(config, storage, settings_dir)?;
+        let detected_salt = detected_envelope
+            .as_ref()
+            .map(crate::vault::VaultEnvelope::decode_salt)
+            .transpose()?;
+        let detected_kdf_params = detected_envelope
+            .as_ref()
+            .map(crate::vault::VaultEnvelope::kdf_params)
+            .or(config.vault_kdf_params);
 
         let detected_lock_timeout = config.vault_lock_timeout.or_else(|| {
             detected_envelope
@@ -54,14 +50,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 .and_then(crate::vault::VaultEnvelope::lock_timeout)
         });
 
-        if detected_envelope.is_some() || config.vault_password.is_some() {
+        if detected_envelope.is_some() || password.is_some() {
             let vault_state = Arc::new(crate::vault::VaultState::new(
                 detected_salt,
                 detected_lock_timeout,
                 detected_kdf_params,
             ));
 
-            if let Some(ref password) = config.vault_password {
+            if let Some(password) = password {
                 vault_state.unlock(password, detected_envelope.as_ref())?;
             }
 
@@ -77,15 +73,52 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         vault.start_watchdog();
     }
 
-    fn read_vault_envelope(&self) -> Result<crate::vault::VaultEnvelope> {
-        let value: Value = self.storage.read(&self.settings_path()?)?;
-        if !crate::vault::is_vault_value(&value) {
-            return Err(Error::InvalidVaultEnvelope(
-                "Expected encrypted settings".into(),
-            ));
+    // Older versions could leave the active profile empty. Find an existing
+    // envelope before deciding that the configuration is unencrypted.
+    fn find_vault_envelope(
+        config: &crate::config::SettingsConfig<S, Schema>,
+        storage: &S,
+        settings_dir: &std::path::Path,
+    ) -> Result<Option<crate::vault::VaultEnvelope>> {
+        let paths = vec![settings_dir.join(&config.settings_file)];
+        #[cfg(feature = "profiles")]
+        let paths = {
+            let mut paths = paths;
+            let profiles_dir = config.config_dir.join(crate::profiles::PROFILES_DIR);
+            if config.profiles_enabled && profiles_dir.exists() {
+                let mut profiles = crate::error::read_dir(&profiles_dir)?
+                    .map(|entry| entry.map(|entry| entry.path().join(&config.settings_file)))
+                    .collect::<std::io::Result<Vec<_>>>()
+                    .map_err(|source| Error::DirectoryRead {
+                        path: profiles_dir,
+                        source,
+                    })?;
+                profiles.sort();
+                paths.extend(profiles);
+            }
+            paths
+        };
+        for path in paths {
+            if !path.exists() {
+                continue;
+            }
+            let value: Value = storage.read(&path)?;
+            if crate::vault::is_vault_value(&value) {
+                return serde_json::from_value(value)
+                    .map(Some)
+                    .map_err(|error| Error::InvalidVaultEnvelope(error.to_string()));
+            }
         }
-        serde_json::from_value(value)
-            .map_err(|error| Error::InvalidVaultEnvelope(error.to_string()))
+        Ok(None)
+    }
+
+    fn read_vault_envelope(&self) -> Result<crate::vault::VaultEnvelope> {
+        Self::find_vault_envelope(
+            &self.config,
+            &self.storage,
+            &self.settings_dir.read_recovered()?,
+        )?
+        .ok_or_else(|| Error::InvalidVaultEnvelope("Expected encrypted settings".into()))
     }
 
     pub(super) fn persist_vault(&self) -> Result<()> {
@@ -172,6 +205,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # }
     /// ```
     pub fn verify_vault_password(&self, password: &str) -> Result<bool> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let guard = self.vault.read().map_err(|_| Error::LockPoisoned)?;
         let vault = guard.as_ref().cloned().ok_or(Error::VaultNotEnabled)?;
         drop(guard);
@@ -202,6 +237,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # }
     /// ```
     pub fn set_vault_lock_timeout(&self, timeout: Option<std::time::Duration>) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let guard = self.vault.read().map_err(|_| Error::LockPoisoned)?;
         let vault = guard.as_ref().cloned().ok_or(Error::VaultNotEnabled)?;
         drop(guard);
@@ -254,6 +291,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # }
     /// ```
     pub fn touch_vault(&self) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let guard = self.vault.read().map_err(|_| Error::LockPoisoned)?;
         let vault = guard.as_ref().cloned().ok_or(Error::VaultNotEnabled)?;
         drop(guard);
@@ -261,16 +300,19 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(())
     }
 
-    /// Unlock the configuration vault using the master key or password.
+    /// Unlock the configuration vault using its password.
     ///
     /// Once unlocked, settings and all registered sub-settings can be read and
-    /// updated normally in memory.
+    /// updated normally. If an older configuration has an empty active profile,
+    /// another main-settings profile's envelope is used to verify the password.
     ///
     /// # Errors
     /// Returns:
     /// - `Error::VaultNotEnabled` if vault was not enabled on this manager
     /// - `Error::InvalidPassword` if the password cannot decrypt the on-disk envelope
     pub fn unlock(&self, password: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let guard = self.vault.read().map_err(|_| Error::LockPoisoned)?;
         let vault = guard.as_ref().cloned().ok_or(Error::VaultNotEnabled)?;
         drop(guard);
@@ -297,11 +339,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(())
     }
 
-    /// Lock the configuration vault immediately, wiping keys from memory.
+    /// Lock the vault, zeroize its active key buffer, and invalidate manager caches.
     ///
     /// # Errors
     /// Returns `Error::VaultNotEnabled` if vault is not enabled.
     pub fn lock(&self) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let guard = self.vault.read().map_err(|_| Error::LockPoisoned)?;
         let vault = guard.as_ref().cloned().ok_or(Error::VaultNotEnabled)?;
         drop(guard);
@@ -312,13 +356,15 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(())
     }
 
-    /// Unlock the configuration vault using the master key or password.
+    /// Unlock the configuration vault using its password.
     ///
     /// Convenience alias for [`unlock`](Self::unlock).
     ///
     /// # Errors
     /// Returns `Error::VaultNotEnabled` if vault is not enabled, or `Error::InvalidPassword` if decryption fails.
     pub fn unlock_vault(&self, password: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         self.unlock(password)
     }
 
@@ -329,6 +375,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # Errors
     /// Returns `Error::VaultNotEnabled` if vault is not enabled.
     pub fn lock_vault(&self) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         self.lock()
     }
 
@@ -399,7 +447,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(())
     }
 
-    pub(super) fn persist_sub_settings(&self, sub: &Arc<SubSettings<S>>) -> Result<()> {
+    pub(super) fn persist_sub_settings(sub: &Arc<SubSettings<S>>) -> Result<()> {
         let snapshot = Self::snapshot_sub_settings(sub)?;
         Self::write_sub_settings_snapshot(&snapshot)
     }
@@ -485,7 +533,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             std::mem::replace(&mut *guard, new_vault.clone())
         };
         if let Err(error) = self.apply_vault_migration_snapshot(snapshot, new_vault.is_some()) {
-            *self.vault.write().map_err(|_| Error::LockPoisoned)? = previous.clone();
+            self.vault
+                .write()
+                .map_err(|_| Error::LockPoisoned)?
+                .clone_from(&previous);
             if let Err(rollback) = self.apply_vault_migration_snapshot(snapshot, previous.is_some())
             {
                 return Err(Error::Vault(format!(
@@ -500,11 +551,20 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(())
     }
 
-    /// Set an initial vault password and encrypt current settings to disk across all profiles.
+    /// Replace the password of an unlocked vault without verifying the old password.
+    ///
+    /// Re-encrypts main settings and registered sub-settings across their profiles.
+    /// Use [`Self::enable_vault`] for a plaintext configuration, or
+    /// [`Self::change_vault_password`] when old-password verification is required.
+    /// Coordinate migration with application writes; recovery from reported errors
+    /// is best-effort and does not provide crash recovery across files.
     ///
     /// # Errors
-    /// Returns `Error::VaultNotEnabled` if vault is not enabled.
+    /// Returns `Error::VaultNotEnabled` if no vault exists, `Error::ConfigLocked`
+    /// if locked, or an error if encryption, writing, or rollback fails.
     pub fn set_vault_password(&self, password: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let guard = self.vault.read().map_err(|_| Error::LockPoisoned)?;
         let vault = guard.as_ref().cloned().ok_or(Error::VaultNotEnabled)?;
         drop(guard);
@@ -525,13 +585,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     /// Change the master password used to encrypt the configuration vault across all profiles.
     ///
-    /// Generates a new salt, re-derives the key, re-encrypts all profile settings, and saves to disk.
+    /// Generates a new salt and re-encrypts main settings and registered sub-settings
+    /// across their profiles. Coordinate migration with application writes.
+    /// Reported failures trigger best-effort rollback; this is not crash recovery.
     ///
     /// # Errors
     /// Returns:
     /// - `Error::VaultNotEnabled` if vault is not enabled
     /// - `Error::InvalidPassword` if `old_password` does not match
     pub fn change_vault_password(&self, old_password: &str, new_password: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         if self.is_locked() {
             self.unlock(old_password)?;
         }
@@ -559,11 +623,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(())
     }
 
-    /// Enable vault encryption at runtime on an unencrypted configuration manager using default parameters.
+    /// Encrypt main settings and registered sub-settings using the configured KDF parameters.
+    ///
+    /// Uses default parameters when none were configured. Register every sub-settings
+    /// store before migration and coordinate migration with application writes.
+    /// Reported failures trigger best-effort rollback; this is not crash recovery.
     ///
     /// # Errors
     /// Returns error if encryption or saving fails.
     pub fn enable_vault(&self, password: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let params = self.config.vault_kdf_params.unwrap_or_default();
         self.enable_vault_with_params(password, params)
     }
@@ -577,6 +647,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         password: &str,
         params: crate::vault::Argon2Params,
     ) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let snapshot = self.snapshot_for_vault_migration()?;
 
         let new_vault = Arc::new(crate::vault::VaultState::new(
@@ -597,6 +669,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # Errors
     /// Returns `Error::InvalidPassword` if password is wrong, or `Error::VaultNotEnabled`.
     pub fn disable_vault(&self, password: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let vault = {
             let guard = self.vault.read().map_err(|_| Error::LockPoisoned)?;
             guard.clone().ok_or(Error::VaultNotEnabled)?

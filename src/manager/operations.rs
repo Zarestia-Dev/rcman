@@ -89,6 +89,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// - Storage read fails
     /// - Data is corrupted
     pub fn metadata(&self) -> Result<IndexMap<String, SettingMetadata>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -148,6 +150,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     where
         T: serde::de::DeserializeOwned,
     {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let value = self.get_value(key)?;
         serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
     }
@@ -167,6 +171,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// - The setting doesn't exist
     /// - Storage read fails
     pub fn get_value(&self, key: &str) -> Result<Value> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -199,6 +205,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if settings cannot be read.
     pub fn get_all_data(&self) -> Result<Value> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -215,6 +223,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if settings cannot be read or parsed.
     pub fn get_all(&self) -> Result<Schema> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let merged = self.get_all_data()?;
 
         // Deserialize to concrete type
@@ -247,6 +257,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if the sub-settings handler cannot be initialized (e.g. invalid path).
     pub fn register_sub_settings(&self, config: SubSettingsConfig) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let name = config.name.clone();
 
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -270,7 +282,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         #[cfg(feature = "vault")]
         if self.is_vault_enabled() && !self.is_locked() {
-            self.persist_sub_settings(&handler)?;
+            Self::persist_sub_settings(&handler)?;
         }
 
         self.sub_settings
@@ -294,6 +306,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns `Error::SubSettingsNotFound` if the sub-settings type is not registered.
     pub fn sub_settings(&self, name: &str) -> Result<Arc<SubSettings<S>>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let guard = self.sub_settings.read_recovered()?;
         guard
             .get(name)
@@ -336,6 +350,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns `Error::SubSettingsNotFound` if the type is not registered, or I/O errors from the handler.
     pub fn list_sub_settings(&self, name: &str) -> Result<Vec<String>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let sub = self.sub_settings(name)?;
         sub.list()
     }
@@ -351,7 +367,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     #[cfg(feature = "backup")]
     pub fn register_external_provider(&self, provider: Box<dyn ExternalConfigProvider>) {
         if let Ok(mut providers) = self.external_providers.write_recovered() {
-            providers.push(provider);
+            providers.push(Arc::from(provider));
         } else {
             debug!("Failed to register external config provider due to lock recovery error");
         }

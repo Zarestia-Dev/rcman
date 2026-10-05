@@ -1,6 +1,7 @@
 //! Backup/restore logic
 
 use super::archive::{extract_zip_archive, read_file_from_zip};
+use super::validate_backup_value;
 use crate::config::SettingsSchema;
 use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
@@ -19,19 +20,23 @@ use std::path::Path;
 use crate::profiles::PROFILES_DIR;
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'_, S, Schema> {
-    /// Restore from a backup
+    /// Restore selected archive contents using the destination's storage and vault.
     ///
-    /// # Arguments
+    /// Selected managed payloads are validated before writes. A managed failure
+    /// triggers rollback of journaled files and credentials; rollback failures are
+    /// reported with the original error. This does not provide crash recovery.
+    /// External imports run after managed commit and cannot roll it back.
     ///
-    /// * `options` - The restore options
-    ///
-    /// # Returns
-    ///
-    /// Returns a `RestoreResult` containing the result of the restore operation.
+    /// `dry_run` previews validation and selection without importing data. Inspect
+    /// [`RestoreResult::has_conflicts`] for skipped or pending items.
     ///
     /// # Errors
     ///
-    /// Returns an error if the backup cannot be read or the restore operation fails.
+    /// Returns errors for unsupported or corrupt archives, incorrect passwords,
+    /// raw vault envelopes, invalid payloads, or unavailable credential storage.
+    /// A locked destination vault returns `Error::ConfigLocked`; conflicting managed
+    /// operations return `Error::Config` and may be retried after they finish.
+    /// External import errors explicitly state that managed settings were restored.
     pub fn restore(&self, options: &RestoreOptions) -> Result<RestoreResult> {
         #[cfg(feature = "vault")]
         if self.manager.is_locked() {
@@ -48,9 +53,120 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
             options.backup_path.display()
         );
 
+        #[cfg(feature = "profiles")]
+        for name in [
+            options.restore_profile.as_deref(),
+            options.restore_profile_as.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            crate::profiles::validate_profile_name(name)?;
+        }
+
         // Analyze the backup first
         let analysis = self.analyze(&options.backup_path)?;
 
+        // Create temp directory for extraction
+        let temp_dir = tempfile::tempdir().map_err(|e| Error::RestoreFailed(e.to_string()))?;
+        let extract_dir = temp_dir.path().join("extracted");
+
+        let mut result = RestoreResult {
+            is_dry_run: options.flags.control.dry_run,
+            checksum_valid: Self::extract_backup(
+                options,
+                &analysis,
+                temp_dir.path(),
+                &extract_dir,
+            )?,
+            ..Default::default()
+        };
+
+        // Resolve providers once, before entering managed isolation. Provider
+        // callbacks may call back into the application.
+        let external_configs: std::collections::HashMap<_, _> = analysis
+            .manifest
+            .contents
+            .external_configs
+            .iter()
+            .filter(|name| {
+                options.restore_external_configs.is_empty()
+                    || options.restore_external_configs.contains(name)
+            })
+            .filter_map(|name| {
+                self.resolve_external_config(name)
+                    .map(|config| (name.clone(), config))
+            })
+            .collect();
+        let operation = super::transaction::exclusive(
+            &self.manager.config().config_dir,
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+            self.manager
+                .credentials()
+                .map(crate::credentials::CredentialManager::service_name),
+        )?;
+
+        // Create context
+        let ctx = RestoreContext {
+            manager: self,
+            options,
+            extract_dir: &extract_dir,
+            analysis: &analysis,
+            mode_str,
+            external_configs: &external_configs,
+        };
+
+        // Parse and validate every selected managed payload before touching live files.
+        // Reuse the restore traversal so selection and overwrite rules stay identical.
+        let mut preview_options = options.clone();
+        preview_options.flags.control.dry_run = true;
+        let preview = RestoreContext {
+            options: &preview_options,
+            ..ctx
+        };
+        let mut preview_result = preview.preview()?;
+        if options.flags.control.dry_run {
+            preview_result.is_dry_run = true;
+            preview_result.checksum_valid = result.checksum_valid;
+            return Ok(preview_result);
+        }
+
+        let transaction = super::transaction::Transaction::begin(&operation)?;
+        let restored = (|| -> Result<()> {
+            ctx.restore_main_settings(&mut result)?;
+            ctx.restore_sub_settings_entries(&mut result)
+        })();
+        let notifications = transaction.finish(restored);
+        self.manager.invalidate_cache();
+        drop(operation);
+        for notify in notifications? {
+            notify();
+        }
+
+        // External targets may run arbitrary commands. They execute after the
+        // managed transaction commits and cannot roll back managed settings.
+        ctx.restore_external_configs_entries(&mut result)
+            .map_err(|error| {
+                Error::RestoreFailed(format!(
+                    "Managed settings restored; external import failed: {error}"
+                ))
+            })?;
+
+        info!(
+            "Restore complete: {} restored, {} skipped",
+            result.restored.len(),
+            result.skipped.len()
+        );
+
+        Ok(result)
+    }
+
+    fn extract_backup(
+        options: &RestoreOptions,
+        analysis: &BackupAnalysis,
+        temp_dir: &Path,
+        extract_dir: &Path,
+    ) -> Result<Option<bool>> {
         // Check manifest version compatibility
         if !analysis.is_valid {
             return Err(Error::InvalidBackup(format!(
@@ -67,31 +183,24 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
             return Err(Error::PasswordRequired);
         }
 
-        // Create temp directory for extraction
-        let temp_dir = tempfile::tempdir().map_err(|e| Error::RestoreFailed(e.to_string()))?;
-        let extract_dir = temp_dir.path().join("extracted");
-
         // Extract the inner data archive
         let data_filename = "data.zip";
         let data_bytes = read_file_from_zip(&options.backup_path, data_filename)?;
 
-        let data_archive_path = temp_dir.path().join(data_filename);
+        let data_archive_path = temp_dir.join(data_filename);
         fs::write(&data_archive_path, &data_bytes).map_err(|e| Error::FileWrite {
             path: data_archive_path.clone(),
             source: e,
         })?;
 
         // Verify checksum if requested and available
-        let mut result = RestoreResult {
-            is_dry_run: options.flags.control.dry_run,
-            ..Default::default()
-        };
+        let mut checksum_valid = None;
 
         if options.flags.control.verify_checksum {
             if let Some(ref expected_checksum) = analysis.manifest.integrity.sha256 {
                 let (actual_checksum, _) = super::archive::calculate_file_hash(&data_archive_path)?;
                 let is_valid = &actual_checksum == expected_checksum;
-                result.checksum_valid = Some(is_valid);
+                checksum_valid = Some(is_valid);
 
                 if !is_valid {
                     warn!(
@@ -109,39 +218,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
         }
 
         // Extract data archive (always zip now)
-        extract_zip_archive(
-            &data_archive_path,
-            &extract_dir,
-            options.password.as_deref(),
-        )?;
+        extract_zip_archive(&data_archive_path, extract_dir, options.password.as_deref())?;
 
-        // Create context
-        let ctx = RestoreContext {
-            manager: self,
-            options,
-            extract_dir: &extract_dir,
-            analysis: &analysis,
-            mode_str,
-        };
-
-        let restored = (|| -> Result<()> {
-            ctx.restore_main_settings(&mut result)?;
-            ctx.restore_sub_settings_entries(&mut result)?;
-            ctx.restore_external_configs_entries(&mut result)
-        })();
-        // A failed restore may already have written some files.
-        if !options.flags.control.dry_run {
-            self.manager.invalidate_cache();
-        }
-        restored?;
-
-        info!(
-            "Restore complete: {} restored, {} skipped",
-            result.restored.len(),
-            result.skipped.len()
-        );
-
-        Ok(result)
+        Ok(checksum_valid)
     }
 
     /// Get the path to an external config from a backup (for manual restoration)
@@ -201,6 +280,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
         candidate_filenames.dedup();
 
         for filename in candidate_filenames {
+            super::archive::archive_entry_name(Path::new(&filename))?;
             let config_path = external_dir.join(&filename);
             if config_path.exists() {
                 return fs::read(&config_path).map_err(|e| Error::FileRead {
@@ -230,8 +310,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
 
         // Check dynamic providers
         {
-            let providers = self.manager.external_providers.read_recovered().ok()?;
-            for provider in providers.iter() {
+            let providers = self
+                .manager
+                .external_providers
+                .read_recovered()
+                .ok()?
+                .clone();
+            for provider in &*providers {
                 for cfg in provider.get_configs() {
                     if cfg.id == id {
                         return Some(cfg);
@@ -250,6 +335,7 @@ struct RestoreContext<'a, S: StorageBackend + 'static, Schema: SettingsSchema> {
     extract_dir: &'a Path,
     analysis: &'a BackupAnalysis,
     mode_str: &'a str,
+    external_configs: &'a std::collections::HashMap<String, super::ExternalConfig>,
 }
 
 /// Helper context for sub-settings operations to reduce argument count
@@ -260,6 +346,111 @@ struct SubSettingsContext<'a, S: StorageBackend> {
 }
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, Schema> {
+    fn preview(&self) -> Result<RestoreResult> {
+        let mut result = RestoreResult::default();
+        self.restore_main_settings(&mut result)?;
+        self.restore_sub_settings_entries(&mut result)?;
+        self.restore_external_configs_entries(&mut result)?;
+        Ok(result)
+    }
+
+    fn validate_main_settings(&self, value: &serde_json::Value) -> Result<()> {
+        if !value.is_object() {
+            return Err(Error::InvalidBackup("Settings must be an object".into()));
+        }
+        self.validate_secret_destination(value, self.manager.manager.schema_metadata())?;
+        for (key, metadata) in self.manager.manager.schema_metadata() {
+            if let Some(value) = crate::utils::value::get_path(value, key) {
+                metadata
+                    .validate(value)
+                    .map_err(|reason| Error::InvalidSettingValue {
+                        key: key.clone(),
+                        reason,
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_sub_entry(
+        &self,
+        sub: &crate::sub_settings::SubSettings<S>,
+        name: &str,
+        value: &serde_json::Value,
+    ) -> Result<()> {
+        if let Some(metadata) = sub.schema_metadata() {
+            self.validate_secret_destination(value, &metadata)?;
+        }
+        sub.validate_against_schema(name, value)
+    }
+
+    fn validate_secret_destination(
+        &self,
+        value: &serde_json::Value,
+        metadata: &crate::IndexMap<String, crate::SettingMetadata>,
+    ) -> Result<()> {
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        if self.manager.manager.credentials().is_some() {
+            return Ok(());
+        }
+        if metadata.iter().any(|(key, meta)| {
+            meta.is_secret() && crate::utils::value::get_path(value, key).is_some()
+        }) {
+            return Err(Error::InvalidBackup(
+                "Restoring secret fields requires credential storage".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "profiles")]
+    fn merge_profile_manifest(
+        &self,
+        content: &str,
+        target: &Path,
+        source_root: &Path,
+    ) -> Result<crate::profiles::ProfileManifest> {
+        let storage = self.manager.manager.storage();
+        let source: crate::profiles::ProfileManifest = storage.deserialize(content)?;
+        for name in source
+            .profiles
+            .iter()
+            .chain(std::iter::once(&source.active))
+        {
+            crate::profiles::validate_profile_name(name)?;
+        }
+        if !source.has_profile(&source.active) {
+            return Err(Error::InvalidBackup(
+                "Active profile is absent from the profile manifest".into(),
+            ));
+        }
+        // Retain the destination's active profile and unrelated profiles. Replacing
+        // this manifest would leave existing manager/store paths pointing elsewhere.
+        let mut merged: crate::profiles::ProfileManifest = if target.exists() {
+            storage.read(target)?
+        } else {
+            crate::profiles::ProfileManifest::default()
+        };
+        for name in source.profiles {
+            if self
+                .options
+                .restore_profile
+                .as_ref()
+                .is_some_and(|selected| selected != &name)
+                || !source_root.join(PROFILES_DIR).join(&name).is_dir()
+            {
+                continue;
+            }
+            let target_name = if self.options.restore_profile.is_some() {
+                self.options.restore_profile_as.as_ref().unwrap_or(&name)
+            } else {
+                &name
+            };
+            merged.add_profile(target_name.clone());
+        }
+        Ok(merged)
+    }
+
     fn restore_main_settings(&self, result: &mut RestoreResult) -> Result<()> {
         if !self.options.flags.scope.restore_settings {
             return Ok(());
@@ -267,19 +458,36 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
         // Logic for profiles
         #[cfg(feature = "profiles")]
-        if self.manager.manager.config().profiles_enabled {
+        if self.manager.manager.config().profiles_enabled
+            && self.extract_dir.join(PROFILES_DIR).exists()
+        {
             return self.restore_main_settings_profiles(result);
         }
 
         // Logic for legacy flat settings (either profiles disabled or feature off)
         if self.analysis.manifest.contents.settings {
+            let source_dir = self.extract_dir.to_path_buf();
+            #[cfg(feature = "profiles")]
+            let source_dir = if self.extract_dir.join(PROFILES_DIR).exists() {
+                let Some(profile) = &self.options.restore_profile else {
+                    result.add_pending("settings", RestorePendingReason::ProfileSelectionRequired);
+                    return Ok(());
+                };
+                let path = self.extract_dir.join(PROFILES_DIR).join(profile);
+                if !path.is_dir() {
+                    result.add_pending("settings", RestorePendingReason::MissingSourceProfile);
+                    return Ok(());
+                }
+                path
+            } else {
+                source_dir
+            };
             // Try to load settings from backup (agnostic of extension)
-            if let Some((mut value, _ext)) = load_settings_agnostic(
-                self.extract_dir,
-                "settings",
-                self.manager.manager.storage(),
-            )? {
-                let settings_dest = self.manager.manager.config().settings_path();
+            if let Some((value, _ext)) =
+                load_settings_agnostic(&source_dir, "settings", self.manager.manager.storage())?
+            {
+                self.validate_main_settings(&value)?;
+                let settings_dest = self.manager.manager.settings_path()?;
                 let dest_filename = settings_dest
                     .file_name()
                     .unwrap_or_default()
@@ -296,7 +504,20 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     result.restored.push(dest_filename.to_string());
                     debug!("{} Would restore {}", self.mode_str, dest_filename);
                 } else {
-                    self.hydrate_main_settings_secrets(&mut value, None);
+                    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                    let mut value = value;
+                    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                    {
+                        #[cfg(feature = "profiles")]
+                        let profile = if self.manager.manager.config().profiles_enabled {
+                            Some(self.manager.manager.active_profile()?)
+                        } else {
+                            None
+                        };
+                        #[cfg(not(feature = "profiles"))]
+                        let profile: Option<String> = None;
+                        self.hydrate_main_settings_secrets(&mut value, profile.as_deref())?;
+                    }
 
                     // Write using the configured storage backend (and encrypt if target vault is active)
                     self.manager
@@ -322,17 +543,22 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         let target_manifest = config.config_dir.join(&manifest_filename);
 
         if profiles_manifest.exists() {
-            if target_manifest.exists() && !self.options.flags.control.overwrite_existing {
-                result.add_skipped(manifest_filename.clone(), RestoreSkipReason::ExistsConflict);
-                warn!("{} Skipping {} (exists)", self.mode_str, manifest_filename);
-            } else if self.options.flags.control.dry_run {
+            let content =
+                fs::read_to_string(&profiles_manifest).map_err(|source| Error::FileRead {
+                    path: profiles_manifest.clone(),
+                    source,
+                })?;
+            let manifest =
+                self.merge_profile_manifest(&content, &target_manifest, self.extract_dir)?;
+            if self.options.flags.control.dry_run {
                 result.restored.push(manifest_filename.clone());
                 debug!("{} Would restore {}", self.mode_str, manifest_filename);
             } else {
-                fs::copy(&profiles_manifest, &target_manifest).map_err(|e| Error::FileWrite {
-                    path: target_manifest.clone(),
-                    source: e,
-                })?;
+                super::transaction::capture_file(&target_manifest)?;
+                self.manager
+                    .manager
+                    .storage()
+                    .write(&target_manifest, &manifest)?;
                 result.restored.push(manifest_filename);
             }
         }
@@ -375,7 +601,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 };
 
                 let target_profile_path = target_profiles_dir.join(&target_profile_name);
-                crate::utils::security::ensure_secure_dir(&target_profile_path)?;
 
                 let target_settings_file = &self.manager.manager.config().settings_file;
                 let dest_settings = target_profile_path.join(target_settings_file);
@@ -386,7 +611,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     "settings",
                     self.manager.manager.storage(),
                 )? {
-                    let mut value = value;
+                    self.validate_main_settings(&value)?;
 
                     if dest_settings.exists() && !self.options.flags.control.overwrite_existing {
                         result.add_skipped(restore_id, RestoreSkipReason::ExistsConflict);
@@ -397,10 +622,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                             self.mode_str
                         );
                     } else {
+                        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                        let mut value = value;
+                        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
                         self.hydrate_main_settings_secrets(
                             &mut value,
                             Some(target_profile_name.as_str()),
-                        );
+                        )?;
 
                         self.manager
                             .manager
@@ -423,6 +651,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         };
 
         for (sub_type, items_filter) in sub_settings_to_restore {
+            super::archive::archive_entry_name(Path::new(&sub_type))?;
             let sub_src_dir = self.extract_dir.join(&sub_type);
 
             // Get sub-settings handler
@@ -454,68 +683,52 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn hydrate_main_settings_secrets(&self, value: &mut serde_json::Value, profile: Option<&str>) {
+    fn hydrate_main_settings_secrets(
+        &self,
+        value: &mut serde_json::Value,
+        profile: Option<&str>,
+    ) -> Result<()> {
         let Some(creds) = self.manager.manager.credentials() else {
-            return;
+            // No credential store: reject included secret fields rather than persist them in plaintext.
+            if self
+                .manager
+                .manager
+                .schema_metadata()
+                .iter()
+                .any(|(key, meta)| {
+                    meta.is_secret() && crate::utils::value::get_path(value, key).is_some()
+                })
+            {
+                return Err(Error::Credential(
+                    "Restoring secret fields requires credential storage".into(),
+                ));
+            }
+            return Ok(());
         };
-
-        let mut hydrated_count = 0u32;
-
-        for (full_key, meta) in self
+        for (key, metadata) in self
             .manager
             .manager
             .schema_metadata()
             .iter()
             .filter(|(_, meta)| meta.is_secret())
         {
-            let Some(setting_value) = crate::utils::value::get_path(value, full_key) else {
+            let Some(secret) = crate::utils::value::get_path(value, key).cloned() else {
                 continue;
             };
-
-            if setting_value.is_null() {
-                continue;
+            if secret == metadata.default {
+                creds.remove_with_profile(key, profile)?;
+                creds.remove_tracked_secret(key, profile)?;
+            } else {
+                let text = match secret {
+                    serde_json::Value::String(text) => text,
+                    other => other.to_string(),
+                };
+                creds.store_with_profile(key, &text, profile)?;
+                creds.add_tracked_secret(key, profile)?;
             }
-
-            if *setting_value == meta.default {
-                if let Err(err) = creds.remove_with_profile(full_key, profile) {
-                    warn!(
-                        "Failed to clear credential for restored default secret {full_key}: {err}"
-                    );
-                } else {
-                    crate::utils::value::remove_path(value, full_key);
-                }
-                continue;
-            }
-
-            let secret_value = match setting_value {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-
-            if let Err(err) = creds.store_with_profile(full_key, &secret_value, profile) {
-                warn!(
-                    "Failed to rehydrate secret {full_key} into credential storage during restore: {err}"
-                );
-                continue;
-            }
-
-            crate::utils::value::remove_path(value, full_key);
-            hydrated_count += 1;
+            crate::utils::value::remove_path(value, key);
         }
-
-        if hydrated_count > 0 {
-            debug!(
-                "Rehydrated {hydrated_count} secret credential(s) during restore for profile {profile:?}"
-            );
-        }
-    }
-
-    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
-    fn hydrate_main_settings_secrets(
-        &self,
-        _value: &mut serde_json::Value,
-        _profile: Option<&str>,
-    ) {
+        Ok(())
     }
 
     fn restore_flat_sub_settings(
@@ -547,6 +760,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 .deserialize(&content)
                 .map_err(|e| Error::Parse(e.to_string()))?;
 
+            validate_backup_value(&file_data)?;
             if let Some(obj) = file_data.as_object() {
                 for (key, value) in obj {
                     entries_to_restore.push((key.clone(), value.clone()));
@@ -568,7 +782,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     continue;
                 }
 
-                let entry_name = name_str.trim_end_matches(&ext_str).to_string();
+                let entry_name = name_str
+                    .strip_suffix(&ext_str)
+                    .unwrap_or(&name_str)
+                    .to_string();
 
                 let content = fs::read_to_string(entry.path()).map_err(|e| Error::FileRead {
                     path: entry.path(),
@@ -577,6 +794,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
                 let value: serde_json::Value =
                     self.manager.manager.storage().deserialize(&content)?;
+                validate_backup_value(&value)?;
 
                 // If this is the main file for a SingleFile sub-setting (e.g. connections.json inside connections/),
                 // flatten its entries so we restore "Local" and "Remote" instead of "connections" -> {...}
@@ -600,11 +818,18 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             let entry_id = format!("{}/{}", sub_ctx.sub_type, entry_name);
 
             // Check if exists
-            if !self.options.flags.control.overwrite_existing && sub_ctx.sub.exists(&entry_name)? {
+            if !self.options.flags.control.overwrite_existing
+                && sub_ctx
+                    .sub
+                    .backup_entries(&sub_ctx.sub.directory())?
+                    .contains_key(&entry_name)
+            {
                 result.add_skipped(entry_id, RestoreSkipReason::ExistsConflict);
                 continue;
             }
 
+            validate_backup_value(&value)?;
+            self.validate_sub_entry(sub_ctx.sub, &entry_name, &value)?;
             if self.options.flags.control.dry_run {
                 result.restored.push(entry_id.clone());
                 debug!("{} Would restore {entry_id}", self.mode_str);
@@ -638,11 +863,16 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             let target_manifest = target_root.join(&manifest_filename);
 
             if profiles_manifest.exists() {
-                if target_manifest.exists() && !self.options.flags.control.overwrite_existing {
-                    // Skip
-                } else if !self.options.flags.control.dry_run {
-                    fs::create_dir_all(&target_root).ok();
-                    fs::copy(&profiles_manifest, &target_manifest).ok();
+                let content =
+                    fs::read_to_string(&profiles_manifest).map_err(|source| Error::FileRead {
+                        path: profiles_manifest.clone(),
+                        source,
+                    })?;
+                let manifest =
+                    self.merge_profile_manifest(&content, &target_manifest, sub_src_dir)?;
+                if !self.options.flags.control.dry_run {
+                    super::transaction::capture_file(&target_manifest)?;
+                    sub_ctx.sub.storage().write(&target_manifest, &manifest)?;
                 }
             }
 
@@ -724,57 +954,73 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
         let dest_profile_path = target_profiles_dir.join(&target_profile_name);
 
-        // Restore content of profile (SingleFile or MultiFile)
-        if let Ok(entries) = fs::read_dir(&src_profile_path) {
-            let ext = sub_ctx.sub.extension();
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some(ext) {
-                    let file_name = entry.file_name();
-                    let stem = path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default();
-
-                    // Filter items
-                    if !sub_ctx.items_filter.is_empty() && !sub_ctx.items_filter.contains(&stem) {
-                        continue;
-                    }
-
-                    // Target file
-                    let dest = dest_profile_path.join(&file_name);
-
-                    if dest.exists() && !self.options.flags.control.overwrite_existing {
-                        result
-                            .skipped
-                            .push(format!("{}/{target_profile_name}/{stem}", sub_ctx.sub_type));
-                    } else if self.options.flags.control.dry_run {
-                        result
-                            .restored
-                            .push(format!("{}/{target_profile_name}/{stem}", sub_ctx.sub_type));
-                        debug!(
-                            "{} Would restore {stem} to profile {target_profile_name}",
-                            self.mode_str
-                        );
-                    } else {
-                        fs::create_dir_all(&dest_profile_path).map_err(|e| {
-                            Error::DirectoryCreate {
-                                path: dest_profile_path.clone(),
-                                source: e,
-                            }
-                        })?;
-
-                        fs::copy(&path, &dest).map_err(|e| Error::FileWrite {
-                            path: dest.clone(),
-                            source: e,
-                        })?;
-                        result
-                            .restored
-                            .push(format!("{}/{target_profile_name}/{stem}", sub_ctx.sub_type));
-                        debug!("Restored {stem} to profile {target_profile_name}");
-                    }
-                }
+        let existing = if self.options.flags.control.overwrite_existing {
+            std::collections::HashMap::new()
+        } else {
+            sub_ctx.sub.backup_entries(&dest_profile_path)?
+        };
+        let store = sub_ctx.sub.backup_store(&dest_profile_path);
+        for entry in crate::error::read_dir(&src_profile_path)? {
+            let entry = entry.map_err(|source| Error::DirectoryRead {
+                path: src_profile_path.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some(sub_ctx.sub.extension()) {
+                continue;
             }
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| Error::InvalidBackup("Invalid sub-settings entry name".into()))?;
+            let content = fs::read_to_string(&path).map_err(|source| Error::FileRead {
+                path: path.clone(),
+                source,
+            })?;
+            let value: serde_json::Value = sub_ctx.sub.storage().deserialize(&content)?;
+            validate_backup_value(&value)?;
+            let entries = if sub_ctx.sub.is_single_file() {
+                value
+                    .as_object()
+                    .cloned()
+                    .ok_or_else(|| Error::InvalidBackup("Expected sub-settings entries".into()))?
+            } else {
+                serde_json::Map::from_iter([(stem.to_owned(), value)])
+            };
+            for (name, mut value) in entries {
+                if !sub_ctx.items_filter.is_empty() && !sub_ctx.items_filter.contains(&name) {
+                    continue;
+                }
+                let id = format!("{}/{target_profile_name}/{name}", sub_ctx.sub_type);
+                if existing.contains_key(&name) {
+                    result.add_skipped(id, RestoreSkipReason::ExistsConflict);
+                    continue;
+                }
+                self.prepare_profile_entry(sub_ctx.sub, &name, &mut value, &target_profile_name)?;
+                if !self.options.flags.control.dry_run {
+                    store.set(&name, value)?;
+                }
+                result.restored.push(id);
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "profiles")]
+    fn prepare_profile_entry(
+        &self,
+        sub: &crate::sub_settings::SubSettings<S>,
+        name: &str,
+        value: &mut serde_json::Value,
+        profile: &str,
+    ) -> Result<()> {
+        #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+        let _ = profile;
+        validate_backup_value(value)?;
+        self.validate_sub_entry(sub, name, value)?;
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        if !self.options.flags.control.dry_run {
+            sub.extract_and_store_secrets_for_profile(name, value, Some(profile))?;
         }
         Ok(())
     }
@@ -787,16 +1033,24 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         result: &mut RestoreResult,
     ) -> Result<()> {
         // Restore items from this profile to active flat root
-        if let Ok(entries) = fs::read_dir(src_profile_path) {
+        {
+            let entries = crate::error::read_dir(src_profile_path)?;
             let ext = sub_ctx.sub.extension();
-            for entry in entries.flatten() {
+            for entry in entries {
+                let entry = entry.map_err(|source| Error::DirectoryRead {
+                    path: src_profile_path.to_path_buf(),
+                    source,
+                })?;
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) == Some(ext) {
                     let stem = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    if !sub_ctx.items_filter.is_empty() && !sub_ctx.items_filter.contains(&stem) {
+                    if !sub_ctx.sub.is_single_file()
+                        && !sub_ctx.items_filter.is_empty()
+                        && !sub_ctx.items_filter.contains(&stem)
+                    {
                         continue;
                     }
 
@@ -806,14 +1060,25 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     })?;
                     let value: serde_json::Value =
                         self.manager.manager.storage().deserialize(&content)?;
+                    validate_backup_value(&value)?;
 
                     // Handle SingleFile sub-settings being restored from a profile containing the single file
                     if sub_ctx.sub.is_single_file() && stem == sub_ctx.sub_type {
                         if let serde_json::Value::Object(map) = value {
                             for (k, v) in map {
+                                if !sub_ctx.items_filter.is_empty()
+                                    && !sub_ctx.items_filter.contains(&k)
+                                {
+                                    continue;
+                                }
+                                validate_backup_value(&v)?;
+                                self.validate_sub_entry(sub_ctx.sub, &k, &v)?;
                                 let item_id = format!("{}/{k}", sub_ctx.sub_type);
 
-                                if sub_ctx.sub.exists(&k)?
+                                if sub_ctx
+                                    .sub
+                                    .backup_entries(&sub_ctx.sub.directory())?
+                                    .contains_key(&k)
                                     && !self.options.flags.control.overwrite_existing
                                 {
                                     result.add_skipped(item_id, RestoreSkipReason::ExistsConflict);
@@ -830,9 +1095,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                         continue;
                     }
 
+                    self.validate_sub_entry(sub_ctx.sub, &stem, &value)?;
                     let entry_id = format!("{}/{stem}", sub_ctx.sub_type);
 
-                    if sub_ctx.sub.exists(&stem)? && !self.options.flags.control.overwrite_existing
+                    if sub_ctx
+                        .sub
+                        .backup_entries(&sub_ctx.sub.directory())?
+                        .contains_key(&stem)
+                        && !self.options.flags.control.overwrite_existing
                     {
                         result.add_skipped(entry_id, RestoreSkipReason::ExistsConflict);
                     } else if self.options.flags.control.dry_run {
@@ -889,7 +1159,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         external_dir: &Path,
         result: &mut RestoreResult,
     ) -> Result<()> {
-        if let Some(external_config) = self.manager.resolve_external_config(config_name) {
+        if let Some(external_config) = self.external_configs.get(config_name) {
             let data = Self::read_external_backup_data(
                 external_dir,
                 config_name,
@@ -917,16 +1187,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                         result.restored.push(config_name.to_string());
                         debug!("{} Would restore external {config_name}", self.mode_str);
                     } else {
-                        if let Some(parent) = dest_path.parent() {
-                            fs::create_dir_all(parent).map_err(|e| Error::FileWrite {
-                                path: parent.to_path_buf(),
-                                source: e,
-                            })?;
-                        }
-                        fs::write(dest_path, &data).map_err(|e| Error::FileWrite {
-                            path: dest_path.clone(),
-                            source: e,
-                        })?;
+                        Self::restore_external_file(dest_path, &data)?;
                         result.restored.push(config_name.to_string());
                         debug!("Restored external {config_name}");
                     }
@@ -996,6 +1257,33 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         Ok(())
     }
 
+    fn restore_external_file(dest_path: &Path, data: &[u8]) -> Result<()> {
+        use std::io::Write;
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| Error::FileWrite {
+                path: parent.to_path_buf(),
+                source: e,
+            })?;
+        }
+        let parent = dest_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut staged = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|e| Error::RestoreFailed(e.to_string()))?;
+        staged
+            .write_all(data)
+            .and_then(|()| staged.as_file().sync_all())
+            .map_err(|source| Error::FileWrite {
+                path: dest_path.to_path_buf(),
+                source,
+            })?;
+        staged
+            .persist(dest_path)
+            .map_err(|e| Error::RestoreFailed(e.to_string()))?;
+        Ok(())
+    }
+
     fn read_external_backup_data(
         external_dir: &Path,
         config_name: &str,
@@ -1009,6 +1297,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
         let mut last_candidate_path = None;
         for filename in candidate_filenames {
+            super::archive::archive_entry_name(Path::new(&filename))?;
             let src = external_dir.join(filename);
             last_candidate_path = Some(src.clone());
             if src.exists() {
@@ -1047,6 +1336,7 @@ fn load_settings_agnostic<S: StorageBackend>(
         // We map deserialize error to generic Parse error
         // Note: we need explicit type annotation for deserialize
         let val: serde_json::Value = storage.deserialize(&content)?;
+        validate_backup_value(&val)?;
         return Ok(Some((val, current_ext.to_string())));
     }
 
@@ -1060,6 +1350,7 @@ fn load_settings_agnostic<S: StorageBackend>(
             })?;
             let val: serde_json::Value =
                 serde_json::from_str(&content).map_err(|e| Error::Parse(e.to_string()))?;
+            validate_backup_value(&val)?;
             return Ok(Some((val, "json".to_string())));
         }
     }
@@ -1076,6 +1367,7 @@ fn load_settings_agnostic<S: StorageBackend>(
             // toml deserializes into serde_json::Value via Serde
             let val: serde_json::Value =
                 toml::from_str(&content).map_err(|e| Error::Parse(e.to_string()))?;
+            validate_backup_value(&val)?;
             return Ok(Some((val, "toml".to_string())));
         }
     }

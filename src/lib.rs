@@ -12,6 +12,7 @@
 //! - **Profiles**: Named configurations for switching between different setups (e.g., "work", "home")
 //! - **Schema Validation**: Regex patterns, numeric ranges, and option constraints
 //! - **Performance**: In-memory caching for fast access
+//! - **Configuration Vault**: Password-based encryption for managed settings (requires `vault` feature)
 //! - **Hot Reload**: Optional file watcher runtime for external settings updates (requires `hot-reload` feature)
 //!
 //! ## Quick Start
@@ -345,7 +346,7 @@ pub use storage::YamlStorage;
 /// SQLite storage backend (requires `sqlite` feature).
 ///
 /// Stores settings as a JSON-encoded row in a SQLite database file. See
-/// [`storage::sqlite`](crate::storage::sqlite) for details.
+/// [`storage::SqliteStorage`] for the schema and namespace options.
 #[cfg(feature = "sqlite")]
 pub use storage::SqliteStorage;
 

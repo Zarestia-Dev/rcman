@@ -2,7 +2,7 @@
 //!
 //! This module provides low-level archive operations for the backup system:
 //!
-//! - **ZIP Creation**: [`create_zip_archive`] - Create compressed archives with optional AES-256 encryption
+//! - **ZIP Creation**: [`BackupArchive`] - Create compressed archives with optional AES-256 encryption
 //! - **ZIP Extraction**: [`extract_zip_archive`] - Extract archives with password support
 //! - **File Reading**: [`read_file_from_zip`] - Read individual files from archives
 //! - **Container Creation**: [`create_rcman_container`] - Create the outer `.rcman` backup format
@@ -27,127 +27,111 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
-use zip::write::{FileOptions, SimpleFileOptions};
+use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-/// Writer wrapper that counts bytes and calls progress callback
-struct CountWriter<W: Write> {
-    inner: W,
-    callback: Option<ProgressCallback>,
-    total_bytes: u64,
-    written_bytes: u64,
+/// Writes entries directly to the archive; managed plaintext never needs a staging file.
+pub(super) struct BackupArchive<'a> {
+    writer: ZipWriter<File>,
+    password: Option<&'a str>,
+    names: std::collections::HashSet<String>,
+    bytes: u64,
+    progress: Option<ProgressCallback>,
 }
 
-impl<W: Write> Write for CountWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = self.inner.write(buf)?;
-        self.written_bytes += n as u64;
-        if let Some(cb) = &self.callback {
-            cb(self.written_bytes, self.total_bytes);
-        }
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-impl<W: Write + std::io::Seek> std::io::Seek for CountWriter<W> {
-    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-        self.inner.seek(pos)
-    }
-}
-
-/// Create a zip archive from a directory
-pub fn create_zip_archive(
-    source_dir: &Path,
-    output_path: &Path,
-    progress_callback: Option<ProgressCallback>,
-    total_size: u64,
-    password: Option<&str>,
-) -> Result<()> {
-    let file = File::create(output_path).map_err(|e| Error::FileWrite {
-        path: output_path.to_path_buf(),
-        source: e,
-    })?;
-
-    let writer = CountWriter {
-        inner: file,
-        callback: progress_callback,
-        total_bytes: total_size,
-        written_bytes: 0,
-    };
-
-    let mut zip = ZipWriter::new(writer);
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o644);
-
-    if let Some(pwd) = password {
-        let options = options.with_aes_encryption(zip::AesMode::Aes256, pwd);
-        add_directory_to_zip(&mut zip, source_dir, source_dir, &options)?;
-    } else {
-        add_directory_to_zip(&mut zip, source_dir, source_dir, &options)?;
-    }
-
-    zip.finish().map_err(|e| Error::Archive(e.to_string()))?;
-    Ok(())
-}
-
-/// Recursively add a directory to a zip archive
-fn add_directory_to_zip<W: Write + std::io::Seek>(
-    zip: &mut ZipWriter<W>,
-    base_dir: &Path,
-    current_dir: &Path,
-    options: &FileOptions<()>,
-) -> Result<()> {
-    for entry in std::fs::read_dir(current_dir).map_err(|e| Error::FileRead {
-        path: current_dir.to_path_buf(),
-        source: e,
-    })? {
-        let entry = entry.map_err(|e| Error::FileRead {
-            path: current_dir.to_path_buf(),
-            source: e,
+impl<'a> BackupArchive<'a> {
+    pub(super) fn new(
+        path: &Path,
+        password: Option<&'a str>,
+        progress: Option<ProgressCallback>,
+    ) -> Result<Self> {
+        let file = File::create(path).map_err(|source| Error::FileWrite {
+            path: path.to_path_buf(),
+            source,
         })?;
-
-        let path = entry.path();
-        let relative_path = path
-            .strip_prefix(base_dir)
-            .map_err(|e| Error::Archive(e.to_string()))?;
-
-        // Zip uses '/' as directory separator independent of host platform.
-        let name = relative_path
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
-
-        if path.is_dir() {
-            // Add directory entry
-            zip.add_directory(format!("{name}/"), *options)
-                .map_err(|e| Error::Archive(e.to_string()))?;
-
-            // Recurse into directory
-            add_directory_to_zip(zip, base_dir, &path, options)?;
-        } else {
-            // Add file
-            zip.start_file(name.clone(), *options)
-                .map_err(|e| Error::Archive(e.to_string()))?;
-
-            let mut file = File::open(&path).map_err(|e| Error::FileRead {
-                path: path.clone(),
-                source: e,
-            })?;
-
-            std::io::copy(&mut file, zip).map_err(|e| Error::FileRead {
-                path: path.clone(),
-                source: e,
-            })?;
-        }
+        crate::utils::security::set_secure_file_permissions(path)?;
+        Ok(Self {
+            writer: ZipWriter::new(file),
+            password,
+            names: std::collections::HashSet::new(),
+            bytes: 0,
+            progress,
+        })
     }
 
-    Ok(())
+    pub(super) fn write(&mut self, path: &Path, bytes: &[u8]) -> Result<u64> {
+        self.append(path, &mut std::io::Cursor::new(bytes))
+    }
+
+    pub(super) fn copy(&mut self, source: &Path, path: &Path) -> Result<u64> {
+        let mut file = File::open(source).map_err(|source_error| Error::FileRead {
+            path: source.to_path_buf(),
+            source: source_error,
+        })?;
+        self.append(path, &mut file)
+    }
+
+    fn append(&mut self, path: &Path, reader: &mut impl Read) -> Result<u64> {
+        let name = archive_entry_name(path)?;
+        if !self.names.insert(name.clone()) {
+            return Err(Error::BackupFailed(format!(
+                "Duplicate archive entry: {name}"
+            )));
+        }
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .unix_permissions(0o600);
+        let options = match self.password {
+            Some(password) => options.with_aes_encryption(zip::AesMode::Aes256, password),
+            None => options,
+        };
+        self.writer
+            .start_file(name, options)
+            .map_err(|e| Error::Archive(e.to_string()))?;
+        let size =
+            std::io::copy(reader, &mut self.writer).map_err(|e| Error::Archive(e.to_string()))?;
+        self.bytes += size;
+        Ok(size)
+    }
+
+    pub(super) fn finish(self) -> Result<()> {
+        self.writer
+            .finish()
+            .map_err(|e| Error::Archive(e.to_string()))?
+            .sync_all()
+            .map_err(|e| Error::Archive(e.to_string()))?;
+        if let Some(callback) = self.progress {
+            callback(self.bytes, self.bytes);
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn archive_entry_name(path: &Path) -> Result<String> {
+    use std::path::Component;
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let Component::Normal(part) = component else {
+            return Err(Error::InvalidBackup(format!(
+                "Unsafe archive path: {}",
+                path.display()
+            )));
+        };
+        let part = part
+            .to_str()
+            .ok_or_else(|| Error::InvalidBackup("Non-UTF-8 archive path".into()))?;
+        if part.contains(['\\', ':']) {
+            return Err(Error::InvalidBackup(format!(
+                "Unsafe archive path: {}",
+                path.display()
+            )));
+        }
+        parts.push(part);
+    }
+    if parts.is_empty() {
+        return Err(Error::InvalidBackup("Empty archive path".into()));
+    }
+    Ok(parts.join("/"))
 }
 
 /// Extract a zip archive to a directory
@@ -163,6 +147,7 @@ pub fn extract_zip_archive(
 
     let mut archive = ZipArchive::new(file)?;
 
+    let mut extracted = std::collections::HashSet::new();
     for i in 0..archive.len() {
         let mut file = match password {
             Some(pwd) => archive.by_index_decrypt(i, pwd.as_bytes()).map_err(|e| {
@@ -175,7 +160,24 @@ pub fn extract_zip_archive(
             None => archive.by_index(i)?,
         };
 
-        let outpath = output_dir.join(file.mangled_name());
+        let enclosed = file.enclosed_name().ok_or_else(|| {
+            Error::InvalidBackup("Archive entry escapes extraction directory".into())
+        })?;
+        let name = archive_entry_name(&enclosed)?;
+        if !extracted.insert(name.clone()) {
+            return Err(Error::InvalidBackup(format!(
+                "Duplicate archive entry: {name}"
+            )));
+        }
+        if file
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170_000 == 0o120_000)
+        {
+            return Err(Error::InvalidBackup(
+                "Archive symlinks are not supported".into(),
+            ));
+        }
+        let outpath = output_dir.join(enclosed);
 
         if file.name().ends_with('/') {
             std::fs::create_dir_all(&outpath).map_err(|e| Error::DirectoryCreate {
@@ -194,6 +196,7 @@ pub fn extract_zip_archive(
                 source: e,
             })?;
 
+            crate::utils::security::set_secure_file_permissions(&outpath)?;
             std::io::copy(&mut file, &mut outfile).map_err(|e| Error::FileWrite {
                 path: outpath.clone(),
                 source: e,
@@ -333,6 +336,34 @@ pub fn create_rcman_container(
 
 #[cfg(test)]
 mod tests {
+    fn create_zip_archive(
+        source: &Path,
+        output: &Path,
+        progress: Option<ProgressCallback>,
+        _size: u64,
+        password: Option<&str>,
+    ) -> Result<()> {
+        let mut archive = BackupArchive::new(output, password, progress)?;
+        fn append_directory(
+            archive: &mut BackupArchive<'_>,
+            root: &Path,
+            dir: &Path,
+        ) -> Result<()> {
+            for entry in crate::error::read_dir(dir)? {
+                let entry = entry.map_err(|e| Error::Archive(e.to_string()))?;
+                let path = entry.path();
+                if path.is_dir() {
+                    append_directory(archive, root, &path)?;
+                } else {
+                    archive.copy(&path, path.strip_prefix(root).unwrap())?;
+                }
+            }
+            Ok(())
+        }
+        append_directory(&mut archive, source, source)?;
+        archive.finish()
+    }
+
     use super::*;
     use tempfile::tempdir;
 

@@ -46,8 +46,11 @@ pub const DEFAULT_KEY: &str = "main";
 
 /// SQLite storage backend.
 ///
-/// See the [module docs](crate::storage::sqlite) for the design rationale and
-/// schema.
+/// Each supplied path is a SQLite database containing JSON-encoded settings in
+/// a table with `key TEXT PRIMARY KEY` and `data TEXT NOT NULL` columns.
+/// The default table is `rcman_settings` and the default row key is `main`.
+/// Use [`Self::with_table`] and [`Self::with_key`] to share a database between
+/// settings namespaces.
 ///
 /// # Example
 ///
@@ -180,8 +183,14 @@ impl StorageBackend for SqliteStorage {
     }
 
     fn read<T: DeserializeOwned>(&self, path: &Path) -> Result<T> {
-        let conn = self.connect(path)?;
-        self.ensure_schema(&conn)?;
+        if !is_valid_identifier(&self.table_name) {
+            return Err(Error::Config("Invalid SQLite table name".into()));
+        }
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| Error::FileRead {
+                path: path.to_path_buf(),
+                source: std::io::Error::other(e.to_string()),
+            })?;
         let sql = format!(
             "SELECT data FROM {table} WHERE key = ?1",
             table = self.table_name
@@ -190,6 +199,11 @@ impl StorageBackend for SqliteStorage {
             .query_row(&sql, rusqlite::params![self.key], |row| row.get(0))
             .or_else(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                rusqlite::Error::SqliteFailure(_, Some(ref msg))
+                    if msg.starts_with("no such table") =>
+                {
+                    Ok(None)
+                }
                 _ => Err(e),
             })
             .map_err(|e| Error::Config(format!("sqlite query: {e}")))?;
@@ -206,6 +220,8 @@ impl StorageBackend for SqliteStorage {
     }
 
     fn write<T: Serialize>(&self, path: &Path, data: &T) -> Result<()> {
+        #[cfg(feature = "backup")]
+        crate::backup::transaction::capture_file(path)?;
         let content = self.serialize(data)?;
         let conn = self.connect(path)?;
         self.ensure_schema(&conn)?;

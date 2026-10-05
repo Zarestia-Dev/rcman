@@ -23,7 +23,7 @@ full = ["json", "toml", "yaml", "sqlite", "backup", "keychain", "encrypted-file"
 json = []
 toml = ["dep:toml"]
 yaml = ["dep:serde_yaml"]
-sqlite = ["dep:rusqlite"]
+sqlite = ["dep:rusqlite", "rusqlite/backup"]
 backup = ["dep:zip", "dep:sha2", "dep:tempfile"]
 keychain = [
     "dep:keyring-core",
@@ -34,7 +34,7 @@ keychain = [
     "dep:ndk-context",
 ]
 encrypted-file = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2"]
-vault = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2"]
+vault = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2", "dep:zeroize"]
 derive = ["dep:rcman-derive"]
 profiles = []
 hot-reload = ["dep:notify"]
@@ -53,6 +53,7 @@ rcman-derive = { path = "rcman-derive", version = "0.2.3", optional = true }
 zip = { version = "8.2", default-features = false, features = ["deflate", "time", "aes-crypto"], optional = true }
 sha2 = { version = "0.11", optional = true }
 tempfile = { version = "3.26", optional = true }
+zeroize = { version = "1", optional = true }
 aes-gcm = { version = "0.10", optional = true }
 rand = { version = "0.10", optional = true }
 base64 = { version = "0.22", optional = true }

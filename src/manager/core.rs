@@ -92,7 +92,7 @@ pub struct SettingsManager<
 
     /// External config providers for backups
     #[cfg(feature = "backup")]
-    pub(crate) external_providers: RwLock<Vec<Box<dyn ExternalConfigProvider>>>,
+    pub(crate) external_providers: RwLock<Vec<Arc<dyn ExternalConfigProvider>>>,
 
     /// Profile manager for main settings (when profiles are enabled)
     #[cfg(feature = "profiles")]
@@ -129,6 +129,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # Ok::<(), rcman::Error>(())
     /// ```
     pub fn new(config: SettingsConfig<S, Schema>) -> Result<Self> {
+        #[cfg(feature = "vault")]
+        let (config, password) = {
+            let mut config = config;
+            let password = config.vault_password.take().map(zeroize::Zeroizing::new);
+            (config, password)
+        };
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&config.config_dir)?;
         // Ensure config directory exists with secure permissions
         if !config.config_dir.exists() {
             crate::utils::security::ensure_secure_dir(&config.config_dir)?;
@@ -171,7 +179,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         );
 
         #[cfg(feature = "vault")]
-        let vault = Self::initialize_vault(&config, &storage, &settings_dir)?;
+        let vault = Self::initialize_vault(
+            &config,
+            &storage,
+            &settings_dir,
+            password.as_ref().map(|p| p.as_str()),
+        )?;
 
         let events = Arc::new(EventManager::new());
 
@@ -221,7 +234,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         }
 
         #[cfg(feature = "vault")]
-        if manager.config.vault_password.is_some() {
+        if password.is_some() {
             manager.persist_vault()?;
         }
 
@@ -322,10 +335,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     }
 
     /// Get reference to the schema metadata map
-    #[cfg(all(
-        feature = "backup",
-        any(feature = "keychain", feature = "encrypted-file")
-    ))]
+    #[cfg(feature = "backup")]
     pub(crate) fn schema_metadata(&self) -> &IndexMap<String, SettingMetadata> {
         &self.schema_metadata
     }

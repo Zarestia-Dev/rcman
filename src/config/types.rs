@@ -168,11 +168,15 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchem
     #[cfg(feature = "hot-reload")]
     pub hot_reload: Option<HotReloadConfig>,
 
-    /// Whether configuration vault is enabled (AES-256-GCM + Argon2id)
+    /// Whether vault support was requested by the builder.
+    ///
+    /// This flag alone does not encrypt plaintext settings. Use the manager's
+    /// `is_vault_enabled()` method to inspect its runtime encryption state.
     #[cfg(feature = "vault")]
     pub vault_enabled: bool,
 
-    /// Initial vault password (for automated startup)
+    /// Initial vault password (for automated startup). Consumed and zeroized by
+    /// `SettingsManager::new`; the manager's configuration retains `None`.
     #[cfg(feature = "vault")]
     pub vault_password: Option<String>,
 
@@ -547,7 +551,11 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         self
     }
 
-    /// Enable vault encryption and supply an initial password (for headless or automated startup)
+    /// Supply a password to unlock an existing vault or encrypt settings at startup.
+    ///
+    /// Manager construction consumes and zeroizes its password buffer, including
+    /// on failure. The resulting manager's configuration holds `None`; caller-owned
+    /// copies are unaffected.
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault_password(mut self, password: impl Into<String>) -> Self {
@@ -560,7 +568,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     ///
     /// Resolution happens immediately; missing sources return an error instead of
     /// silently falling back to an unencrypted configuration. File sources strip
-    /// trailing line endings while preserving spaces in the password.
+    /// trailing line endings while preserving spaces in the password. Manager
+    /// construction consumes and zeroizes the resolved password buffer.
     ///
     /// # Errors
     /// Returns an error if the source cannot be read or contains an empty password.
@@ -589,7 +598,9 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             crate::credentials::SecretPasswordSource::File(path) => std::fs::read_to_string(&path)
                 .map(|password| password.trim_end_matches(['\r', '\n']).to_string())
                 .map_err(|source| crate::Error::FileRead { path, source })?,
-            source => source.resolve()?,
+            source @ crate::credentials::SecretPasswordSource::Environment(_) => {
+                source.resolve()?
+            }
         };
         if password.is_empty() {
             return Err(crate::Error::Config(

@@ -1,8 +1,9 @@
 //! Backup creation
 
+use super::validate_backup_value;
 use indexmap::IndexMap;
 
-use super::archive::{calculate_file_hash, create_rcman_container, create_zip_archive};
+use super::archive::{BackupArchive, calculate_file_hash, create_rcman_container};
 use super::types::{
     BackupAnalysis, BackupContents, BackupManifest, ExternalConfigProvider,
     SubSettingsManifestEntry,
@@ -41,7 +42,7 @@ struct SecretContext<'a> {
 fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
     config: &crate::config::SettingsConfig<S, Schema>,
     options: &BackupOptions,
-) -> Vec<(PathBuf, PathBuf)> {
+) -> Result<Vec<(PathBuf, PathBuf)>> {
     let _ = options;
     let mut files = Vec::new();
 
@@ -57,8 +58,12 @@ fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
 
         // Collect profile settings
         let profiles_dir = config.config_dir.join(PROFILES_DIR);
-        if let Ok(entries) = fs::read_dir(&profiles_dir) {
-            for entry in entries.flatten() {
+        if profiles_dir.exists() {
+            for entry in crate::error::read_dir(&profiles_dir)? {
+                let entry = entry.map_err(|source| Error::DirectoryRead {
+                    path: profiles_dir.clone(),
+                    source,
+                })?;
                 let profile_name = entry.file_name().to_string_lossy().to_string();
 
                 // Filter profiles if specified
@@ -78,7 +83,7 @@ fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
                 }
             }
         }
-        return files;
+        return Ok(files);
     }
 
     // Non-profiled or feature disabled: just the single settings file
@@ -88,7 +93,7 @@ fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
         files.push((settings_path, PathBuf::from(&config.settings_file)));
     }
 
-    files
+    Ok(files)
 }
 
 /// Backup manager for creating and analyzing backups
@@ -108,26 +113,19 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         self.manager.register_external_provider(provider);
     }
 
-    /// Create a backup
+    /// Export selected settings and external content to a portable `.rcman` archive.
     ///
-    /// # Arguments
-    ///
-    /// * `options` - Backup options
-    ///
-    /// # Returns
-    ///
-    /// * `Result<PathBuf>` - Path to the created backup file
+    /// An enabled vault must be unlocked. Managed values are decrypted and filtered
+    /// by the secret policy before export; `options.password` encrypts the archive
+    /// independently of the source vault. External content is copied as supplied.
+    /// See the [module documentation](crate::backup) for isolation and portability.
     ///
     /// # Errors
     ///
-    /// * `Error::BackupFailed` - Backup failed
-    /// * `Error::DirectoryCreate` - Failed to create directory
-    /// * `Error::FileCreate` - Failed to create file
-    /// * `Error::FileRead` - Failed to read file
-    /// * `Error::FileWrite` - Failed to write file
-    /// * `Error::InvalidPassword` - Invalid password
-    /// * `Error::ZipCreate` - Failed to create zip file
-    /// * `Error::ZipWrite` - Failed to write zip file
+    /// Returns `Error::ConfigLocked` when the source vault is locked, or
+    /// `Error::Config` when another operation conflicts with the managed snapshot.
+    /// Also returns errors for invalid options, unreadable source data, credential
+    /// failures, archive creation, or publishing the output file.
     pub fn create(&self, options: &BackupOptions) -> Result<PathBuf> {
         #[cfg(feature = "vault")]
         if self.manager.is_locked() {
@@ -139,25 +137,36 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         // Validate password if provided
         let password = validate_password(options.password.clone())?;
 
-        // Create temp directory for gathering files
+        // Only the archive is staged on disk, never decrypted managed settings.
         let temp_dir = tempfile::tempdir().map_err(|e| Error::BackupFailed(e.to_string()))?;
-        let export_dir = temp_dir.path().join("export");
-        crate::utils::security::ensure_secure_dir(&export_dir)?;
-
-        // Gather files to backup
-        let (contents, total_size) = self.gather_files(&export_dir, options)?;
-
-        // Create inner data archive
         let data_filename = "data.zip";
         let inner_archive_path = temp_dir.path().join(data_filename);
-
-        create_zip_archive(
-            &export_dir,
+        let mut archive = BackupArchive::new(
             &inner_archive_path,
-            options.on_progress.clone(),
-            total_size,
             password.as_deref(),
+            options.on_progress.clone(),
         )?;
+        let (mut contents, mut total_size) = {
+            let _operation_guard = super::transaction::exclusive(
+                &self.manager.config().config_dir,
+                #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                self.manager
+                    .credentials()
+                    .map(crate::credentials::CredentialManager::service_name),
+            )?;
+            self.gather_files(&mut archive, options)?
+        };
+        if matches!(options.export_type, ExportType::Full)
+            || !options.include_external_configs.is_empty()
+        {
+            let (size, count, configs, files) =
+                self.gather_external_configs(&mut archive, options)?;
+            total_size += size;
+            contents.file_count += count;
+            contents.external_configs = configs;
+            contents.external_config_files = files;
+        }
+        archive.finish()?;
 
         // Calculate checksum
         let (checksum, _) = calculate_file_hash(&inner_archive_path)?;
@@ -188,9 +197,40 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         let manifest_json = serde_json::to_string_pretty(&manifest)
             .map_err(|e| Error::BackupFailed(e.to_string()))?;
 
+        let output_path = self.output_path(options)?;
+
+        // Ensure output directory exists
+        fs::create_dir_all(&options.output_dir).map_err(|e| Error::DirectoryCreate {
+            path: options.output_dir.clone(),
+            source: e,
+        })?;
+
+        let staged = tempfile::NamedTempFile::new_in(&options.output_dir)
+            .map_err(|e| Error::BackupFailed(e.to_string()))?;
+        create_rcman_container(
+            staged.path(),
+            &manifest_json,
+            "manifest.json",
+            &inner_archive_path,
+            data_filename,
+        )?;
+
+        staged
+            .as_file()
+            .sync_all()
+            .map_err(|e| Error::BackupFailed(e.to_string()))?;
+        staged
+            .persist_noclobber(&output_path)
+            .map_err(|e| Error::BackupFailed(e.to_string()))?;
+        info!("Backup created: {:?}", output_path.display());
+        Ok(output_path)
+    }
+
+    fn output_path(&self, options: &BackupOptions) -> Result<PathBuf> {
         // Generate output filename
         let now = OffsetDateTime::now_utc();
-        let timestamp_format = format_description!("[year][month][day]_[hour][minute][second]");
+        let timestamp_format =
+            format_description!("[year][month][day]_[hour][minute][second]_[subsecond digits:9]");
         let timestamp = now
             .format(&timestamp_format)
             .unwrap_or_else(|_| "unknown".to_string());
@@ -236,33 +276,24 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             }
         };
 
-        let output_path = options.output_dir.join(&filename);
-
-        // Ensure output directory exists
-        fs::create_dir_all(&options.output_dir).map_err(|e| Error::DirectoryCreate {
-            path: options.output_dir.clone(),
-            source: e,
-        })?;
-
-        // Create final .rcman container
-        create_rcman_container(
-            &output_path,
-            &manifest_json,
-            "manifest.json",
-            &inner_archive_path,
-            data_filename,
-        )?;
-
-        info!("Backup created: {:?}", output_path.display());
-        Ok(output_path)
+        if Path::new(&filename)
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(&filename)
+            || filename.contains(['\\', ':'])
+        {
+            return Err(Error::BackupFailed("Invalid backup filename".into()));
+        }
+        Ok(options.output_dir.join(&filename))
     }
 
     /// Gather files to backup
     fn gather_files(
         &self,
-        export_dir: &Path,
+        archive: &mut BackupArchive<'_>,
         options: &BackupOptions,
     ) -> Result<(BackupContents, u64)> {
+        let export_dir = Path::new("");
         let mut contents = BackupContents::default();
         let mut total_size = 0u64;
 
@@ -272,7 +303,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             && !matches!(options.export_type, ExportType::Single { .. });
 
         if include_settings {
-            let (size, count) = self.gather_main_settings(export_dir, options)?;
+            let (size, count) = self.gather_main_settings(archive, options)?;
             total_size += size;
             contents.file_count += count;
             contents.settings = true;
@@ -293,16 +324,32 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 name,
             } => {
                 // Handle single entry export inline (simple case)
-                if let Ok(sub) = self.manager.sub_settings(settings_type) {
+                {
+                    let sub = self.manager.sub_settings(settings_type)?;
                     let sub_export_dir = export_dir.join(settings_type);
-                    crate::error::create_dir(&sub_export_dir)?;
 
-                    let value: serde_json::Value = sub.get_value(name)?;
+                    let mut value = sub
+                        .backup_entries(&sub.directory())?
+                        .remove(name)
+                        .ok_or_else(|| Error::SubSettingsEntryNotFound(name.clone()))?;
+                    let metadata = sub.schema_metadata().unwrap_or_default();
+                    let include_secrets = match options.secret_policy {
+                        crate::SecretBackupPolicy::Exclude => false,
+                        crate::SecretBackupPolicy::Include => true,
+                        crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
+                    };
+                    self.inject_or_remove_secrets(
+                        &mut value,
+                        &format!("sub.{settings_type}.{name}"),
+                        &metadata,
+                        include_secrets,
+                        Self::sub_profile(&sub)?.as_deref(),
+                    )?;
                     // Use storage backend for format-agnostic export
                     let ext = self.manager.storage().extension();
                     let dest = sub_export_dir.join(format!("{name}.{ext}"));
                     let content = self.manager.storage().serialize(&value)?;
-                    crate::error::write_file(&dest, &content)?;
+                    archive.write(&dest, content.as_bytes())?;
                     total_size += content.len() as u64;
                     contents.file_count += 1;
                     contents.sub_settings.insert(
@@ -317,9 +364,10 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
         // Process each sub-settings type
         for sub_type in sub_settings_to_backup {
-            if let Ok(sub) = self.manager.sub_settings(&sub_type) {
+            {
+                let sub = self.manager.sub_settings(&sub_type)?;
                 let (size, count, manifest_entry) = self.gather_sub_settings(
-                    export_dir,
+                    archive,
                     &sub_type,
                     &sub,
                     self.manager.storage(),
@@ -333,34 +381,27 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             }
         }
 
-        // External configs
-        let include_external_configs = matches!(options.export_type, ExportType::Full)
-            || !options.include_external_configs.is_empty();
-
-        if include_external_configs {
-            let (size, count, configs, config_files) =
-                self.gather_external_configs(export_dir, options)?;
-            total_size += size;
-            contents.file_count += count;
-            contents.external_configs = configs;
-            contents.external_config_files = config_files;
+        #[cfg(feature = "vault")]
+        if self.manager.is_locked() {
+            return Err(Error::ConfigLocked);
         }
-
         Ok((contents, total_size))
     }
 
     /// Gather main settings files
     fn gather_main_settings(
         &self,
-        export_dir: &Path,
+        archive: &mut BackupArchive<'_>,
         options: &BackupOptions,
     ) -> Result<(u64, u32)> {
         use std::collections::HashSet;
 
+        let export_dir = Path::new("");
+
         let mut total_size = 0u64;
         let mut file_count = 0u32;
 
-        let settings_files = collect_settings_files(self.manager.config(), options);
+        let settings_files = collect_settings_files(self.manager.config(), options)?;
         let metadata = Schema::get_metadata();
         let mut backed_up_profile_settings = HashSet::new();
 
@@ -370,9 +411,6 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             }
 
             let full_dest = export_dir.join(&dest);
-            if let Some(parent) = full_dest.parent() {
-                crate::error::create_dir(parent)?;
-            }
 
             let credential_profile = Self::profile_from_backup_dest(&dest);
             let should_include_secrets = match options.secret_policy {
@@ -388,7 +426,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             };
 
             // Process and save with secret handling (prefix is empty for main settings)
-            let size = self.process_and_save_settings(&src, &full_dest, &ctx)?;
+            let size = self.process_and_save_settings(archive, &src, &full_dest, &ctx)?;
 
             total_size += size;
             file_count += 1;
@@ -399,8 +437,12 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         if self.manager.config().profiles_enabled {
             let profiles_dir = self.manager.config().config_dir.join(PROFILES_DIR);
 
-            if let Ok(entries) = crate::error::read_dir(&profiles_dir) {
-                for entry in entries.flatten() {
+            if profiles_dir.exists() {
+                for entry in crate::error::read_dir(&profiles_dir)? {
+                    let entry = entry.map_err(|source| Error::DirectoryRead {
+                        path: profiles_dir.clone(),
+                        source,
+                    })?;
                     let profile_name = entry.file_name().to_string_lossy().to_string();
 
                     if !options.include_profiles.is_empty()
@@ -418,7 +460,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                         .join(&self.manager.config().settings_file);
 
                     if let Some(size) = self.write_synthesized_settings_file(
-                        export_dir,
+                        archive,
                         &relative_dest,
                         options,
                         Some(profile_name.as_str()),
@@ -439,7 +481,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             let relative_dest = PathBuf::from(&self.manager.config().settings_file);
 
             if let Some(size) =
-                self.write_synthesized_settings_file(export_dir, &relative_dest, options, None)?
+                self.write_synthesized_settings_file(archive, &relative_dest, options, None)?
             {
                 total_size += size;
                 file_count += 1;
@@ -455,19 +497,20 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
     fn write_synthesized_settings_file(
         &self,
-        export_dir: &Path,
+        archive: &mut BackupArchive<'_>,
         relative_dest: &Path,
         options: &BackupOptions,
         credential_profile: Option<&str>,
     ) -> Result<Option<u64>> {
+        let export_dir = Path::new("");
         let should_include_secrets = match options.secret_policy {
             crate::SecretBackupPolicy::Exclude => false,
             crate::SecretBackupPolicy::Include => true,
             crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
         };
 
-        // Build merged settings from manager (merge stored + defaults)
-        let mut value = self.manager.get_all_data()?;
+        // A missing profile file contains no overrides; never borrow the active profile.
+        let mut value = serde_json::json!({});
 
         self.inject_or_remove_secrets(
             &mut value,
@@ -475,14 +518,11 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             &Schema::get_metadata(),
             should_include_secrets,
             credential_profile,
-        );
+        )?;
 
         let content = self.manager.storage().serialize(&value)?;
         let full_dest = export_dir.join(relative_dest);
-        if let Some(parent) = full_dest.parent() {
-            crate::error::create_dir(parent)?;
-        }
-        crate::error::write_file(&full_dest, &content)?;
+        archive.write(&full_dest, content.as_bytes())?;
 
         Ok(Some(content.len() as u64))
     }
@@ -490,6 +530,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
     // Helper to read, process secrets, and write settings file
     fn process_and_save_settings(
         &self,
+        archive: &mut BackupArchive<'_>,
         src: &Path,
         dest: &Path,
         ctx: &SecretContext<'_>,
@@ -502,11 +543,11 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             ctx.metadata,
             ctx.should_include,
             ctx.credential_profile,
-        );
+        )?;
 
         let storage = &self.manager.config().storage;
         let serialized = storage.serialize(&value)?;
-        crate::error::write_file(dest, &serialized)?;
+        archive.write(dest, serialized.as_bytes())?;
 
         Ok(serialized.len() as u64)
     }
@@ -518,8 +559,10 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         metadata: &IndexMap<String, crate::SettingMetadata>,
         should_include: bool,
         credential_profile: Option<&str>,
-    ) {
-        let _ = credential_profile;
+    ) -> Result<()> {
+        #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+        let _ = (prefix, credential_profile);
+        validate_backup_value(value)?;
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         let creds_opt = self.manager.credentials();
 
@@ -528,13 +571,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 continue;
             }
 
-            let relative_key = if prefix.is_empty() {
-                full_key.as_str()
-            } else {
-                // For sub-settings, full_key is already relative to the entry
-                // (not prefixed with the parent path)
-                full_key.as_str()
-            };
+            let relative_key = full_key.as_str();
 
             if should_include {
                 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -547,20 +584,14 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     };
 
                     // Try to get the secret
-                    match creds.get_with_profile(&credential_key, credential_profile) {
-                        Ok(Some(secret)) => {
-                            crate::utils::value::set_path(
-                                value,
-                                relative_key,
-                                serde_json::Value::String(secret),
-                            );
-                        }
-                        Ok(None) => {}
-                        Err(err) => {
-                            debug!(
-                                "Failed to fetch secret '{relative_key}' (credential_key: '{credential_key}'): {err}"
-                            );
-                        }
+                    if let Some(secret) =
+                        creds.get_with_profile(&credential_key, credential_profile)?
+                    {
+                        crate::utils::value::set_path(
+                            value,
+                            relative_key,
+                            serde_json::Value::String(secret),
+                        );
                     }
                 }
             } else {
@@ -568,6 +599,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 crate::utils::value::remove_path(value, relative_key);
             }
         }
+        Ok(())
     }
 
     fn profile_from_backup_dest(dest: &Path) -> Option<&str> {
@@ -589,19 +621,29 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         }
     }
 
+    fn sub_profile(sub: &crate::sub_settings::SubSettings<S>) -> Result<Option<String>> {
+        #[cfg(feature = "profiles")]
+        if sub.profiles_enabled() {
+            return sub.profiles()?.active().map(Some);
+        }
+        let _ = sub;
+        Ok(None)
+    }
+
     /// Gather sub-settings files (handles both profiled and flat modes)
     fn gather_sub_settings(
         &self,
-        export_dir: &Path,
+        archive: &mut BackupArchive<'_>,
         sub_type: &str,
         sub: &crate::sub_settings::SubSettings<S>,
         storage: &S,
         options: &BackupOptions,
     ) -> Result<(u64, u32, Option<SubSettingsManifestEntry>)> {
+        let export_dir = Path::new("");
         // Check if profiles are enabled
         #[cfg(feature = "profiles")]
         if sub.profiles_enabled() {
-            return Self::gather_profiled_sub_settings(export_dir, sub_type, sub, storage, options);
+            return self.gather_profiled_sub_settings(archive, sub_type, sub, storage, options);
         }
 
         // Non-profiled sub-settings
@@ -618,16 +660,14 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 let ext = sub.extension();
                 let dest = export_dir.join(format!("{sub_type}.{ext}"));
 
-                if let Some(parent) = dest.parent() {
-                    crate::error::create_dir(parent)?;
-                }
-
                 // Process secrets entry-by-entry with sub-settings schema paths.
                 // Single-file structure is typically: { "entry": { ...fields... } }
-                let raw_entries = {
-                    let store = sub.store.read_recovered()?;
-                    store.get_all()?
-                };
+                let mut raw_entries = sub.backup_entries(&sub.directory())?;
+                if let Some(selected) = options.include_sub_settings_items.get(sub_type)
+                    && !selected.is_empty()
+                {
+                    raw_entries.retain(|name, _| selected.contains(name));
+                }
                 let mut root_value = serde_json::Value::Object(raw_entries.into_iter().collect());
 
                 let should_include_secrets = match options.secret_policy {
@@ -639,19 +679,19 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 if let Some(obj) = root_value.as_object_mut() {
                     for (entry_name, entry_value) in obj.iter_mut() {
                         // Build credential key prefix: "sub.connections.Local"
-                        let credential_key_prefix = format!("sub.{sub_type}.{entry_name}");
+                        let credential_keyprefix = format!("sub.{sub_type}.{entry_name}");
                         self.inject_or_remove_secrets(
                             entry_value,
-                            &credential_key_prefix,
+                            &credential_keyprefix,
                             &sub_metadata,
                             should_include_secrets,
-                            None,
-                        );
+                            Self::sub_profile(sub)?.as_deref(),
+                        )?;
                     }
                 }
 
                 let content = storage.serialize(&root_value)?;
-                crate::error::write_file(&dest, &content)?;
+                archive.write(&dest, content.as_bytes())?;
                 let size = content.len() as u64;
 
                 debug!("📄 Added single-file sub-settings: {sub_type}");
@@ -666,12 +706,18 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             Ok((0, 0, None))
         } else {
             // Multi-file mode
-            crate::error::create_dir(&sub_export_dir)?;
             let mut total_size = 0u64;
             let mut items = Vec::new();
 
-            for name in sub.list()? {
-                if let Ok(mut value) = sub.get_value(&name) {
+            for (name, mut value) in sub.backup_entries(&sub.directory())? {
+                if options
+                    .include_sub_settings_items
+                    .get(sub_type)
+                    .is_some_and(|selected| !selected.is_empty() && !selected.contains(&name))
+                {
+                    continue;
+                }
+                {
                     let ext = sub.extension();
                     let dest = sub_export_dir.join(format!("{name}.{ext}"));
 
@@ -682,18 +728,18 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     };
 
                     // Build credential key prefix: "sub.remotes.Google Drive"
-                    let credential_key_prefix = format!("sub.{sub_type}.{name}");
+                    let credential_keyprefix = format!("sub.{sub_type}.{name}");
 
                     self.inject_or_remove_secrets(
                         &mut value,
-                        &credential_key_prefix,
+                        &credential_keyprefix,
                         &sub_metadata,
                         should_include_secrets,
-                        None,
-                    );
+                        Self::sub_profile(sub)?.as_deref(),
+                    )?;
 
                     let content = storage.serialize(&value)?;
-                    crate::error::write_file(&dest, &content)?;
+                    archive.write(&dest, content.as_bytes())?;
                     total_size += content.len() as u64;
                     items.push(name);
                 }
@@ -712,13 +758,14 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
     /// Gather profiled sub-settings
     #[cfg(feature = "profiles")]
     fn gather_profiled_sub_settings(
-        export_dir: &Path,
+        &self,
+        archive: &mut BackupArchive<'_>,
         sub_type: &str,
         sub: &crate::sub_settings::SubSettings<S>,
         storage: &S,
         options: &BackupOptions,
     ) -> Result<(u64, u32, Option<SubSettingsManifestEntry>)> {
-        let sub_export_dir = export_dir.join(sub_type);
+        let sub_export_dir = Path::new(sub_type);
         let mut total_size = 0u64;
         let mut file_count = 0u32;
 
@@ -728,10 +775,11 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         let manifest_filename = format!(".profiles.{ext}");
         let profiles_manifest = root_path.join(&manifest_filename);
         if profiles_manifest.exists() {
-            crate::error::create_dir(&sub_export_dir)?;
             let dest = sub_export_dir.join(&manifest_filename);
-            crate::error::copy_file(&profiles_manifest, &dest)?;
-            total_size += crate::error::file_size(&dest);
+            let manifest: serde_json::Value = storage.read(&profiles_manifest)?;
+            validate_backup_value(&manifest)?;
+            let content = storage.serialize(&manifest)?;
+            total_size += archive.write(&dest, content.as_bytes())?;
             file_count += 1;
         }
 
@@ -742,7 +790,6 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         }
 
         let dest_profiles_dir = sub_export_dir.join(PROFILES_DIR);
-        crate::error::create_dir(&dest_profiles_dir)?;
 
         let mut profile_items: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
@@ -764,25 +811,52 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
             let profile_path = entry.path();
             let profile_export_dir = dest_profiles_dir.join(&profile_name);
-            crate::error::create_dir(&profile_export_dir)?;
 
+            let entries = sub.backup_entries(&profile_path)?;
             let mut items_in_profile = Vec::new();
-
-            if let Ok(profile_entries) = fs::read_dir(&profile_path) {
-                for item_entry in profile_entries.flatten() {
-                    let path = item_entry.path();
-                    // Use storage extension
-                    if path.extension().and_then(|s| s.to_str()) == Some(storage.extension()) {
-                        let dest = profile_export_dir.join(item_entry.file_name());
-                        crate::error::copy_file(&path, &dest)?;
-                        total_size += crate::error::file_size(&dest);
-                        file_count += 1;
-
-                        // Extract item name (without extension)
-                        if let Some(item_name) = path.file_stem().and_then(|s| s.to_str()) {
-                            items_in_profile.push(item_name.to_string());
-                        }
-                    }
+            let metadata = sub.schema_metadata().unwrap_or_default();
+            let include_secrets = match options.secret_policy {
+                crate::SecretBackupPolicy::Exclude => false,
+                crate::SecretBackupPolicy::Include => true,
+                crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
+            };
+            let mut processed = serde_json::Map::new();
+            for (name, mut value) in entries {
+                if options
+                    .include_sub_settings_items
+                    .get(sub_type)
+                    .is_some_and(|selected| !selected.is_empty() && !selected.contains(&name))
+                {
+                    continue;
+                }
+                self.inject_or_remove_secrets(
+                    &mut value,
+                    &format!("sub.{sub_type}.{name}"),
+                    &metadata,
+                    include_secrets,
+                    Some(&profile_name),
+                )?;
+                processed.insert(name, value);
+            }
+            if sub.is_single_file() {
+                let content = storage.serialize(&serde_json::Value::Object(processed))?;
+                let name = Path::new(sub_type)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| Error::BackupFailed("Invalid sub-settings name".into()))?;
+                let dest = profile_export_dir.join(format!("{name}.{}", sub.extension()));
+                total_size += archive.write(&dest, content.as_bytes())?;
+                file_count += 1;
+                items_in_profile.push(name.to_string());
+            } else {
+                for (name, value) in processed {
+                    let content = storage.serialize(&value)?;
+                    total_size += archive.write(
+                        &profile_export_dir.join(format!("{name}.{}", sub.extension())),
+                        content.as_bytes(),
+                    )?;
+                    file_count += 1;
+                    items_in_profile.push(name);
                 }
             }
 
@@ -791,31 +865,19 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             }
         }
 
-        let manifest_entry = if profile_items.is_empty() {
-            None
-        } else {
-            let profiles_map = profile_items
-                .into_iter()
-                .map(|(profile_name, items)| {
-                    let entry = if items.len() == 1 {
-                        let mut single_item = items;
-                        let item = single_item.pop().ok_or_else(|| {
-                            Error::BackupFailed(
-                                "Expected single profile item but none found".to_string(),
-                            )
-                        })?;
-                        super::types::ProfileEntry::Single(item)
-                    } else {
-                        super::types::ProfileEntry::Multiple(items)
-                    };
-                    Ok((profile_name, entry))
-                })
-                .collect::<Result<_>>()?;
-
-            Some(SubSettingsManifestEntry::Profiled {
-                profiles: profiles_map,
-            })
-        };
+        let manifest_entry =
+            (!profile_items.is_empty()).then(|| SubSettingsManifestEntry::Profiled {
+                profiles: profile_items
+                    .into_iter()
+                    .map(|(name, items)| {
+                        let entry = match items.as_slice() {
+                            [item] => super::types::ProfileEntry::Single(item.clone()),
+                            _ => super::types::ProfileEntry::Multiple(items),
+                        };
+                        (name, entry)
+                    })
+                    .collect(),
+            });
 
         Ok((total_size, file_count, manifest_entry))
     }
@@ -823,13 +885,14 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
     /// Gather external config files
     fn gather_external_configs(
         &self,
-        export_dir: &Path,
+        archive: &mut BackupArchive<'_>,
         options: &BackupOptions,
     ) -> Result<ExternalGatherResult> {
-        let providers = self.manager.external_providers.read_recovered()?;
+        let export_dir = Path::new("");
+        let providers = self.manager.external_providers.read_recovered()?.clone();
         let mut all_configs = Vec::new();
         all_configs.extend(self.manager.config().external_configs.clone());
-        for provider in providers.iter() {
+        for provider in &*providers {
             all_configs.extend(provider.get_configs());
         }
 
@@ -860,14 +923,10 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 debug!("Skipping non-existent external config: {}", config.id);
                 continue;
             }
-
-            crate::error::create_dir(&external_dir)?;
             let dest = external_dir.join(&config.archive_filename);
 
-            match &config.export_source {
-                super::types::ExportSource::File(path) => {
-                    crate::error::copy_file(path, &dest)?;
-                }
+            let size = match &config.export_source {
+                super::types::ExportSource::File(path) => archive.copy(path, &dest)?,
                 super::types::ExportSource::Command { program, args } => {
                     let output = std::process::Command::new(program)
                         .args(args)
@@ -881,14 +940,12 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                             output.status.code()
                         )));
                     }
-                    crate::error::write_file(&dest, &output.stdout)?;
+                    archive.write(&dest, &output.stdout)?
                 }
-                super::types::ExportSource::Content(bytes) => {
-                    crate::error::write_file(&dest, bytes)?;
-                }
-            }
+                super::types::ExportSource::Content(bytes) => archive.write(&dest, bytes)?,
+            };
 
-            total_size += crate::error::file_size(&dest);
+            total_size += size;
             file_count += 1;
             config_ids.push(config.id.clone());
             config_files.insert(config.id.clone(), config.archive_filename.clone());

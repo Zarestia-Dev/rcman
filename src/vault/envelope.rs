@@ -40,7 +40,7 @@ impl Argon2Params {
         }
     }
 
-    /// Fast preset for unit testing and rapid local execution (64 `KiB`, 1 pass, 1 lane)
+    /// Low-cost preset for tests and demos, not production data (64 `KiB`, 1 pass, 1 lane)
     #[must_use]
     pub const fn fast() -> Self {
         Argon2Preset::Fast.params()
@@ -71,7 +71,7 @@ pub enum Argon2Preset {
     /// Standard OWASP recommendation (19,456 `KiB` / ~19 `MiB`, 2 iterations, 1 lane)
     #[default]
     Standard,
-    /// Ultra-fast derivation for unit tests, CI pipelines, and high-frequency CLI workflows (64 `KiB`, 1 iteration, 1 lane)
+    /// Low-cost derivation for tests and demos, not production data (64 `KiB`, 1 iteration, 1 lane)
     Fast,
     /// Memory-conscious profile tailored for mobile (Android/iOS) and constrained environments (8,192 `KiB`, 1 iteration, 1 lane)
     Mobile,

@@ -64,7 +64,8 @@ pub struct BackupOptions {
     /// Type of export
     pub export_type: ExportType,
 
-    /// Password for encryption (optional)
+    /// Archive encryption password, independent of any source vault password.
+    /// If absent, exported values are unencrypted even when the source uses a vault.
     pub password: Option<String>,
 
     /// User note to include in backup
@@ -88,7 +89,8 @@ pub struct BackupOptions {
     /// Custom filename suffix (e.g. "remotes" -> "`app_timestamp_remotes.rcman`")
     pub filename_suffix: Option<String>,
 
-    /// Progress callback (processed bytes, total bytes)
+    /// Progress callback (uncompressed bytes processed, total bytes).
+    /// Streaming export reports completion once the final total is known.
     pub on_progress: Option<ProgressCallback>,
 
     /// Profiles to include (if empty, defaults to active or all depending on logic)
@@ -304,10 +306,11 @@ pub struct RestoreOptions {
     /// Path to the backup file
     pub backup_path: PathBuf,
 
-    /// Password for decryption (if backup is encrypted)
+    /// Archive decryption password. Unlock the destination vault separately before
+    /// restoring; its password may differ from the archive password.
     pub password: Option<String>,
 
-    /// flags
+    /// Select restore scope and control overwrite, preview, and checksum behavior.
     pub flags: RestoreFlags,
 
     /// Sub-settings to restore (category -> items, empty vec = all items in category)

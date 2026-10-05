@@ -254,6 +254,8 @@ impl CredentialManager {
     ///
     /// Returns an error if the primary backend fails to store the key or if the fallback backend fails to store the key.
     pub fn store(&self, key: &str, value: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         self.store_with_profile(key, value, None)
     }
 
@@ -263,7 +265,35 @@ impl CredentialManager {
     ///
     /// Returns an error if the primary backend fails to store the key or if the fallback backend fails to store the key.
     pub fn store_with_profile(&self, key: &str, value: &str, profile: Option<&str>) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let full_key = self.make_key_with_profile(key, profile);
+        #[cfg(feature = "backup")]
+        {
+            crate::backup::transaction::capture_credential(
+                self.primary.clone(),
+                &full_key,
+                &self.service_name,
+            )?;
+            if let Some(fallback) = &self.fallback {
+                crate::backup::transaction::capture_credential(
+                    fallback.clone(),
+                    &full_key,
+                    &self.service_name,
+                )?;
+            }
+            crate::backup::transaction::capture_credential(
+                self.volatile.clone(),
+                &full_key,
+                &self.service_name,
+            )?;
+        }
+
+        #[cfg(feature = "backup")]
+        if crate::backup::transaction::active(&self.service_name) {
+            self.primary.store(&full_key, value)?;
+            return self.volatile.store(&full_key, value);
+        }
 
         // Always attempt primary backend first
         match self.primary.store(&full_key, value) {
@@ -309,6 +339,8 @@ impl CredentialManager {
     ///
     /// Returns an error if the primary backend fails to retrieve the key or if the fallback backend fails to retrieve the key.
     pub fn get(&self, key: &str) -> Result<Option<String>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         self.get_with_profile(key, None)
     }
 
@@ -318,6 +350,8 @@ impl CredentialManager {
     ///
     /// Returns an error if the primary backend fails to retrieve the key or if the fallback backend fails to retrieve the key.
     pub fn get_with_profile(&self, key: &str, profile: Option<&str>) -> Result<Option<String>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let full_key = self.make_key_with_profile(key, profile);
 
         // Try primary first
@@ -362,6 +396,8 @@ impl CredentialManager {
     ///
     /// Returns an error if the primary backend fails to remove the key or if the fallback backend fails to remove the key.
     pub fn remove(&self, key: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         self.remove_with_profile(key, None)
     }
 
@@ -371,7 +407,38 @@ impl CredentialManager {
     ///
     /// Returns an error if the primary backend fails to remove the key or if the fallback backend fails to remove the key.
     pub fn remove_with_profile(&self, key: &str, profile: Option<&str>) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let full_key = self.make_key_with_profile(key, profile);
+        #[cfg(feature = "backup")]
+        {
+            crate::backup::transaction::capture_credential(
+                self.primary.clone(),
+                &full_key,
+                &self.service_name,
+            )?;
+            if let Some(fallback) = &self.fallback {
+                crate::backup::transaction::capture_credential(
+                    fallback.clone(),
+                    &full_key,
+                    &self.service_name,
+                )?;
+            }
+            crate::backup::transaction::capture_credential(
+                self.volatile.clone(),
+                &full_key,
+                &self.service_name,
+            )?;
+        }
+
+        #[cfg(feature = "backup")]
+        if crate::backup::transaction::active(&self.service_name) {
+            self.primary.remove(&full_key)?;
+            if let Some(fallback) = &self.fallback {
+                fallback.remove(&full_key)?;
+            }
+            return self.volatile.remove(&full_key);
+        }
 
         // Remove from all backends
         let _ = self.primary.remove(&full_key);
@@ -413,6 +480,8 @@ impl CredentialManager {
     ///
     /// Returns an error if the cache invalidation fails.
     pub fn clear(&self) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         #[cfg(feature = "profiles")]
         let profile = self.profile_context.as_deref();
         #[cfg(not(feature = "profiles"))]
@@ -569,6 +638,8 @@ impl CredentialManager {
         &self,
         profile: Option<&str>,
     ) -> Result<std::collections::HashSet<String>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let profile_key = profile.map(ToString::to_string);
         {
             let cache_guard = self
@@ -612,6 +683,8 @@ impl CredentialManager {
         secrets: &std::collections::HashSet<String>,
         profile: Option<&str>,
     ) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let profile_key = profile.map(ToString::to_string);
         let list: Vec<&String> = secrets.iter().collect();
         let value_str = serde_json::to_string(&list).map_err(|e| {
@@ -641,6 +714,8 @@ impl CredentialManager {
     /// Returns an error if reading the credential store or parsing fails.
     #[cfg(feature = "profiles")]
     pub fn get_tracked_profiles(&self) -> Result<std::collections::HashSet<String>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         {
             let cache_guard = self
                 .tracked_profiles_cache
@@ -679,6 +754,8 @@ impl CredentialManager {
     /// Returns an error if storing the profile list in credentials fails.
     #[cfg(feature = "profiles")]
     pub fn add_tracked_profile(&self, profile: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let mut profiles = self.get_tracked_profiles()?;
         if profiles.insert(profile.to_string()) {
             let list: Vec<&String> = profiles.iter().collect();
@@ -704,6 +781,8 @@ impl CredentialManager {
     ///
     /// Returns an error if loading or saving the tracked secrets fails.
     pub fn add_tracked_secret(&self, key: &str, profile: Option<&str>) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let mut tracked = self.get_tracked_secrets(profile)?;
         if tracked.insert(key.to_string()) {
             self.save_tracked_secrets(&tracked, profile)?;
@@ -717,6 +796,8 @@ impl CredentialManager {
     ///
     /// Returns an error if loading or saving the tracked secrets fails.
     pub fn remove_tracked_secret(&self, key: &str, profile: Option<&str>) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let mut tracked = self.get_tracked_secrets(profile)?;
         if tracked.remove(key) {
             self.save_tracked_secrets(&tracked, profile)?;
@@ -730,6 +811,8 @@ impl CredentialManager {
     ///
     /// Returns an error if the cache lock is poisoned.
     pub fn invalidate_tracked_secrets_cache(&self) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         {
             let mut cache_guard = self
                 .tracked_secrets_cache
@@ -756,6 +839,8 @@ impl CredentialManager {
     ///
     /// Returns an error if the tracked secrets cache lock is poisoned.
     pub fn clear_tracked_secrets_cache(&self, profile: Option<&str>) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let profile_key = profile.map(ToString::to_string);
         let mut cache_guard = self
             .tracked_secrets_cache

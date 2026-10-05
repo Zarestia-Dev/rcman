@@ -266,33 +266,6 @@ impl Error {
 #[cfg(feature = "backup")]
 use std::path::Path;
 
-/// Create a directory (and parents) with proper error handling
-#[cfg(feature = "backup")]
-pub fn create_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path).map_err(|e| Error::DirectoryCreate {
-        path: path.to_path_buf(),
-        source: e,
-    })
-}
-
-/// Copy a file with proper error handling
-#[cfg(feature = "backup")]
-pub fn copy_file(src: &Path, dest: &Path) -> Result<u64> {
-    std::fs::copy(src, dest).map_err(|e| Error::FileRead {
-        path: src.to_path_buf(),
-        source: e,
-    })
-}
-
-/// Write content to a file with proper error handling
-#[cfg(feature = "backup")]
-pub fn write_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
-    std::fs::write(path, contents).map_err(|e| Error::FileWrite {
-        path: path.to_path_buf(),
-        source: e,
-    })
-}
-
 /// Read directory entries with proper error handling
 #[cfg(feature = "backup")]
 pub fn read_dir(path: &Path) -> Result<std::fs::ReadDir> {
@@ -300,11 +273,4 @@ pub fn read_dir(path: &Path) -> Result<std::fs::ReadDir> {
         path: path.to_path_buf(),
         source: e,
     })
-}
-
-/// Get file size (returns 0 if metadata unavailable)
-#[cfg(feature = "backup")]
-#[inline]
-pub fn file_size(path: &Path) -> u64 {
-    std::fs::metadata(path).map_or(0, |m| m.len())
 }

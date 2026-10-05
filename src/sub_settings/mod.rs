@@ -228,10 +228,10 @@ pub struct SubSettings<S: StorageBackend = crate::storage::JsonStorage> {
     /// We keep storage around mostly for profiles logic if needed,
     /// or simple ref storage.
     /// The storage backend instance (kept for recreating stores)
-    #[cfg(feature = "profiles")]
+    #[cfg(any(feature = "profiles", feature = "backup"))]
     storage: S,
 
-    #[cfg(not(feature = "profiles"))]
+    #[cfg(not(any(feature = "profiles", feature = "backup")))]
     _marker: std::marker::PhantomData<S>,
 
     /// Callback for change notifications
@@ -241,7 +241,7 @@ pub struct SubSettings<S: StorageBackend = crate::storage::JsonStorage> {
     #[cfg(feature = "profiles")]
     profile_manager: Option<crate::profiles::ProfileManager<S>>,
 
-    #[cfg(feature = "profiles")]
+    #[cfg(any(feature = "profiles", feature = "backup"))]
     root_dir: PathBuf,
 
     #[cfg(feature = "vault")]
@@ -315,6 +315,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         >,
         #[cfg(feature = "vault")] vault: crate::vault::SharedVault,
     ) -> Result<Self> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(config_dir)?;
         if config.extension.is_none() {
             config.extension = Some(storage.extension().to_string());
         }
@@ -386,14 +388,14 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             credential_manager,
             store: RwLock::new(store),
-            #[cfg(feature = "profiles")]
+            #[cfg(any(feature = "profiles", feature = "backup"))]
             storage,
-            #[cfg(not(feature = "profiles"))]
+            #[cfg(not(any(feature = "profiles", feature = "backup")))]
             _marker: std::marker::PhantomData,
             on_change: RwLock::new(None),
             #[cfg(feature = "profiles")]
             profile_manager,
-            #[cfg(feature = "profiles")]
+            #[cfg(any(feature = "profiles", feature = "backup"))]
             root_dir,
             #[cfg(feature = "vault")]
             vault,
@@ -435,6 +437,10 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     }
 
     pub fn invalidate_cache(&self) {
+        #[cfg(feature = "profiles")]
+        if let Some(profiles) = &self.profile_manager {
+            profiles.invalidate_manifest();
+        }
         if let Ok(store) = self.store.read_recovered() {
             store.invalidate_cache();
         }
@@ -447,6 +453,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     /// Returns an error if profiles are not enabled for this sub-settings type.
     #[cfg(feature = "profiles")]
     pub fn profiles(&self) -> Result<&crate::profiles::ProfileManager<S>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         self.profile_manager
             .as_ref()
             .ok_or(Error::ProfilesNotEnabled)
@@ -464,6 +472,39 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         false
     }
 
+    /// Read persisted entries without running migrations or switching the active profile.
+    #[cfg(feature = "backup")]
+    pub(crate) fn backup_entries(
+        &self,
+        directory: &std::path::Path,
+    ) -> Result<HashMap<String, Value>> {
+        #[cfg(feature = "sqlite")]
+        if self.is_table() {
+            return table::TableStore::new(
+                &self.config,
+                directory.to_path_buf(),
+                #[cfg(feature = "vault")]
+                Arc::clone(&self.vault),
+            )
+            .backup_entries();
+        }
+        self.backup_store(directory).get_all()
+    }
+
+    /// A detached store keeps backup I/O from changing active-profile state or migrating source files.
+    #[cfg(feature = "backup")]
+    pub(crate) fn backup_store(&self, directory: &std::path::Path) -> Box<dyn SubSettingsStore> {
+        let mut config = self.config.clone();
+        config.migrator = None;
+        Self::make_store(
+            &config,
+            directory.to_path_buf(),
+            self.storage.clone(),
+            #[cfg(feature = "vault")]
+            Arc::clone(&self.vault),
+        )
+    }
+
     /// Switch to a different profile
     ///
     /// # Arguments
@@ -478,6 +519,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     /// - Store re-creation fails
     #[cfg(feature = "profiles")]
     pub fn switch_profile(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -515,15 +558,29 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     where
         F: Fn(&str, SubSettingsAction) + Send + Sync + 'static,
     {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         let mut guard = self.on_change.write_recovered()?;
         *guard = Some(Arc::new(callback));
         Ok(())
     }
 
     fn notify_change(&self, name: &str, action: SubSettingsAction) {
-        if let Ok(guard) = self.on_change.read_recovered()
-            && let Some(callback) = guard.as_ref()
-        {
+        let callback = self
+            .on_change
+            .read_recovered()
+            .ok()
+            .and_then(|guard| guard.clone());
+        if let Some(callback) = callback {
+            #[cfg(feature = "backup")]
+            {
+                let name = name.to_owned();
+                crate::backup::transaction::defer(
+                    &self.root_dir,
+                    Box::new(move || callback(&name, action)),
+                );
+            }
+            #[cfg(not(feature = "backup"))]
             callback(name, action);
         }
     }
@@ -545,6 +602,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         field_path: &str,
         value: &T,
     ) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         let mut entry = match self.get_value(name) {
             Ok(value) => value,
             Err(Error::SubSettingsEntryNotFound(_)) => Value::Object(serde_json::Map::new()),
@@ -561,7 +620,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         self.set(name, &entry)
     }
 
-    fn validate_against_schema(&self, entry_name: &str, value: &Value) -> Result<()> {
+    pub(crate) fn validate_against_schema(&self, entry_name: &str, value: &Value) -> Result<()> {
         let Some(schema) = self.config.schema.as_ref() else {
             return Ok(());
         };
@@ -620,6 +679,20 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     fn extract_and_store_secrets(&self, entry_name: &str, value: &mut Value) -> Result<()> {
+        self.extract_and_store_secrets_for_profile(
+            entry_name,
+            value,
+            self.active_secret_profile().as_deref(),
+        )
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    pub(crate) fn extract_and_store_secrets_for_profile(
+        &self,
+        entry_name: &str,
+        value: &mut Value,
+        profile: Option<&str>,
+    ) -> Result<()> {
         let Some(schema) = self.config.schema.as_ref() else {
             return Ok(());
         };
@@ -638,8 +711,6 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             .as_ref()
             .ok_or_else(|| Error::Credential("Credentials not enabled".to_string()))?;
 
-        let profile = self.active_secret_profile();
-
         for (path, metadata) in secret_fields {
             let Some(secret_value) = crate::utils::value::remove_path(value, path) else {
                 continue;
@@ -648,8 +719,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             let credential_key = self.secret_credential_key(entry_name, path);
 
             if secret_value == metadata.default {
-                creds.remove_with_profile(&credential_key, profile.as_deref())?;
-                creds.remove_tracked_secret(&credential_key, profile.as_deref())?;
+                creds.remove_with_profile(&credential_key, profile)?;
+                creds.remove_tracked_secret(&credential_key, profile)?;
                 continue;
             }
 
@@ -658,16 +729,15 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
                 v => v.to_string(),
             };
 
-            if let Ok(Some(existing_val)) =
-                creds.get_with_profile(&credential_key, profile.as_deref())
+            if let Ok(Some(existing_val)) = creds.get_with_profile(&credential_key, profile)
                 && existing_val == value_str
             {
-                creds.add_tracked_secret(&credential_key, profile.as_deref())?;
+                creds.add_tracked_secret(&credential_key, profile)?;
                 continue;
             }
 
-            creds.store_with_profile(&credential_key, &value_str, profile.as_deref())?;
-            creds.add_tracked_secret(&credential_key, profile.as_deref())?;
+            creds.store_with_profile(&credential_key, &value_str, profile)?;
+            creds.add_tracked_secret(&credential_key, profile)?;
         }
 
         Ok(())
@@ -780,6 +850,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if the setting is not found or store access fails.
     pub fn get_value(&self, name: &str) -> Result<Value> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -824,6 +896,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     /// - Deserialization fails
     /// - Store access fails
     pub fn get<T: DeserializeOwned>(&self, name: &str) -> Result<T> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         let value = self.get_value(name)?;
         serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
     }
@@ -841,6 +915,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     /// - Serialization fails
     /// - Store write fails
     pub fn set<T: Serialize + Sync>(&self, name: &str, value: &T) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -856,6 +932,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
         let store = self.store.read_recovered()?;
         store.set(name, json_value)?;
+        drop(store);
 
         let action = if existed {
             SubSettingsAction::Updated
@@ -877,6 +954,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if store write fails.
     pub fn delete(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -889,6 +968,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         let store = self.store.read_recovered()?;
 
         store.remove(name)?;
+        drop(store);
         self.clear_secret_fields(name)?;
 
         self.notify_change(name, SubSettingsAction::Deleted);
@@ -901,6 +981,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if the store cannot be read.
     pub fn list(&self) -> Result<Vec<String>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -919,6 +1001,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if the store cannot be read.
     pub fn get_all_values(&self) -> Result<HashMap<String, Value>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -946,6 +1030,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ///
     /// Returns an error if the store cannot be read or if an unexpected error occurs during lookup.
     pub fn exists(&self, name: &str) -> Result<bool> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);

@@ -84,6 +84,8 @@ impl<S: StorageBackend> SingleFileStore<S> {
     }
 
     fn write_value<T: serde::Serialize>(&self, path: &std::path::Path, data: &T) -> Result<()> {
+        #[cfg(feature = "backup")]
+        crate::backup::transaction::capture_file(path)?;
         #[cfg(feature = "vault")]
         if let Some(ref vault) = self.get_vault()? {
             if vault.is_locked() {
@@ -148,6 +150,8 @@ impl<S: StorageBackend> SingleFileStore<S> {
 
     fn save_to_disk(&self, cache: &HashMap<String, Value>) -> Result<()> {
         let path = self.file_path();
+        #[cfg(feature = "backup")]
+        crate::backup::transaction::capture_file(&path)?;
 
         if let Some(parent) = path.parent()
             && !parent.exists()

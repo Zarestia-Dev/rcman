@@ -3,9 +3,9 @@
 //! This example demonstrates using the native configuration vault:
 //! - Encrypting main configuration and sub-settings on disk with AES-256-GCM + Argon2id
 //! - Checking whether the config is locked on application startup
-//! - Unlocking with a master key or password
+//! - Unlocking with a password
 //! - Transparently reading and saving settings and sub-settings while unlocked
-//! - Verifying on-disk encrypted envelope structures (zero plaintext leakage)
+//! - Verifying that managed settings files contain encrypted envelopes
 //! - Locking on demand and protecting against unauthorized sub-settings access
 //! - Rotating master passwords with automatic sub-settings re-encryption
 //!
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let password = "master_vault_password";
 
     // =========================================================================
-    // STEP 1: Initialize SettingsManager with Vault enabled
+    // STEP 1: Configure the manager before enabling encryption
     // =========================================================================
     println!("📝 Step 1: Initialize SettingsManager with .with_vault_preset(Argon2Preset::Fast)");
     let manager = SettingsManager::builder("secure-app", "1.0.0")

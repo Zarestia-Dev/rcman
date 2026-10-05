@@ -66,6 +66,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// This switches the active profile for main settings and updates internal paths.
     /// All subsequent operations will use the new profile's settings.
+    /// With an enabled vault, an empty profile receives an encrypted settings
+    /// envelope before activation so it can be locked and reopened immediately.
     ///
     /// If change listeners are registered via `events().on_change(...)`, this emits
     /// callbacks for keys whose effective values differ between the previous and
@@ -82,6 +84,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// - The profile does not exist
     /// - The profile switch fails (e.g. IO error)
     pub fn switch_profile(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -93,6 +97,18 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .ok_or(Error::ProfilesNotEnabled)?;
 
         let before_values = self.capture_effective_values_for_profile_events();
+
+        #[cfg(feature = "vault")]
+        if self.is_vault_enabled() {
+            crate::profiles::validate_profile_name(name)?;
+            if !pm.exists(name)? {
+                return Err(Error::ProfileNotFound(name.to_string()));
+            }
+            let path = pm.profile_path(name).join(&self.config.settings_file);
+            if !path.exists() {
+                self.write_settings_to_disk(&path, &serde_json::json!({}))?;
+            }
+        }
 
         // Step 1: Switch the profile in ProfileManager (this handles manifest updates)
         // This must be done first to ensure the profile exists and is valid
@@ -168,6 +184,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// - The profile already exists
     /// - Creation fails (e.g. IO error)
     pub fn create_profile(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -207,6 +225,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if profiles are not enabled or reading the profile list fails.
     pub fn list_profiles(&self) -> Result<Vec<String>> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let pm = self
             .profile_manager
             .as_ref()
@@ -219,6 +239,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if profiles are not enabled or determining the active profile fails.
     pub fn active_profile(&self) -> Result<String> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let pm = self
             .profile_manager
             .as_ref()

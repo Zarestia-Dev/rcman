@@ -92,6 +92,8 @@ impl<S: StorageBackend> MultiFileStore<S> {
     }
 
     fn write_value<T: serde::Serialize>(&self, path: &std::path::Path, data: &T) -> Result<()> {
+        #[cfg(feature = "backup")]
+        crate::backup::transaction::capture_file(path)?;
         #[cfg(feature = "vault")]
         if let Some(ref vault) = self.get_vault()? {
             if vault.is_locked() {
@@ -287,6 +289,8 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         }
 
         let path = self.file_path(key);
+        #[cfg(feature = "backup")]
+        crate::backup::transaction::capture_file(&path)?;
 
         if !self.base_dir.exists() {
             crate::utils::security::ensure_secure_dir(&self.base_dir)?;
@@ -322,6 +326,8 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         let path = self.file_path(key);
 
         if path.exists() {
+            #[cfg(feature = "backup")]
+            crate::backup::transaction::capture_file(&path)?;
             std::fs::remove_file(&path).map_err(|e| Error::FileDelete { path, source: e })?;
         }
 

@@ -100,6 +100,11 @@ pub trait StorageBackend: Clone + Send + Sync {
     fn write<T: Serialize>(&self, path: &Path, data: &T) -> Result<()> {
         use std::io::Write;
 
+        static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+        #[cfg(feature = "backup")]
+        crate::backup::transaction::capture_file(path)?;
+
         let content = self.serialize(data)?;
 
         // Ensure parent directory exists
@@ -119,13 +124,15 @@ pub trait StorageBackend: Clone + Send + Sync {
         })?;
         let mut temp_filename = file_name.to_os_string();
 
-        // Use nanoseconds timestamp for uniqueness to prevent collision in concurrent writes
+        // A process-local counter keeps simultaneous writers distinct even when
+        // the system clock has coarse resolution.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
 
-        temp_filename.push(format!(".{now}.tmp"));
+        let id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        temp_filename.push(format!(".{}.{now}.{id}.tmp", std::process::id()));
         let temp_path = path.with_file_name(temp_filename);
 
         // Wrap fallible steps so we can clean up the temp file on failure

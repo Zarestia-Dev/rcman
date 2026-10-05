@@ -1430,3 +1430,96 @@ fn malformed_envelope_cannot_unlock_or_initialize_a_vault() {
             .is_err()
     );
 }
+
+#[cfg(feature = "profiles")]
+#[test]
+fn empty_profile_stays_encrypted_across_lock_and_restart() {
+    let dir = TempDir::new().unwrap();
+    let manager = SettingsManager::builder("empty-profile-vault", "1")
+        .with_config_dir(dir.path())
+        .with_schema::<TestSettings>()
+        .with_profiles()
+        .with_vault_preset(Argon2Preset::Fast)
+        .with_vault_password("password")
+        .build()
+        .unwrap();
+    manager.create_profile("empty").unwrap();
+    manager.switch_profile("empty").unwrap();
+    manager.lock().unwrap();
+    assert!(matches!(
+        manager.unlock("wrong"),
+        Err(Error::InvalidPassword)
+    ));
+    manager.unlock("password").unwrap();
+    drop(manager);
+
+    let reopened = SettingsManager::builder("empty-profile-vault", "1")
+        .with_config_dir(dir.path())
+        .with_schema::<TestSettings>()
+        .with_profiles()
+        .with_vault()
+        .build()
+        .unwrap();
+    assert!(reopened.is_vault_enabled());
+    assert!(reopened.is_locked());
+    reopened.unlock("password").unwrap();
+    reopened
+        .save_setting("ui", "theme", &json!("light"))
+        .unwrap();
+    let content = std::fs::read_to_string(dir.path().join("profiles/empty/settings.json")).unwrap();
+    assert!(is_vault_content(&content));
+}
+
+#[cfg(feature = "profiles")]
+#[test]
+fn legacy_empty_active_profile_detects_existing_vault() {
+    let dir = TempDir::new().unwrap();
+    let manager = SettingsManager::builder("legacy-empty-vault", "1")
+        .with_config_dir(dir.path())
+        .with_profiles()
+        .with_vault_preset(Argon2Preset::Fast)
+        .with_vault_password("password")
+        .build()
+        .unwrap();
+    manager.create_profile("empty").unwrap();
+    // The old implementation switched the manifest without writing an envelope.
+    manager.profiles().unwrap().switch("empty").unwrap();
+    drop(manager);
+    let reopened = SettingsManager::builder("legacy-empty-vault", "1")
+        .with_config_dir(dir.path())
+        .with_profiles()
+        .with_vault()
+        .build()
+        .unwrap();
+    assert!(reopened.is_vault_enabled());
+    assert!(reopened.is_locked());
+    assert!(matches!(
+        reopened.unlock("wrong"),
+        Err(Error::InvalidPassword)
+    ));
+    reopened.unlock("password").unwrap();
+    reopened
+        .change_vault_password("password", "rotated")
+        .unwrap();
+    reopened.lock().unwrap();
+    reopened.unlock("rotated").unwrap();
+}
+
+#[test]
+fn startup_password_is_consumed_before_exposing_manager() {
+    let dir = TempDir::new().unwrap();
+    let manager = SettingsManager::builder("startup-password", "1")
+        .with_config_dir(dir.path())
+        .with_vault_preset(Argon2Preset::Fast)
+        .with_vault_password("password")
+        .build()
+        .unwrap();
+    assert!(manager.config().vault_password.is_none());
+    manager.lock().unwrap();
+    assert!(manager.config().vault_password.is_none());
+    assert!(matches!(
+        manager.unlock("wrong"),
+        Err(Error::InvalidPassword)
+    ));
+    manager.unlock("password").unwrap();
+}
