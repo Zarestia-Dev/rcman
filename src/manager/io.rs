@@ -665,7 +665,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 }
                 let serialized = self.storage.serialize(value)?;
                 let envelope = vault.encrypt_payload(serialized.as_bytes())?;
-                return self.storage.write(path, &envelope);
+                self.storage.write(path, &envelope)?;
+                vault.touch();
+                return Ok(());
             }
         }
 

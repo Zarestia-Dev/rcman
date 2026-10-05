@@ -226,8 +226,9 @@ fn test_vault_inactivity_auto_lock() {
         .with_config_dir(temp.path())
         .with_schema::<TestSettings>()
         .with_vault()
+        .with_vault_preset(Argon2Preset::Fast)
         .with_vault_password("timeout_key")
-        .with_vault_lock_timeout(Duration::from_millis(50))
+        .with_vault_lock_timeout(Duration::from_millis(150))
         .build();
 
     let manager = SettingsManager::new(config).unwrap();
@@ -239,7 +240,7 @@ fn test_vault_inactivity_auto_lock() {
     assert!(!manager.is_locked());
 
     // Sleep longer than timeout
-    std::thread::sleep(Duration::from_millis(70));
+    std::thread::sleep(Duration::from_millis(220));
 
     // Must have auto-locked
     assert!(manager.is_locked());
@@ -903,6 +904,7 @@ fn test_vault_runtime_lock_timeout_adjustment() {
         .with_config_dir(temp.path())
         .with_schema::<TestSettings>()
         .with_vault()
+        .with_vault_preset(Argon2Preset::Fast)
         .with_vault_password("dyn_timeout_pass")
         .build();
 
@@ -910,7 +912,7 @@ fn test_vault_runtime_lock_timeout_adjustment() {
     assert_eq!(manager.vault_lock_timeout(), None);
 
     // Set timeout at runtime
-    let timeout = Duration::from_millis(50);
+    let timeout = Duration::from_millis(150);
     manager.set_vault_lock_timeout(Some(timeout)).unwrap();
     assert_eq!(manager.vault_lock_timeout(), Some(timeout));
 
@@ -919,7 +921,7 @@ fn test_vault_runtime_lock_timeout_adjustment() {
         .unwrap();
 
     // Wait past timeout
-    std::thread::sleep(Duration::from_millis(70));
+    std::thread::sleep(Duration::from_millis(220));
     assert!(manager.is_locked());
 
     // Unlock and remove timeout
@@ -929,7 +931,7 @@ fn test_vault_runtime_lock_timeout_adjustment() {
     manager.set_vault_lock_timeout(None).unwrap();
     assert_eq!(manager.vault_lock_timeout(), None);
 
-    std::thread::sleep(Duration::from_millis(70));
+    std::thread::sleep(Duration::from_millis(150));
     assert!(!manager.is_locked()); // Remains unlocked
 }
 
