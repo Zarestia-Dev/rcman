@@ -18,7 +18,7 @@ use indexmap::IndexMap;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 /// Main settings manager for loading, saving, and managing application settings.
 ///
@@ -70,8 +70,8 @@ pub struct SettingsManager<
     /// Unified settings cache
     pub(super) settings_cache: SettingsCache,
 
-    /// Serializes non-secret settings write transactions to avoid read-modify-write races.
-    pub(super) settings_write_lock: Mutex<()>,
+    /// Isolates managed reads from in-progress settings and credential commits.
+    pub(super) settings_write_lock: RwLock<()>,
 
     /// Environment variable handler
     pub(super) env_handler: EnvironmentHandler,
@@ -195,7 +195,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             sub_settings: RwLock::new(HashMap::new()),
             events,
             settings_cache: SettingsCache::new(),
-            settings_write_lock: Mutex::new(()),
+            settings_write_lock: RwLock::new(()),
             env_handler,
             schema_defaults,
             schema_metadata: metadata,

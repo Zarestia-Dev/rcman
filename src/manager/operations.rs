@@ -34,38 +34,29 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         &self,
         key: &str,
         metadata: &SettingMetadata,
-    ) -> Result<Option<(Value, bool)>> {
-        if cfg!(any(feature = "keychain", feature = "encrypted-file")) && metadata.is_secret() {
-            // Check env var override for secrets if enabled
-            if self.config.env_overrides_secrets
-                && let Some(env_value) = self.get_env_override(key)
-            {
-                return Ok(Some((env_value, true)));
-            }
+    ) -> Result<(Value, bool)> {
+        if (!metadata.is_secret() || self.config.env_overrides_secrets)
+            && let Some(value) = self.get_env_override(key)
+        {
+            return Ok((value, true));
+        }
+        Ok((self.persisted_value(key, metadata)?, false))
+    }
 
-            // Try retrieving from keyring
+    pub(super) fn persisted_value(&self, key: &str, metadata: &SettingMetadata) -> Result<Value> {
+        if metadata.is_secret() {
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-            if let Ok(Some(secret_value)) = self.get_credential_with_profile(key) {
-                return Ok(Some((Value::String(secret_value), false)));
+            if self.credentials.is_some()
+                && let Some(secret) = self.get_credential_with_profile(key)?
+            {
+                return crate::credentials::decode_setting(&secret, metadata);
             }
-
-            // Secret not found, use default
-            return Ok(Some((metadata.default.clone(), false)));
+            return Ok(metadata.default.clone());
         }
-
-        // Not a secret (or feature disabled) - check cache (with env override support)
-        if let Some(env_value) = self.get_env_override(key) {
-            return Ok(Some((env_value, true)));
-        }
-
-        let Some((category, setting_name)) = Self::parse_setting_key(key) else {
-            return Ok(None);
-        };
-
-        Ok(self
-            .settings_cache
-            .get_value(category, setting_name, key)?
-            .map(|v| (v, false)))
+        let (category, name) = Self::parse_setting_key(key).unwrap_or(("", key));
+        self.settings_cache
+            .get_value(category, name, key)?
+            .ok_or_else(|| Error::SettingNotFound(key.to_owned()))
     }
 
     /// Check if a setting value is overridden by an environment variable
@@ -77,7 +68,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     /// Get all setting metadata with current values populated.
     ///
-    /// Returns a `HashMap` of all settings with their metadata (type, label, default, current value).
+    /// Returns an `IndexMap` of all settings with their metadata (type, label, default, current value).
     /// Useful for rendering settings UI.
     ///
     /// Returns metadata map with current values populated.
@@ -96,32 +87,24 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             return Err(Error::ConfigLocked);
         }
 
+        let _guard = self
+            .settings_write_lock
+            .read()
+            .map_err(|_| Error::LockPoisoned)?;
         // Ensure cache is populated
-        self.ensure_cache_populated()?;
+        self.ensure_cache_populated_inner()?;
 
         // Get metadata and populate values
         let mut metadata = (*self.schema_metadata).clone();
 
         for (key, option) in &mut metadata {
             if Self::parse_setting_key(key).is_some() {
-                match self.get_value_with_secret_support(key, option) {
-                    Ok(Some((value, env_overridden))) => {
-                        option.value = Some(value);
-                        if env_overridden {
-                            option
-                                .metadata
-                                .insert("env_override".to_string(), Value::Bool(true));
-                            debug!("Setting {key} overridden by env var");
-                        }
-                    }
-                    Ok(None) => {
-                        // Fallback to default if helper returns None
-                        option.value = Some(option.default.clone());
-                    }
-                    Err(e) => {
-                        debug!("Failed to read value for {key}: {e}");
-                        option.value = Some(option.default.clone());
-                    }
+                let (value, env_overridden) = self.get_value_with_secret_support(key, option)?;
+                option.value = Some(value);
+                if env_overridden {
+                    option
+                        .metadata
+                        .insert("env_override".to_string(), Value::Bool(true));
                 }
             }
         }
@@ -150,8 +133,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     where
         T: serde::de::DeserializeOwned,
     {
-        #[cfg(feature = "backup")]
-        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let value = self.get_value(key)?;
         serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
     }
@@ -184,8 +165,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             ));
         };
 
+        let _guard = self
+            .settings_write_lock
+            .read()
+            .map_err(|_| Error::LockPoisoned)?;
         // Ensure cache is populated with schema defaults
-        self.ensure_cache_populated()?;
+        self.ensure_cache_populated_inner()?;
 
         // Get metadata to check if this is a secret
         let setting_metadata = self
@@ -194,9 +179,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .ok_or_else(|| Error::SettingNotFound(format!("{category}.{setting_name}")))?;
 
         // Use the helper that handles both secrets and regular settings.
-        self.get_value_with_secret_support(key, setting_metadata)?
-            .map(|(v, _)| v)
-            .ok_or_else(|| Error::SettingNotFound(format!("{category}.{setting_name}")))
+        Ok(self.get_value_with_secret_support(key, setting_metadata)?.0)
     }
 
     /// Get merged settings as raw JSON.
@@ -212,9 +195,31 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             return Err(Error::ConfigLocked);
         }
 
-        self.ensure_cache_populated()?;
-        self.settings_cache
-            .get_or_compute_merged(|stored| Self::merge_with_defaults(stored))
+        let _guard = self
+            .settings_write_lock
+            .read()
+            .map_err(|_| Error::LockPoisoned)?;
+        self.read_all_data(true)
+    }
+
+    pub(super) fn read_all_data(&self, include_env: bool) -> Result<Value> {
+        self.ensure_cache_populated_inner()?;
+        let mut merged = self
+            .settings_cache
+            .get_or_compute_merged(Self::merge_with_defaults)?;
+        for (key, metadata) in self.schema_metadata.iter() {
+            if metadata.is_secret() {
+                let value = self.persisted_value(key, metadata)?;
+                crate::utils::value::set_path(&mut merged, key, value);
+            }
+            if include_env
+                && (!metadata.is_secret() || self.config.env_overrides_secrets)
+                && let Some(value) = self.get_env_override(key)
+            {
+                crate::utils::value::set_path(&mut merged, key, value);
+            }
+        }
+        Ok(merged)
     }
 
     /// Get merged settings struct with caching.
@@ -223,8 +228,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if settings cannot be read or parsed.
     pub fn get_all(&self) -> Result<Schema> {
-        #[cfg(feature = "backup")]
-        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let merged = self.get_all_data()?;
 
         // Deserialize to concrete type
@@ -278,7 +281,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         )?);
 
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        self.migrate_sub_settings_secret_keys(&handler)?;
+        {
+            #[cfg(feature = "vault")]
+            if !self.is_locked() {
+                self.migrate_sub_settings_secret_keys(&handler)?;
+            }
+            #[cfg(not(feature = "vault"))]
+            self.migrate_sub_settings_secret_keys(&handler)?;
+        }
 
         #[cfg(feature = "vault")]
         if self.is_vault_enabled() && !self.is_locked() {

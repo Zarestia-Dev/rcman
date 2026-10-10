@@ -590,7 +590,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                         crate::utils::value::set_path(
                             value,
                             relative_key,
-                            serde_json::Value::String(secret),
+                            crate::credentials::decode_setting(&secret, meta)?,
                         );
                     }
                 }

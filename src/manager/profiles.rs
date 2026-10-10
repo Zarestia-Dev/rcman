@@ -110,11 +110,15 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
         }
 
+        let settings_guard = self
+            .settings_write_lock
+            .write()
+            .map_err(|_| Error::LockPoisoned)?;
         // Step 1: Switch the profile in ProfileManager (this handles manifest updates)
         // This must be done first to ensure the profile exists and is valid
         pm.switch(name)?;
 
-        // Step 2: Get the new path (without holding any locks)
+        // Resolve the target while managed settings writes are serialized.
         let new_path = pm.profile_path(name);
 
         // Step 3: Update settings_dir atomically
@@ -123,8 +127,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             *settings_dir = new_path;
         } // Lock released immediately
 
-        // Step 4: Invalidate cache (after lock is released)
+        // Invalidate before releasing the settings lock so readers see the new profile.
         self.invalidate_cache();
+        drop(settings_guard);
 
         // Clear in-memory tracked secrets cache so it will be reloaded for the new profile
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]

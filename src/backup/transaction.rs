@@ -75,9 +75,21 @@ fn acquire(resources: Vec<Resource>, exclusive: bool) -> Result<Operation> {
     let thread = std::thread::current().id();
     let mut claims = OPERATIONS.lock().map_err(|_| Error::LockPoisoned)?;
     for claim in claims.iter() {
-        let overlaps = resources
-            .iter()
-            .any(|resource| claim.resources.iter().any(|other| resource.overlaps(other)));
+        if !exclusive && !claim.exclusive {
+            continue;
+        }
+        let mut overlaps = false;
+        for resource in &resources {
+            for other in &claim.resources {
+                overlaps |= match (resource, other) {
+                    (Resource::Directory(a), Resource::Directory(b)) => {
+                        directory(a)?.overlaps(&directory(b)?)
+                    }
+                    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+                    _ => resource.overlaps(other),
+                };
+            }
+        }
         // Reads within this thread's exclusive operation are needed by restore.
         // Reentrant exclusive operations would invalidate the current snapshot.
         if overlaps && (exclusive || (claim.exclusive && claim.thread != thread)) {
@@ -97,7 +109,8 @@ fn acquire(resources: Vec<Resource>, exclusive: bool) -> Result<Operation> {
 }
 
 pub(crate) fn enter(path: &Path) -> Result<Operation> {
-    acquire(vec![directory(path)?], false)
+    let absolute = std::path::absolute(path).map_err(|error| io_error(&error))?;
+    acquire(vec![Resource::Directory(absolute)], false)
 }
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]

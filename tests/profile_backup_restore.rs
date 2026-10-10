@@ -1,4 +1,4 @@
-#![cfg(feature = "profiles")]
+#![cfg(all(feature = "profiles", feature = "backup"))]
 
 mod common;
 

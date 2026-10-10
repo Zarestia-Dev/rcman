@@ -15,8 +15,6 @@ pub struct CachedSettings {
     pub merged: Option<Value>,
     /// Default values for quick lookup
     pub defaults: Arc<HashMap<String, Value>>,
-    /// Generation counter — incremented on every mutation.
-    pub generation: u64,
 }
 
 pub struct SettingsCache {
@@ -46,11 +44,15 @@ impl SettingsCache {
         let guard = self.state.read_recovered()?;
         if let Some(cached) = guard.as_ref() {
             // Check stored
-            if let Some(value) = cached
-                .stored
-                .get(category)
-                .and_then(|cat| cat.get(setting_name))
-            {
+            let stored = if category.is_empty() {
+                cached.stored.get(setting_name)
+            } else {
+                cached
+                    .stored
+                    .get(category)
+                    .and_then(|cat| cat.get(setting_name))
+            };
+            if let Some(value) = stored {
                 return Ok(Some(value.clone()));
             }
             // Check defaults
@@ -63,9 +65,7 @@ impl SettingsCache {
 
     /// Compute or retrieve the merged settings value.
     ///
-    /// Uses the generation counter to reject stale computations: if a
-    /// concurrent `update_stored` bumps the generation between our read
-    /// and our write-back, the computed result is discarded and we retry.
+    /// Computes under the write lock so mutations cannot publish a stale result.
     pub fn get_or_compute_merged<F>(&self, computer: F) -> Result<Value>
     where
         F: Fn(&Value) -> Result<Value>,
@@ -105,12 +105,15 @@ impl SettingsCache {
 
     /// Populate the cache if empty.
     ///
-    /// Acquires a write lock directly (no read→write race) and
-    /// double-checks under the write lock.
+    /// Checks the read lock first, then double-checks under the write lock
+    /// before loading an empty cache.
     pub fn populate<F>(&self, factory: F) -> Result<()>
     where
         F: FnOnce() -> Result<CachedSettings>,
     {
+        if self.state.read_recovered()?.is_some() {
+            return Ok(());
+        }
         let mut guard = self.state.write_recovered()?;
         if guard.is_some() {
             return Ok(());
@@ -125,7 +128,6 @@ impl SettingsCache {
         if let Some(ref mut cached) = *guard {
             cached.stored = new_stored;
             cached.merged = None; // Invalidate merged — will be recomputed lazily
-            cached.generation += 1;
         }
         Ok(())
     }

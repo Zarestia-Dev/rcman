@@ -719,10 +719,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 creds.remove_with_profile(key, profile)?;
                 creds.remove_tracked_secret(key, profile)?;
             } else {
-                let text = match secret {
-                    serde_json::Value::String(text) => text,
-                    other => other.to_string(),
-                };
+                let text = crate::credentials::encode_setting(&secret);
                 creds.store_with_profile(key, &text, profile)?;
                 creds.add_tracked_secret(key, profile)?;
             }

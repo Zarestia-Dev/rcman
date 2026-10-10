@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Propagate sub-settings bulk credential read and decoding errors instead of returning a partially populated map.
+- Reject secret writes without a credential backend instead of writing plaintext; validate secret fields and preserve typed values across reads, updates, migration, and backup.
+- Roll back managed setting/credential writes after backend failures; report incomplete rollback explicitly. Managed saves require a readable, writable primary credential backend rather than silently accepting volatile fallback writes. Cross-backend commits are not crash-atomic.
+- Reject conflicting `update()` snapshots with `ConcurrentModification`; keep environment overrides out of persisted closure updates.
+- Dispatch listeners and validators outside event-list locks, release settings write locks before notification, and emit each successful secret change once.
+- Preserve corrupted settings files and keep single-file sub-settings caches unchanged after failed writes.
+- Remove filesystem canonicalization from uncontended backup guards, avoid cloning all settings on unchanged saves, and cache compiled regexes with a bounded LRU.
+
+
 ### Added
 
 - **Configuration Vault & Envelope (`vault` feature)**:

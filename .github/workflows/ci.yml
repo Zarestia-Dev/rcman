@@ -59,6 +59,9 @@ jobs:
       - name: Test
         run: cargo test --all --all-features --quiet
 
+      - name: Minimal features
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+
       # Checks below this line are run only on Ubuntu to save resources
 
       - name: Cargo deny (licenses and bans)
@@ -72,12 +75,12 @@ jobs:
       - name: Build docs (docsrs cfg)
         if: matrix.os == 'ubuntu-latest'
         env:
-          RUSTDOCFLAGS: "--cfg docsrs"
+          RUSTDOCFLAGS: "--cfg docsrs -D warnings"
         run: cargo doc --all-features --no-deps
 
       - name: Check clippy pedantic (all targets)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo clippy --features full -- -W clippy::pedantic
+        run: cargo clippy --features full -- -D warnings -W clippy::pedantic
 
   cross-check:
     name: Cross-compile (${{ matrix.target }})

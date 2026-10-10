@@ -81,6 +81,25 @@ pub trait StorageBackend: Clone + Send + Sync {
         self.deserialize(&content)
     }
 
+    /// Remove a storage file from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::FileDelete` if the file exists and cannot be removed,
+    /// or a transaction error if capturing backup state fails.
+    fn remove(&self, path: &Path) -> Result<()> {
+        #[cfg(feature = "backup")]
+        crate::backup::transaction::capture_file(path)?;
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(Error::FileDelete {
+                path: path.to_path_buf(),
+                source,
+            }),
+        }
+    }
+
     /// Serialize and write to file
     ///
     /// Uses atomic write: writes to temp file then renames to prevent corruption.

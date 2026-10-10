@@ -224,6 +224,7 @@ pub struct SubSettings<S: StorageBackend = crate::storage::JsonStorage> {
 
     /// The active store implementation
     pub(crate) store: RwLock<Box<dyn SubSettingsStore>>,
+    pub(crate) operation_lock: RwLock<()>,
 
     /// We keep storage around mostly for profiles logic if needed,
     /// or simple ref storage.
@@ -388,6 +389,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             credential_manager,
             store: RwLock::new(store),
+            operation_lock: RwLock::new(()),
             #[cfg(any(feature = "profiles", feature = "backup"))]
             storage,
             #[cfg(not(any(feature = "profiles", feature = "backup")))]
@@ -521,6 +523,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     pub fn switch_profile(&self, name: &str) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
+        let _guard = self.operation_lock.write_recovered()?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -604,7 +607,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
-        let mut entry = match self.get_value(name) {
+        let guard = self.operation_lock.write_recovered()?;
+        let mut entry = match self.get_value_inner(name) {
             Ok(value) => value,
             Err(Error::SubSettingsEntryNotFound(_)) => Value::Object(serde_json::Map::new()),
             Err(err) => return Err(err),
@@ -617,7 +621,10 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         let new_value = serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
         crate::utils::value::set_path(&mut entry, field_path, new_value);
 
-        self.set(name, &entry)
+        let action = self.set_inner(name, entry)?;
+        drop(guard);
+        self.notify_change(name, action);
+        Ok(())
     }
 
     pub(crate) fn validate_against_schema(&self, entry_name: &str, value: &Value) -> Result<()> {
@@ -663,89 +670,63 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    pub(crate) fn active_secret_profile(&self) -> Option<String> {
+    pub(crate) fn active_secret_profile(&self) -> Result<Option<String>> {
         #[cfg(feature = "profiles")]
         {
             if self.config.profiles_enabled {
                 return self
                     .profile_manager
                     .as_ref()
-                    .and_then(|pm| pm.active().ok());
+                    .map(crate::profiles::ProfileManager::active)
+                    .transpose();
             }
         }
 
-        None
+        Ok(None)
     }
 
-    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn extract_and_store_secrets(&self, entry_name: &str, value: &mut Value) -> Result<()> {
-        self.extract_and_store_secrets_for_profile(
-            entry_name,
-            value,
-            self.active_secret_profile().as_deref(),
-        )
-    }
-
-    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    #[cfg(all(
+        feature = "backup",
+        any(feature = "keychain", feature = "encrypted-file")
+    ))]
     pub(crate) fn extract_and_store_secrets_for_profile(
         &self,
         entry_name: &str,
         value: &mut Value,
         profile: Option<&str>,
     ) -> Result<()> {
-        let Some(schema) = self.config.schema.as_ref() else {
-            return Ok(());
-        };
-
-        let secret_fields: Vec<_> = schema
-            .iter()
-            .filter(|(_, metadata)| metadata.is_secret())
-            .collect();
-
-        if secret_fields.is_empty() {
-            return Ok(());
+        let changes = self.extract_secret_changes(entry_name, value)?;
+        if let Some(creds) = &self.credential_manager {
+            creds.commit_settings(&changes, profile, || Ok(()))?;
         }
-
-        let creds = self
-            .credential_manager
-            .as_ref()
-            .ok_or_else(|| Error::Credential("Credentials not enabled".to_string()))?;
-
-        for (path, metadata) in secret_fields {
-            let Some(secret_value) = crate::utils::value::remove_path(value, path) else {
-                continue;
-            };
-
-            let credential_key = self.secret_credential_key(entry_name, path);
-
-            if secret_value == metadata.default {
-                creds.remove_with_profile(&credential_key, profile)?;
-                creds.remove_tracked_secret(&credential_key, profile)?;
-                continue;
-            }
-
-            let value_str = match secret_value {
-                Value::String(s) => s,
-                v => v.to_string(),
-            };
-
-            if let Ok(Some(existing_val)) = creds.get_with_profile(&credential_key, profile)
-                && existing_val == value_str
-            {
-                creds.add_tracked_secret(&credential_key, profile)?;
-                continue;
-            }
-
-            creds.store_with_profile(&credential_key, &value_str, profile)?;
-            creds.add_tracked_secret(&credential_key, profile)?;
-        }
-
         Ok(())
     }
 
-    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
-    fn extract_and_store_secrets(&self, _entry_name: &str, _value: &mut Value) -> Result<()> {
-        Ok(())
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn extract_secret_changes(
+        &self,
+        name: &str,
+        value: &mut Value,
+    ) -> Result<Vec<(String, Option<String>)>> {
+        let mut changes = Vec::new();
+        if let Some(schema) = &self.config.schema {
+            for (path, metadata) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
+                if let Some(secret) = crate::utils::value::remove_path(value, path) {
+                    if self.credential_manager.is_none() {
+                        if secret != metadata.default {
+                            return Err(Error::Credential("Credentials not enabled".into()));
+                        }
+                        continue;
+                    }
+                    changes.push((
+                        self.secret_credential_key(name, path),
+                        (secret != metadata.default)
+                            .then(|| crate::credentials::encode_setting(&secret)),
+                    ));
+                }
+            }
+        }
+        Ok(changes)
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -765,12 +746,15 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             return Ok(());
         };
 
-        let profile = self.active_secret_profile();
+        let profile = self.active_secret_profile()?;
 
         for (path, metadata) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
             let credential_key = self.secret_credential_key(entry_name, path);
             let secret = creds.get_with_profile(&credential_key, profile.as_deref())?;
-            let resolved = secret.map_or_else(|| metadata.default.clone(), Value::String);
+            let resolved = match secret {
+                Some(secret) => crate::credentials::decode_setting(&secret, metadata)?,
+                None => metadata.default.clone(),
+            };
             crate::utils::value::set_path(value, path, resolved);
         }
 
@@ -787,7 +771,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             return Ok(false);
         };
 
-        let profile = self.active_secret_profile();
+        let profile = self.active_secret_profile()?;
 
         for (path, _) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
             let credential_key = self.secret_credential_key(entry_name, path);
@@ -802,39 +786,48 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         Ok(false)
     }
 
-    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
-    fn has_stored_secret_for_entry(&self, _entry_name: &str) -> Result<bool> {
-        Ok(false)
-    }
-
-    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
-    fn inject_secrets_from_store(&self, _entry_name: &str, _value: &mut Value) -> Result<()> {
-        Ok(())
-    }
-
-    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn clear_secret_fields(&self, entry_name: &str) -> Result<()> {
-        let Some(schema) = self.config.schema.as_ref() else {
-            return Ok(());
-        };
-
-        let Some(creds) = self.credential_manager.as_ref() else {
-            return Ok(());
-        };
-
-        let profile = self.active_secret_profile();
-
-        for (path, _) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
-            let credential_key = self.secret_credential_key(entry_name, path);
-            creds.remove_with_profile(&credential_key, profile.as_deref())?;
-            creds.remove_tracked_secret(&credential_key, profile.as_deref())?;
+    pub(crate) fn commit_entries(
+        store: &dyn SubSettingsStore,
+        changes: &[(String, Option<Value>)],
+    ) -> Result<()> {
+        let originals: Vec<_> = changes
+            .iter()
+            .map(|(name, _)| match store.get(name) {
+                Ok(value) => Ok(Some(value)),
+                Err(Error::SubSettingsEntryNotFound(_)) => Ok(None),
+                Err(error) => Err(error),
+            })
+            .collect::<Result<_>>()?;
+        for (index, (name, value)) in changes.iter().enumerate() {
+            let result = match value {
+                Some(value) => store.set(name, value.clone()),
+                None => store.remove(name),
+            };
+            if let Err(source) = result {
+                store.invalidate_cache();
+                let mut rollback_errors = Vec::new();
+                for ((name, _), original) in
+                    changes[..=index].iter().zip(&originals[..=index]).rev()
+                {
+                    let restored = match original {
+                        Some(value) => store.set(name, value.clone()),
+                        None => store.remove(name),
+                    };
+                    if let Err(error) = restored {
+                        rollback_errors.push(error.to_string());
+                    }
+                }
+                store.invalidate_cache();
+                return if rollback_errors.is_empty() {
+                    Err(source)
+                } else {
+                    Err(Error::TransactionFailed {
+                        source: Box::new(source),
+                        rollback_errors,
+                    })
+                };
+            }
         }
-
-        Ok(())
-    }
-
-    #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
-    fn clear_secret_fields(&self, _entry_name: &str) -> Result<()> {
         Ok(())
     }
 
@@ -852,6 +845,13 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     pub fn get_value(&self, name: &str) -> Result<Value> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
+        let _guard = self.operation_lock.read_recovered()?;
+        self.get_value_inner(name)
+    }
+
+    fn get_value_inner(&self, name: &str) -> Result<Value> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -860,11 +860,12 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         let store = self.store.read_recovered()?;
 
         // Try to get the entry from the store
-        let mut value = match store.get(name) {
+        let value = match store.get(name) {
             Ok(v) => v,
             Err(Error::SubSettingsEntryNotFound(_)) => {
                 // Entry not found in file, but might have secrets in keyring
                 // If at least one secret exists in keyring, reconstruct from keyring + defaults
+                #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
                 if self.has_stored_secret_for_entry(name)? {
                     let mut empty_value = serde_json::json!({});
                     self.inject_secrets_from_store(name, &mut empty_value)?;
@@ -878,7 +879,10 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             Err(e) => return Err(e),
         };
 
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        let mut value = value;
         // Inject secrets into the existing value
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         self.inject_secrets_from_store(name, &mut value)?;
         Ok(value)
     }
@@ -917,21 +921,47 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     pub fn set<T: Serialize + Sync>(&self, name: &str, value: &T) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
+        let json_value = serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
+        let guard = self.operation_lock.write_recovered()?;
+        let action = self.set_inner(name, json_value)?;
+        drop(guard);
+        self.notify_change(name, action);
+        Ok(())
+    }
+
+    fn set_inner(&self, name: &str, mut json_value: Value) -> Result<SubSettingsAction> {
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
         }
-
-        let mut json_value =
-            serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
-
         self.validate_against_schema(name, &json_value)?;
-        self.extract_and_store_secrets(name, &mut json_value)?;
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        let changes = self.extract_secret_changes(name, &mut json_value)?;
+        #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+        if let Some(schema) = &self.config.schema {
+            for (path, metadata) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
+                if let Some(secret) = crate::utils::value::remove_path(&mut json_value, path)
+                    && secret != metadata.default
+                {
+                    return Err(Error::Credential(
+                        "Secret storage requires keychain or encrypted-file".into(),
+                    ));
+                }
+            }
+        }
 
-        let existed = self.exists(name)?;
+        let existed = self.exists_inner(name)?;
 
         let store = self.store.read_recovered()?;
-        store.set(name, json_value)?;
+        let finish = || Self::commit_entries(&**store, &[(name.to_owned(), Some(json_value))]);
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        if let Some(creds) = &self.credential_manager {
+            creds.commit_settings(&changes, self.active_secret_profile()?.as_deref(), finish)?;
+        } else {
+            finish()?;
+        }
+        #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+        finish()?;
         drop(store);
 
         let action = if existed {
@@ -940,8 +970,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             SubSettingsAction::Created
         };
 
-        self.notify_change(name, action);
-        Ok(())
+        Ok(action)
     }
 
     /// Delete a value from the store
@@ -961,15 +990,30 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             return Err(Error::ConfigLocked);
         }
 
-        if !self.exists(name)? {
+        let guard = self.operation_lock.write_recovered()?;
+        if !self.exists_inner(name)? {
             return Ok(());
         }
-
         let store = self.store.read_recovered()?;
-
-        store.remove(name)?;
+        let finish = || Self::commit_entries(&**store, &[(name.to_owned(), None)]);
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        if let Some(creds) = &self.credential_manager {
+            let changes: Vec<_> = self
+                .config
+                .schema
+                .iter()
+                .flat_map(|schema| schema.iter())
+                .filter(|(_, metadata)| metadata.is_secret())
+                .map(|(path, _)| (self.secret_credential_key(name, path), None))
+                .collect();
+            creds.commit_settings(&changes, self.active_secret_profile()?.as_deref(), finish)?;
+        } else {
+            finish()?;
+        }
+        #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+        finish()?;
         drop(store);
-        self.clear_secret_fields(name)?;
+        drop(guard);
 
         self.notify_change(name, SubSettingsAction::Deleted);
         Ok(())
@@ -983,6 +1027,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     pub fn list(&self) -> Result<Vec<String>> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
+        let _guard = self.operation_lock.read_recovered()?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -995,26 +1040,32 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     /// Get all sub-setting entries as a map
     ///
     /// Returns a `HashMap<String, Value>` with all entry names as keys
-    /// and their deserialized values. Entries that fail to load are silently skipped.
+    /// and their deserialized values, including resolved secret fields.
+    /// A failed entry or credential read aborts the operation; no partial map is returned.
     ///
     /// # Errors
     ///
-    /// Returns an error if the store cannot be read.
+    /// Returns an error if an entry cannot be read or deserialized, or if a secret
+    /// cannot be retrieved or decoded.
     pub fn get_all_values(&self) -> Result<HashMap<String, Value>> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
+        let _guard = self.operation_lock.read_recovered()?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
         }
 
-        let mut result = {
+        let result = {
             let store = self.store.read_recovered()?;
             store.get_all()?
         };
 
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        let mut result = result;
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         for (name, value) in &mut result {
-            let _ = self.inject_secrets_from_store(name, value);
+            self.inject_secrets_from_store(name, value)?;
         }
 
         Ok(result)
@@ -1032,6 +1083,13 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     pub fn exists(&self, name: &str) -> Result<bool> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
+        let _guard = self.operation_lock.read_recovered()?;
+        self.exists_inner(name)
+    }
+
+    fn exists_inner(&self, name: &str) -> Result<bool> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -1042,6 +1100,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             return Ok(true);
         }
 
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         if self.has_stored_secret_for_entry(name)? {
             return Ok(true);
         }

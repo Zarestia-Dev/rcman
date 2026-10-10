@@ -14,7 +14,11 @@ mod encrypted;
 #[cfg(feature = "keychain")]
 mod keychain;
 mod memory;
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+mod transaction;
 mod types;
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+pub(crate) use transaction::{decode_setting, encode_setting};
 
 #[cfg(feature = "encrypted-file")]
 pub use encrypted::EncryptedFileBackend;
@@ -86,6 +90,7 @@ pub struct CredentialManager {
 
     /// Whether the primary backend has failed permanently in this session
     is_primary_failed: Arc<AtomicBool>,
+    commit_lock: Arc<std::sync::Mutex<()>>,
 
     /// Service name for keychain
     service_name: String,
@@ -119,6 +124,7 @@ impl CredentialManager {
             primary: Arc::new(KeychainBackend::new(service.clone())),
             fallback: None,
             is_primary_failed: Arc::new(AtomicBool::new(false)),
+            commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: service,
             #[cfg(feature = "profiles")]
             profile_context: None,
@@ -139,6 +145,7 @@ impl CredentialManager {
             primary: Arc::new(MemoryBackend::new()),
             fallback: None,
             is_primary_failed: Arc::new(AtomicBool::new(false)),
+            commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: service,
             #[cfg(feature = "profiles")]
             profile_context: None,
@@ -166,6 +173,7 @@ impl CredentialManager {
             primary: Arc::new(KeychainBackend::new(service.clone())),
             fallback: fallback.map(|f| Arc::new(f) as Arc<dyn CredentialBackend>),
             is_primary_failed: Arc::new(AtomicBool::new(false)),
+            commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: service,
             #[cfg(feature = "profiles")]
             profile_context: None,
@@ -184,6 +192,7 @@ impl CredentialManager {
             primary: Arc::new(MemoryBackend::new()),
             fallback: None,
             is_primary_failed: Arc::new(AtomicBool::new(false)),
+            commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: service_name.into(),
             #[cfg(feature = "profiles")]
             profile_context: None,
@@ -205,6 +214,7 @@ impl CredentialManager {
             primary: backend,
             fallback: None,
             is_primary_failed: Arc::new(AtomicBool::new(false)),
+            commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: service_name.into(),
             #[cfg(feature = "profiles")]
             profile_context: None,
@@ -228,6 +238,7 @@ impl CredentialManager {
             primary: self.primary.clone(),
             fallback: self.fallback.clone(),
             is_primary_failed: self.is_primary_failed.clone(),
+            commit_lock: self.commit_lock.clone(),
             service_name: self.service_name.clone(),
             profile_context: Some(profile_name.to_string()),
             volatile: self.volatile.clone(),
@@ -302,6 +313,9 @@ impl CredentialManager {
                     "Stored credential '{key}' in {}",
                     self.primary.backend_name()
                 );
+                if let Some(fallback) = &self.fallback {
+                    fallback.remove(&full_key)?;
+                }
                 self.is_primary_failed.store(false, Ordering::Relaxed);
                 let _ = self.volatile.store(&full_key, value);
                 return Ok(());
@@ -354,40 +368,42 @@ impl CredentialManager {
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let full_key = self.make_key_with_profile(key, profile);
 
-        // Try primary first
+        let mut backend_error = None;
+        let mut fallback_read = false;
+        if let Some(fallback) = &self.fallback {
+            match fallback.get(&full_key) {
+                Ok(Some(value)) => {
+                    self.volatile.store(&full_key, &value)?;
+                    return Ok(Some(value));
+                }
+                Ok(None) => fallback_read = true,
+                Err(error) => backend_error = Some(error),
+            }
+        }
         match self.primary.get(&full_key) {
-            Ok(Some(val)) => {
+            Ok(Some(value)) => {
                 self.is_primary_failed.store(false, Ordering::Relaxed);
-                let _ = self.volatile.store(&full_key, &val);
-                return Ok(Some(val));
+                self.volatile.store(&full_key, &value)?;
+                return Ok(Some(value));
             }
             Ok(None) => {
                 self.is_primary_failed.store(false, Ordering::Relaxed);
             }
-            Err(e) => {
-                log::debug!("Primary backend get for '{key}' failed: {e:?}");
+            Err(error) => {
                 self.is_primary_failed.store(true, Ordering::Relaxed);
-            }
-        }
-
-        // Try fallback
-        if let Some(ref fallback) = self.fallback {
-            match fallback.get(&full_key) {
-                Ok(Some(val)) => {
-                    let _ = self.volatile.store(&full_key, &val);
-                    return Ok(Some(val));
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    log::error!(
-                        "Persistent fallback failed for '{key}': {e}. Trying VOLATILE memory."
-                    );
+                if !fallback_read {
+                    backend_error = Some(error);
                 }
             }
         }
 
-        // Final attempt: Volatile memory
-        self.volatile.get(&full_key)
+        match self.volatile.get(&full_key)? {
+            Some(value) => Ok(Some(value)),
+            None => match backend_error {
+                Some(error) => Err(error),
+                None => Ok(None),
+            },
+        }
     }
 
     /// Remove a credential
@@ -919,6 +935,7 @@ mod tests {
             primary: std::sync::Arc::new(FailingBackend),
             fallback: Some(std::sync::Arc::new(MemoryBackend::new())),
             is_primary_failed: Arc::new(AtomicBool::new(false)),
+            commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: "test-app".to_string(),
             #[cfg(feature = "profiles")]
             profile_context: None,
@@ -930,6 +947,11 @@ mod tests {
             tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         };
 
+        manager.store("api_key", "fallback-value").unwrap();
+        assert_eq!(
+            manager.get("api_key").unwrap().as_deref(),
+            Some("fallback-value")
+        );
         manager.remove("api_key").unwrap();
         assert_eq!(manager.get("api_key").unwrap(), None);
     }
@@ -940,6 +962,7 @@ mod tests {
             primary: std::sync::Arc::new(FailingBackend),
             fallback: Some(std::sync::Arc::new(MemoryBackend::new())),
             is_primary_failed: Arc::new(AtomicBool::new(false)),
+            commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: "test-app".to_string(),
             #[cfg(feature = "profiles")]
             profile_context: None,
@@ -1072,6 +1095,7 @@ mod tests {
             primary: Arc::new(FailingBackend),
             fallback: Some(Arc::new(FailingBackend)),
             is_primary_failed: Arc::new(AtomicBool::new(false)),
+            commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: "test-app".to_string(),
             #[cfg(feature = "profiles")]
             profile_context: None,
@@ -1094,7 +1118,11 @@ mod tests {
 
         // Cleanup should also pass
         manager.remove("api_key").unwrap();
-        assert_eq!(manager.get("api_key").unwrap(), None);
+        // An unavailable persistent backend cannot confirm that the key is absent.
+        assert!(matches!(
+            manager.get("api_key"),
+            Err(crate::Error::Credential(_))
+        ));
     }
 
     struct StoreFailingBackend;
@@ -1130,6 +1158,7 @@ mod tests {
             primary: Arc::new(StoreFailingBackend),
             fallback: None,
             is_primary_failed: Arc::new(AtomicBool::new(false)),
+            commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: "test-app".to_string(),
             #[cfg(feature = "profiles")]
             profile_context: None,
@@ -1177,6 +1206,7 @@ mod tests {
             primary,
             fallback: None,
             is_primary_failed: Arc::new(AtomicBool::new(false)),
+            commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: "test-app".to_string(),
             #[cfg(feature = "profiles")]
             profile_context: None,

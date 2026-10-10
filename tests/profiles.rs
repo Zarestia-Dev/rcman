@@ -25,11 +25,23 @@ use std::fs;
 #[cfg(feature = "backup")]
 use tempfile::tempdir;
 
-#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+#[cfg(all(
+    feature = "backup",
+    feature = "encrypted-file",
+    not(feature = "keychain")
+))]
 use rcman::{SettingMetadata, SettingsSchema, settings};
-#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+#[cfg(all(
+    feature = "backup",
+    feature = "encrypted-file",
+    not(feature = "keychain")
+))]
 use serde::{Deserialize, Serialize};
-#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+#[cfg(all(
+    feature = "backup",
+    feature = "encrypted-file",
+    not(feature = "keychain")
+))]
 use std::collections::HashMap;
 
 // =============================================================================
@@ -853,11 +865,19 @@ fn test_profile_backup_restore_full() {
     assert_eq!(item2_work["val"], 3);
 }
 
-#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+#[cfg(all(
+    feature = "backup",
+    feature = "encrypted-file",
+    not(feature = "keychain")
+))]
 #[derive(Default, Serialize, Deserialize)]
 struct ProfileSecretSettings;
 
-#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+#[cfg(all(
+    feature = "backup",
+    feature = "encrypted-file",
+    not(feature = "keychain")
+))]
 impl SettingsSchema for ProfileSecretSettings {
     fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
         settings! {
@@ -866,7 +886,11 @@ impl SettingsSchema for ProfileSecretSettings {
     }
 }
 
-#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+#[cfg(all(
+    feature = "backup",
+    feature = "encrypted-file",
+    not(feature = "keychain")
+))]
 #[test]
 fn test_profile_restore_rehydrates_main_secrets_with_credentials() {
     let temp = tempdir().unwrap();

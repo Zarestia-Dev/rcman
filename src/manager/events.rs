@@ -113,7 +113,9 @@ impl EventManager {
             log::warn!("Failed to validate {key} due to lock recovery error: {err}");
             "Internal lock error".to_string()
         })?;
-        if let Some(validators) = guard.get(key) {
+        let validators = guard.get(key).cloned();
+        drop(guard);
+        if let Some(validators) = validators {
             for validator in validators {
                 validator(value)?;
             }
@@ -128,26 +130,18 @@ impl EventManager {
     /// * `old_value` - The old value
     /// * `new_value` - The new value
     pub fn notify(&self, key: &str, old_value: &Value, new_value: &Value) {
-        // Call global listeners
-        if let Ok(guard) = self.global_listeners.read_recovered() {
-            for callback in guard.iter() {
-                callback(key, old_value, new_value);
-            }
-        } else {
-            log::warn!("Failed to read global listeners for {key} due to lock recovery error");
-        }
-
-        // Call key-specific listeners
-        if let Ok(guard) = self.key_listeners.read_recovered() {
-            if let Some(listeners) = guard.get(key) {
-                for callback in listeners {
+        let global = self.global_listeners.read_recovered().map(|g| g.clone());
+        let local = self
+            .key_listeners
+            .read_recovered()
+            .map(|g| g.get(key).cloned().unwrap_or_default());
+        match (global, local) {
+            (Ok(global), Ok(local)) => {
+                for callback in global.iter().chain(local.iter()) {
                     callback(key, old_value, new_value);
                 }
             }
-        } else {
-            log::warn!(
-                "Failed to read key-specific listeners for {key} due to lock recovery error"
-            );
+            _ => log::warn!("Failed to read listeners for {key}"),
         }
     }
 

@@ -182,6 +182,20 @@ pub enum Error {
     )]
     LockPoisoned,
 
+    /// The model changed after an update closure read its snapshot. Reload and retry.
+    #[error("Settings changed concurrently; reload and retry the update")]
+    ConcurrentModification,
+
+    /// A write failed and one or more attempts to restore its previous state also failed.
+    #[error("{source}; rollback incomplete: {rollback_errors:?}")]
+    TransactionFailed {
+        /// The error that caused rollback.
+        #[source]
+        source: Box<Error>,
+        /// Backend failures encountered while restoring the previous state.
+        rollback_errors: Vec<String>,
+    },
+
     #[error("Lock error: {0}")]
     LockError(String),
 

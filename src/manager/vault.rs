@@ -99,10 +99,15 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             paths
         };
         for path in paths {
-            if !path.exists() {
-                continue;
-            }
-            let value: Value = storage.read(&path)?;
+            let value: Value = match storage.read(&path) {
+                Ok(value) => value,
+                Err(Error::FileRead { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if crate::vault::is_vault_value(&value) {
                 return serde_json::from_value(value)
                     .map(Some)

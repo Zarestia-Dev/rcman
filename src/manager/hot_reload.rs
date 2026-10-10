@@ -30,6 +30,13 @@ enum WatcherKind {
 }
 
 impl WatcherKind {
+    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+        match self {
+            Self::Recommended(watcher) => watcher.unwatch(path),
+            Self::Poll(watcher) => watcher.unwatch(path),
+        }
+    }
+
     fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> notify::Result<()> {
         match self {
             Self::Recommended(watcher) => watcher.watch(path, recursive_mode),
@@ -89,14 +96,13 @@ impl HotReloadRuntime {
                 return;
             }
 
-            run_reload_loop(
-                &manager,
-                &watched_file,
-                &config,
-                &callback,
-                &fs_rx,
-                &stop_rx,
-            );
+            let ctx = ReloadContext {
+                manager: &manager,
+                config: &config,
+                callback: &callback,
+            };
+
+            run_reload_loop(&ctx, watched_file, &mut watcher, &fs_rx, &stop_rx);
         });
 
         Ok(Self {
@@ -138,18 +144,23 @@ fn create_watcher(
     }
 }
 
+struct ReloadContext<'a, S: StorageBackend, Schema: SettingsSchema> {
+    manager: &'a Arc<SettingsManager<S, Schema>>,
+    config: &'a HotReloadConfig,
+    callback: &'a Arc<dyn Fn(HotReloadEvent) + Send + Sync>,
+}
+
 fn run_reload_loop<S, Schema>(
-    manager: &Arc<SettingsManager<S, Schema>>,
-    watched_file: &Path,
-    config: &HotReloadConfig,
-    callback: &Arc<dyn Fn(HotReloadEvent) + Send + Sync>,
+    ctx: &ReloadContext<'_, S, Schema>,
+    mut watched_file: PathBuf,
+    watcher: &mut WatcherKind,
     fs_rx: &Receiver<notify::Result<Event>>,
     stop_rx: &Receiver<()>,
 ) where
     S: StorageBackend + 'static,
     Schema: SettingsSchema + Send + Sync + 'static,
 {
-    let debounce_window = Duration::from_millis(config.debounce_ms);
+    let debounce_window = Duration::from_millis(ctx.config.debounce_ms);
     let self_write_suppression = Duration::from_millis(150);
 
     let mut pending_reload = false;
@@ -162,15 +173,44 @@ fn run_reload_loop<S, Schema>(
             Err(TryRecvError::Empty) => {}
         }
 
+        match ctx.manager.settings_path() {
+            Ok(active_file) if active_file != watched_file => {
+                let previous = watched_file.parent().unwrap_or_else(|| Path::new("."));
+                let target = active_file.parent().unwrap_or_else(|| Path::new("."));
+                if previous == target {
+                    watched_file = active_file;
+                    pending_reload = true;
+                    last_change = Instant::now();
+                } else if let Err(error) = watcher.watch(target, RecursiveMode::NonRecursive) {
+                    (ctx.callback)(HotReloadEvent::WatchError {
+                        reason: error.to_string(),
+                    });
+                } else {
+                    if let Err(error) = watcher.unwatch(previous) {
+                        (ctx.callback)(HotReloadEvent::WatchError {
+                            reason: error.to_string(),
+                        });
+                    }
+                    watched_file = active_file;
+                    pending_reload = true;
+                    last_change = Instant::now();
+                }
+            }
+            Err(error) => (ctx.callback)(HotReloadEvent::WatchError {
+                reason: error.to_string(),
+            }),
+            _ => {}
+        }
+
         match fs_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
-                if event_touches_file(&event, watched_file) {
+                if event_touches_file(&event, &watched_file) {
                     pending_reload = true;
                     last_change = Instant::now();
                 }
             }
             Ok(Err(err)) => {
-                callback(HotReloadEvent::WatchError {
+                (ctx.callback)(HotReloadEvent::WatchError {
                     reason: err.to_string(),
                 });
             }
@@ -183,27 +223,27 @@ fn run_reload_loop<S, Schema>(
             && Instant::now().duration_since(last_change) >= debounce_window
         {
             #[cfg(feature = "vault")]
-            if manager.is_locked() {
-                manager.invalidate_cache();
-                callback(HotReloadEvent::SkippedLocked {
-                    path: watched_file.to_path_buf(),
+            if ctx.manager.is_locked() {
+                ctx.manager.invalidate_cache();
+                (ctx.callback)(HotReloadEvent::SkippedLocked {
+                    path: watched_file.clone(),
                 });
                 pending_reload = false;
                 suppress_until = Instant::now() + self_write_suppression;
                 continue;
             }
 
-            manager.invalidate_cache();
+            ctx.manager.invalidate_cache();
 
-            match manager.ensure_cache_populated() {
+            match ctx.manager.ensure_cache_populated() {
                 Ok(()) => {
-                    callback(HotReloadEvent::Reloaded {
-                        path: watched_file.to_path_buf(),
+                    (ctx.callback)(HotReloadEvent::Reloaded {
+                        path: watched_file.clone(),
                     });
                 }
                 Err(err) => {
-                    callback(HotReloadEvent::ReloadFailed {
-                        path: watched_file.to_path_buf(),
+                    (ctx.callback)(HotReloadEvent::ReloadFailed {
+                        path: watched_file.clone(),
                         reason: err.to_string(),
                     });
                 }
@@ -216,16 +256,5 @@ fn run_reload_loop<S, Schema>(
 }
 
 fn event_touches_file(event: &Event, watched_file: &Path) -> bool {
-    let watched_name = watched_file.file_name();
-
-    event.paths.iter().any(|path| {
-        if path == watched_file {
-            return true;
-        }
-
-        match (path.file_name(), watched_name) {
-            (Some(path_name), Some(expected_name)) => path_name == expected_name,
-            _ => false,
-        }
-    })
+    event.paths.iter().any(|path| path == watched_file)
 }

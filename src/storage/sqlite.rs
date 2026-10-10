@@ -186,6 +186,12 @@ impl StorageBackend for SqliteStorage {
         if !is_valid_identifier(&self.table_name) {
             return Err(Error::Config("Invalid SQLite table name".into()));
         }
+        // Preserve NotFound/PermissionDenied so callers can distinguish a new
+        // settings database from an existing database that cannot be read.
+        std::fs::metadata(path).map_err(|source| Error::FileRead {
+            path: path.to_path_buf(),
+            source,
+        })?;
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|e| Error::FileRead {
                 path: path.to_path_buf(),
@@ -217,6 +223,41 @@ impl StorageBackend for SqliteStorage {
                 ),
             }),
         }
+    }
+
+    fn remove(&self, path: &Path) -> Result<()> {
+        if !is_valid_identifier(&self.table_name) {
+            return Err(Error::Config("Invalid SQLite table name".into()));
+        }
+        match std::fs::metadata(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => {
+                return Err(Error::FileRead {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+        }
+        #[cfg(feature = "backup")]
+        crate::backup::transaction::capture_file(path)?;
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(|error| Error::Config(format!("sqlite open: {error}")))?;
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [&self.table_name],
+                |row| row.get(0),
+            )
+            .map_err(|error| Error::Config(format!("sqlite schema query: {error}")))?;
+        if exists {
+            conn.execute(
+                &format!("DELETE FROM {} WHERE key = ?1", self.table_name),
+                [&self.key],
+            )
+            .map_err(|error| Error::Config(format!("sqlite delete: {error}")))?;
+        }
+        Ok(())
     }
 
     fn write<T: Serialize>(&self, path: &Path, data: &T) -> Result<()> {

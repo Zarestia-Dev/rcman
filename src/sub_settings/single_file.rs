@@ -196,24 +196,18 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
 
         let mut state = self.state.write_recovered()?;
 
-        if state.cache.is_none() {
-            state.cache = Some(HashMap::new());
+        let previous = state.cache.as_ref().and_then(|cache| cache.get(key));
+        if (value.is_null() && previous.is_none()) || previous == Some(&value) {
+            return Ok(());
         }
-
-        if let Some(cache) = &mut state.cache {
-            let changed = if value.is_null() {
-                cache.remove(key).is_some()
-            } else if cache.get(key).is_some_and(|existing| existing == &value) {
-                false
-            } else {
-                cache.insert(key.to_string(), value);
-                true
-            };
-
-            if changed {
-                self.save_to_disk(cache)?;
-            }
+        let mut cache = state.cache.clone().unwrap_or_default();
+        if value.is_null() {
+            cache.remove(key);
+        } else {
+            cache.insert(key.to_string(), value);
         }
+        self.save_to_disk(&cache)?;
+        state.cache = Some(cache);
 
         Ok(())
     }
@@ -227,10 +221,11 @@ impl<S: StorageBackend> SubSettingsStore for SingleFileStore<S> {
         self.ensure_loaded()?;
 
         let mut state = self.state.write_recovered()?;
-        if let Some(cache) = &mut state.cache
+        if let Some(mut cache) = state.cache.clone()
             && cache.remove(key).is_some()
         {
-            self.save_to_disk(cache)?;
+            self.save_to_disk(&cache)?;
+            state.cache = Some(cache);
         }
         Ok(())
     }

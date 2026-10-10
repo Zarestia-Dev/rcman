@@ -514,3 +514,41 @@ fn test_save_all_persists_model() {
     assert_eq!(reloaded.ui.theme, "system");
     assert!((reloaded.ui.font_size - 18.0).abs() < f64::EPSILON);
 }
+
+#[test]
+fn regression_listener_can_unregister_and_save_another_setting() {
+    let fixture = TestFixture::new();
+    let manager = Arc::new(fixture.manager);
+    let weak = Arc::downgrade(&manager);
+    manager.events().watch("ui.theme", move |_, _, _| {
+        let manager = weak.upgrade().unwrap();
+        manager.events().unwatch("ui.theme");
+        manager
+            .save_setting("ui", "font_size", &json!(20.0))
+            .unwrap();
+    });
+    manager
+        .save_setting("ui", "theme", &json!("light"))
+        .unwrap();
+    assert_eq!(manager.get::<f64>("ui.font_size").unwrap(), 20.0);
+}
+
+#[test]
+fn regression_corrupted_settings_are_not_overwritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let manager = rcman::SettingsManager::builder("corrupt-regression", "1")
+        .with_config_dir(dir.path())
+        .with_schema::<common::TestSettings>()
+        .build()
+        .unwrap();
+    std::fs::write(&path, "{broken").unwrap();
+    manager.invalidate_cache();
+    assert!(manager.get_all().is_err());
+    assert!(
+        manager
+            .save_setting("ui", "theme", &json!("light"))
+            .is_err()
+    );
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "{broken");
+}

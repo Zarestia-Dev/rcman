@@ -351,6 +351,31 @@ impl Default for SettingMetadata {
     }
 }
 
+// Public metadata is mutable; key by pattern text, not by metadata identity.
+fn compiled_pattern(pattern: &str) -> Result<std::sync::Arc<regex::Regex>, String> {
+    use std::sync::{Arc, LazyLock, Mutex};
+    static CACHE: LazyLock<Mutex<lru::LruCache<String, Arc<regex::Regex>>>> = LazyLock::new(|| {
+        Mutex::new(lru::LruCache::new(
+            std::num::NonZeroUsize::MIN.saturating_add(127),
+        ))
+    });
+    if let Some(regex) = CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(pattern)
+        .cloned()
+    {
+        return Ok(regex);
+    }
+    let regex =
+        Arc::new(regex::Regex::new(pattern).map_err(|e| format!("Invalid regex pattern: {e}"))?);
+    CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .put(pattern.to_owned(), Arc::clone(&regex));
+    Ok(regex)
+}
+
 impl SettingMetadata {
     // =========================================================================
     // Type-specific constructors
@@ -550,7 +575,7 @@ impl SettingMetadata {
     ///
     /// Note: Setting this flag requires credential features to be enabled
     /// (`keychain` or `encrypted-file`) for actual secret storage to work.
-    /// Without these features, the flag is set but secrets won't be stored securely.
+    /// Without these features, saving a non-default secret returns an error.
     #[must_use]
     pub fn secret(mut self) -> Self {
         self.metadata
@@ -633,8 +658,7 @@ impl SettingMetadata {
             .ok_or_else(|| "Value must be a string".to_string())?;
 
         if let Some(ref pattern) = self.constraints.text.pattern {
-            let re =
-                regex::Regex::new(pattern).map_err(|e| format!("Invalid regex pattern: {e}"))?;
+            let re = compiled_pattern(pattern)?;
             if !re.is_match(text) {
                 return Err(format!("Value does not match pattern: {pattern}"));
             }
@@ -746,7 +770,7 @@ impl SettingMetadata {
 
         // Check pattern is valid regex
         if let Some(ref pattern) = self.constraints.text.pattern {
-            regex::Regex::new(pattern).map_err(|e| format!("Invalid regex pattern: {e}"))?;
+            compiled_pattern(pattern)?;
 
             // Pattern should not be empty
             if pattern.is_empty() {
