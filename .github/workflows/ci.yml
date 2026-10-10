@@ -17,13 +17,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev pkg-config
+          sudo apt-get install -y libdbus-1-dev pkg-config dbus-x11 gnome-keyring libsecret-tools
 
       - name: Setup macOS Keychain
         if: runner.os == 'macOS'
@@ -56,7 +56,32 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       # Test - Run on all platforms to verify behavior
+      - name: Test (Linux with isolated keyring)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          export XDG_DATA_HOME="$(mktemp -d)"
+          dbus-run-session -- bash -euo pipefail <<'SESSION'
+          printf '%s' 'ci-disposable-password' | gnome-keyring-daemon --unlock --components=secrets
+          ready=false
+          for attempt in {1..50}; do
+            if printf '%s' 'ready' | secret-tool store --label=rcman-ci rcman-ci readiness; then
+              ready=true
+              break
+            fi
+            sleep 0.1
+          done
+          if [ "$ready" != true ]; then
+            echo 'Secret Service did not become ready' >&2
+            exit 1
+          fi
+          secret-tool clear rcman-ci readiness
+          cargo test --workspace --all-features --quiet
+          cargo test --workspace --all-features --tests -- --ignored --test-threads=1
+          SESSION
+
       - name: Test
+        if: runner.os != 'Linux'
         run: cargo test --all --all-features --quiet
 
       - name: Minimal features
@@ -107,7 +132,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'

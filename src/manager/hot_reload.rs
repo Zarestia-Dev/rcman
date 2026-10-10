@@ -56,7 +56,8 @@ impl HotReloadRuntime {
     ///
     /// # Errors
     ///
-    /// Returns an error if the manager cannot resolve the active settings path.
+    /// Returns an error if the active settings path cannot be resolved or the watcher
+    /// cannot be initialized. Watching is registered before this method returns.
     pub fn start<S, Schema, F>(
         manager: Arc<SettingsManager<S, Schema>>,
         config: HotReloadConfig,
@@ -76,26 +77,14 @@ impl HotReloadRuntime {
         let callback: Arc<dyn Fn(HotReloadEvent) + Send + Sync> = Arc::new(on_event);
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
+        let (fs_tx, fs_rx) = mpsc::channel::<notify::Result<Event>>();
+        let mut watcher = create_watcher(&config, fs_tx)
+            .map_err(|error| crate::Error::Config(format!("Failed to create watcher: {error}")))?;
+        watcher
+            .watch(&watch_target, RecursiveMode::NonRecursive)
+            .map_err(|error| crate::Error::Config(format!("Failed to watch settings: {error}")))?;
+
         let join_handle = thread::spawn(move || {
-            let (fs_tx, fs_rx) = mpsc::channel::<notify::Result<Event>>();
-
-            let mut watcher = match create_watcher(&config, fs_tx) {
-                Ok(watcher) => watcher,
-                Err(err) => {
-                    callback(HotReloadEvent::WatchError {
-                        reason: err.to_string(),
-                    });
-                    return;
-                }
-            };
-
-            if let Err(err) = watcher.watch(&watch_target, RecursiveMode::NonRecursive) {
-                callback(HotReloadEvent::WatchError {
-                    reason: err.to_string(),
-                });
-                return;
-            }
-
             let ctx = ReloadContext {
                 manager: &manager,
                 config: &config,
@@ -256,5 +245,40 @@ fn run_reload_loop<S, Schema>(
 }
 
 fn event_touches_file(event: &Event, watched_file: &Path) -> bool {
-    event.paths.iter().any(|path| path == watched_file)
+    event.paths.iter().any(|path| {
+        if path == watched_file {
+            return true;
+        }
+        if path.file_name() != watched_file.file_name() {
+            return false;
+        }
+        match (path.parent(), watched_file.parent()) {
+            (Some(actual), Some(expected)) => {
+                match (actual.canonicalize(), expected.canonicalize()) {
+                    (Ok(actual), Ok(expected)) => actual == expected,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn events_match_symlinked_directory_but_not_other_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let alias = dir.path().join("alias");
+        let other = dir.path().join("other");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let event = Event::new(notify::EventKind::Any).add_path(real.join("settings.json"));
+        assert!(event_touches_file(&event, &alias.join("settings.json")));
+        assert!(!event_touches_file(&event, &other.join("settings.json")));
+    }
 }

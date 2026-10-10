@@ -758,7 +758,6 @@ fn test_vault_lifecycle_events() {
         .with_vault()
         .with_vault_preset(Argon2Preset::Fast)
         .with_vault_password("initial_pass")
-        .with_vault_lock_timeout(Duration::from_millis(30))
         .build();
 
     let manager = SettingsManager::new(config).unwrap();
@@ -779,6 +778,13 @@ fn test_vault_lifecycle_events() {
     let unlock_count_clone = Arc::clone(&unlock_count);
     manager.events().on_vault_unlock(move || {
         unlock_count_clone.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let (auto_lock_tx, auto_lock_rx) = std::sync::mpsc::channel();
+    manager.events().on_vault_event(move |event| {
+        if event == VaultEvent::AutoLocked {
+            let _ = auto_lock_tx.send(());
+        }
     });
 
     // 1. Lock vault explicitly
@@ -809,7 +815,12 @@ fn test_vault_lifecycle_events() {
     );
 
     // 4. Inactivity auto-lock
-    std::thread::sleep(Duration::from_millis(50));
+    manager
+        .set_vault_lock_timeout(Some(Duration::from_millis(30)))
+        .unwrap();
+    auto_lock_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("auto-lock callbacks did not complete");
     assert!(manager.is_locked());
     assert_eq!(lock_count.load(Ordering::SeqCst), 2); // 1 manual + 1 auto-lock
     let history = recorded_events.lock().unwrap().clone();
@@ -825,6 +836,7 @@ fn test_vault_lifecycle_events() {
 
     // 5. Unlock after auto-lock
     manager.unlock("new_pass_123").unwrap();
+    manager.set_vault_lock_timeout(None).unwrap();
     assert_eq!(unlock_count.load(Ordering::SeqCst), 2);
 
     // 6. Disable vault
