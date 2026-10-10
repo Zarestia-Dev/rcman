@@ -165,7 +165,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Check if the configuration vault feature is enabled for this settings manager.
     #[must_use]
     pub fn is_vault_enabled(&self) -> bool {
-        self.vault.read().ok().is_some_and(|guard| guard.is_some())
+        self.vault.read().is_ok_and(|guard| guard.is_some())
     }
 
     /// Retrieve a snapshot of the current vault status, parameters, and activity.
