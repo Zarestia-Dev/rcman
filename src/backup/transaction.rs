@@ -402,18 +402,30 @@ pub(crate) fn capture_credential(
     key: &str,
     service: &str,
 ) -> Result<()> {
+    capture_credential_state(service, || {
+        // Backends are application code and may reenter managed APIs.
+        let value = backend.get(key)?;
+        let key = key.to_owned();
+        Ok(Box::new(move || match value {
+            Some(value) => backend.store(&key, &value),
+            None => backend.remove(&key),
+        }))
+    })
+}
+
+/// Capture typed credential state without encoding it as a backend string.
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+pub(crate) fn capture_credential_state(
+    service: &str,
+    capture: impl FnOnce() -> Result<Undo>,
+) -> Result<()> {
     if !active(service) {
         return Ok(());
     }
-    // Backends are application code and may reenter managed APIs.
-    let value = backend.get(key)?;
-    let key = key.to_owned();
+    let undo = capture()?;
     JOURNAL.with(|journal| {
         if let Some(journal) = journal.borrow_mut().as_mut() {
-            journal.undo.push(Box::new(move || match value {
-                Some(value) => backend.store(&key, &value),
-                None => backend.remove(&key),
-            }));
+            journal.undo.push(undo);
         }
     });
     Ok(())
@@ -544,6 +556,118 @@ mod tests {
                 .join()
                 .unwrap();
         });
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    #[test]
+    fn rollback_preserves_cached_and_volatile_credential_states() {
+        use crate::{CredentialBackend, CredentialManager, MemoryBackend};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct InterruptedWrites {
+            backend: MemoryBackend,
+            fail: AtomicBool,
+        }
+        impl CredentialBackend for InterruptedWrites {
+            fn store(&self, key: &str, value: &str) -> Result<()> {
+                if self.fail.load(Ordering::Relaxed) {
+                    return Err(Error::Credential("write unavailable".into()));
+                }
+                self.backend.store(key, value)
+            }
+            fn get(&self, key: &str) -> Result<Option<String>> {
+                self.backend.get(key)
+            }
+            fn remove(&self, key: &str) -> Result<()> {
+                self.backend.remove(key)
+            }
+            fn list_keys(&self) -> Result<Vec<String>> {
+                self.backend.list_keys()
+            }
+            fn backend_name(&self) -> &'static str {
+                "interrupted-writes"
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let service = dir.path().to_string_lossy().into_owned();
+        let primary = Arc::new(InterruptedWrites {
+            backend: MemoryBackend::new(),
+            fail: AtomicBool::new(false),
+        });
+        let manager = CredentialManager::with_backend(&service, primary.clone());
+        manager.store("cached", "persisted").unwrap();
+        primary.fail.store(true, Ordering::Relaxed);
+        manager.store("volatile", "memory-only").unwrap();
+        primary.fail.store(false, Ordering::Relaxed);
+
+        let operation = exclusive(dir.path(), Some(&service)).unwrap();
+        let transaction = Transaction::begin(&operation).unwrap();
+        manager.store("cached", "changed").unwrap();
+        manager.store("volatile", "persisted-now").unwrap();
+        manager.store("new", "temporary").unwrap();
+        manager.remove("cached").unwrap();
+        assert!(!manager.is_volatile_active());
+        assert!(
+            transaction
+                .finish(Err(Error::RestoreFailed("injected".into())))
+                .is_err()
+        );
+
+        assert_eq!(
+            primary
+                .get(&format!("{service}:cached"))
+                .unwrap()
+                .as_deref(),
+            Some("persisted")
+        );
+        assert_eq!(primary.get(&format!("{service}:volatile")).unwrap(), None);
+        assert!(manager.is_volatile_active());
+        primary.remove(&format!("{service}:cached")).unwrap();
+        assert_eq!(manager.get("cached").unwrap(), None);
+        assert_eq!(
+            manager.get("volatile").unwrap().as_deref(),
+            Some("memory-only")
+        );
+        assert_eq!(manager.get("new").unwrap(), None);
+
+        // Dropping an unfinished transaction restores the same typed state.
+        {
+            let _transaction = Transaction::begin(&operation).unwrap();
+            manager.store("volatile", "changed-again").unwrap();
+        }
+        assert!(manager.is_volatile_active());
+        assert_eq!(
+            manager.get("volatile").unwrap().as_deref(),
+            Some("memory-only")
+        );
+
+        // Reads can change the enum state too; a failed restore must undo them.
+        primary
+            .store(&format!("{service}:volatile"), "external")
+            .unwrap();
+        {
+            let _transaction = Transaction::begin(&operation).unwrap();
+            assert_eq!(
+                manager.get("volatile").unwrap().as_deref(),
+                Some("external")
+            );
+            assert!(!manager.is_volatile_active());
+        }
+        assert!(manager.is_volatile_active());
+        primary.remove(&format!("{service}:volatile")).unwrap();
+        assert_eq!(
+            manager.get("volatile").unwrap().as_deref(),
+            Some("memory-only")
+        );
+
+        // Committing the write changes it to a cache, which a later deletion evicts.
+        let transaction = Transaction::begin(&operation).unwrap();
+        manager.store("volatile", "committed").unwrap();
+        transaction.finish(Ok(())).unwrap();
+        assert!(!manager.is_volatile_active());
+        primary.remove(&format!("{service}:volatile")).unwrap();
+        assert_eq!(manager.get("volatile").unwrap(), None);
     }
 
     #[cfg(unix)]

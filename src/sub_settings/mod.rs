@@ -1055,7 +1055,12 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
     }
 
-    /// Serialize and set a value in the store
+    /// Serialize and set a value in the store.
+    ///
+    /// Secret fields omitted from `value` keep their existing credentials.
+    /// To remove a secret, explicitly write its schema default using this method
+    /// or `set_field`. A nullable `null` value is not a deletion unless it equals
+    /// that default. `delete` removes the entire entry and its declared secrets.
     ///
     /// # Arguments
     ///

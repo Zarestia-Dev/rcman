@@ -187,7 +187,8 @@ fn foreign_vault_and_forged_identity_have_distinct_errors_and_preserve_bytes() {
         .unwrap()
         .set("primary", &json!({"host":"foreign"}))
         .unwrap();
-    let path = first.path().join("remotes/primary.json");
+    let relative_path = Path::new("remotes").join("primary.json");
+    let path = first.path().join(&relative_path);
     let local: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let mut injected: Value =
         serde_json::from_slice(&std::fs::read(second.path().join("remotes/primary.json")).unwrap())
@@ -206,7 +207,11 @@ fn foreign_vault_and_forged_identity_have_distinct_errors_and_preserve_bytes() {
         } else {
             assert!(matches!(error, Error::VaultMismatch(_)));
         }
-        assert!(error.to_string().contains("remotes/primary.json"));
+        assert!(
+            error
+                .to_string()
+                .contains(relative_path.to_string_lossy().as_ref())
+        );
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         assert!(
             manager

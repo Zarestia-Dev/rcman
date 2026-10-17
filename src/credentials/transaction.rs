@@ -1,7 +1,7 @@
 //! Compensating writes for manager operations. No silent volatile fallback:
 //! inability to snapshot or persist a credential aborts the operation.
 
-use super::{CredentialBackend, CredentialManager};
+use super::{CredentialBackend, CredentialManager, MemoryEntry};
 use crate::{Error, Result};
 use std::sync::Arc;
 
@@ -49,6 +49,7 @@ impl CredentialManager {
         }
 
         let _guard = self.commit_lock.lock().map_err(|_| Error::LockPoisoned)?;
+        self.invalidate_tracked_secrets_cache()?;
         let updates = self.prepare_updates(changes, profile)?;
         self.commit_updates(updates, changes, finish)
     }
@@ -68,6 +69,7 @@ impl CredentialManager {
         #[cfg(feature = "backup")]
         let _operation = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let _guard = self.commit_lock.lock().map_err(|_| Error::LockPoisoned)?;
+        self.invalidate_tracked_secrets_cache()?;
         let owned = |key: &str| scope.owns(key);
         let mut target_changes = self
             .get_tracked_secrets(Some(target))?
@@ -124,6 +126,7 @@ impl CredentialManager {
         #[cfg(feature = "backup")]
         let _operation = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let _guard = self.commit_lock.lock().map_err(|_| Error::LockPoisoned)?;
+        self.invalidate_tracked_secrets_cache()?;
         let tracked = self.get_tracked_secrets(Some(profile))?;
         let changes: Vec<_> = tracked
             .iter()
@@ -167,6 +170,8 @@ impl CredentialManager {
         let mut attempted = 0;
         let result = (|| {
             for (key, value) in &updates {
+                #[cfg(feature = "backup")]
+                self.memory.capture(key, &self.service_name)?;
                 for (index, backend) in backends.iter().enumerate() {
                     #[cfg(feature = "backup")]
                     crate::backup::transaction::capture_credential(
@@ -195,8 +200,8 @@ impl CredentialManager {
         }
         for (key, value) in updates {
             match value {
-                Some(value) => self.volatile.store(&key, &value)?,
-                None => self.volatile.remove(&key)?,
+                Some(value) => self.memory.store(&key, MemoryEntry::Cached(value))?,
+                None => self.memory.remove(&key)?,
             }
         }
         Ok(())

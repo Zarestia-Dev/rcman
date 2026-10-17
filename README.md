@@ -640,11 +640,11 @@ When you update your schema to transition a setting between normal and secret (e
 - **Normal to Secret**: The value is moved from the settings file (e.g., `settings.json`) to the secure credential store on startup.
 - **Secret to Normal**: The value is moved from the credential store back to the settings file.
 
-This migration is optimized with an $O(1)$ startup check using a profile-scoped `__rcman_secrets__` key in the credential store, with a backward-compatible one-time fallback scan to dynamically upgrade existing configurations.
+A profile-scoped `__rcman_secrets__` index tracks credential names for migration and cleanup. Older configurations use a one-time fallback scan to create the index. Migration prunes confirmed missing credentials while retaining entries whose existence cannot be checked.
 
 #### Three-Tier Security Hierarchy
 
-rcman implements a cascading fallback system to guarantee that secret operations never fail:
+Direct credential writes can fall back to volatile memory when persistent backends fail. Managed settings writes require persistent storage, and deletion errors are returned to the caller:
 
 | Tier             | Backend             | Persistence | Use Case                                                      |
 | :--------------- | :------------------ | :---------- | :------------------------------------------------------------ |
@@ -653,8 +653,10 @@ rcman implements a cascading fallback system to guarantee that secret operations
 | **3. Emergency** | **Volatile Memory** | ❌ No       | In-memory safety net for runtime transient OS keyring drops.  |
 
 - **In-Memory Safety Net (Write/Read-Through):** Successful write and read operations populate an in-process volatile safety net, ensuring secrets remain accessible during runtime if the OS keychain daemon temporarily disconnects or locks.
-- **Zero-Stale Data Guarantee:** `rcman` always queries the Primary backend (OS Keychain) first on reads. Live changes made externally in the OS keyring are immediately reflected; the in-memory cache never shadows active keyring modifications.
-- **Sticky Fallback:** If the Primary backend fails permanently (e.g., missing D-Bus on headless Linux), the manager switches to the Fallback tier for the remainder of the session to avoid repeated platform timeouts.
+- **External Changes:** Reads check persistent backends before cached values. A confirmed absence invalidates a cached credential; cached values remain available during backend read failures. Writes accepted only in volatile memory remain readable even when persistent backends return no entry.
+- **Recovery:** Writes retry the primary backend, and reads prefer a value in the persistent fallback over an older primary value. `is_volatile_active()` reports writes held only in memory, not ordinary cached credentials.
+
+Secret removal follows the schema default: saving that default removes the credential and its tracking entry. `SubSettings::set` preserves omitted secret fields; explicitly pass the default to clear one. A nullable `null` is a stored value when the schema default differs from `null`. Low-level `CredentialManager::remove` returns backend deletion errors; `clear` retains tracking when cleanup fails so it can be retried.
 
 #### Platform Support
 

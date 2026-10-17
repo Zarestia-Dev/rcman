@@ -9,6 +9,8 @@
 //! - **Encrypted File**: Encrypted JSON fallback for CI/Docker and unsupported platforms - requires `encrypted-file` feature
 //! - **Memory**: In-memory only for testing
 
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+mod cache;
 #[cfg(feature = "encrypted-file")]
 mod encrypted;
 #[cfg(feature = "keychain")]
@@ -34,6 +36,8 @@ pub use memory::MemoryBackend;
 pub use types::{SecretBackupPolicy, SecretPasswordSource, SecretStorage};
 
 use crate::error::Result;
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+use cache::{CredentialMemory, MemoryEntry};
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 use std::sync::{
     Arc,
@@ -93,7 +97,7 @@ pub struct CredentialManager {
     /// Fallback backend (typically encrypted file)
     fallback: Option<Arc<dyn CredentialBackend>>,
 
-    /// Whether the primary backend has failed permanently in this session
+    /// Whether direct credential access last observed a primary backend failure.
     is_primary_failed: Arc<AtomicBool>,
     commit_lock: Arc<std::sync::Mutex<()>>,
 
@@ -104,8 +108,8 @@ pub struct CredentialManager {
     #[cfg(feature = "profiles")]
     profile_context: Option<String>,
 
-    /// Volatile emergency fallback (always available, lost on restart)
-    volatile: Arc<MemoryBackend>,
+    /// Cached credentials and unpersisted writes retain distinct enum states.
+    memory: Arc<CredentialMemory>,
 
     /// In-memory cache of keys stored in the credential store to optimize lookup and migration, keyed by profile context
     tracked_secrets_cache: Arc<
@@ -133,7 +137,7 @@ impl CredentialManager {
             service_name: service,
             #[cfg(feature = "profiles")]
             profile_context: None,
-            volatile: Arc::new(MemoryBackend::new()),
+            memory: Arc::new(CredentialMemory::default()),
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -154,7 +158,7 @@ impl CredentialManager {
             service_name: service,
             #[cfg(feature = "profiles")]
             profile_context: None,
-            volatile: Arc::new(MemoryBackend::new()),
+            memory: Arc::new(CredentialMemory::default()),
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -182,7 +186,7 @@ impl CredentialManager {
             service_name: service,
             #[cfg(feature = "profiles")]
             profile_context: None,
-            volatile: Arc::new(MemoryBackend::new()),
+            memory: Arc::new(CredentialMemory::default()),
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -201,7 +205,7 @@ impl CredentialManager {
             service_name: service_name.into(),
             #[cfg(feature = "profiles")]
             profile_context: None,
-            volatile: Arc::new(MemoryBackend::new()),
+            memory: Arc::new(CredentialMemory::default()),
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -223,7 +227,7 @@ impl CredentialManager {
             service_name: service_name.into(),
             #[cfg(feature = "profiles")]
             profile_context: None,
-            volatile: Arc::new(MemoryBackend::new()),
+            memory: Arc::new(CredentialMemory::default()),
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -246,13 +250,13 @@ impl CredentialManager {
             commit_lock: self.commit_lock.clone(),
             service_name: self.service_name.clone(),
             profile_context: Some(profile_name.to_string()),
-            volatile: self.volatile.clone(),
+            memory: self.memory.clone(),
             tracked_secrets_cache: self.tracked_secrets_cache.clone(),
             tracked_profiles_cache: self.tracked_profiles_cache.clone(),
         }
     }
 
-    /// Returns true if the primary backend has failed and we are now using fallback.
+    /// Reports the most recently observed primary backend failure state.
     #[must_use]
     pub fn is_primary_failed(&self) -> bool {
         self.is_primary_failed.load(Ordering::Relaxed)
@@ -261,14 +265,17 @@ impl CredentialManager {
     /// Returns true if the volatile emergency fallback is currently holding any data.
     #[must_use]
     pub fn is_volatile_active(&self) -> bool {
-        self.volatile.list_keys().is_ok_and(|keys| !keys.is_empty())
+        self.memory.has_volatile_writes().unwrap_or(false)
     }
 
     /// Store a credential
     ///
+    /// Successful writes use the primary backend, then the persistent fallback,
+    /// then volatile memory. `is_volatile_active()` reports unpersisted writes.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the primary backend fails to store the key or if the fallback backend fails to store the key.
+    /// Returns an error if updating a selected backend or its cached state fails.
     pub fn store(&self, key: &str, value: &str) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
@@ -277,9 +284,12 @@ impl CredentialManager {
 
     /// Store a credential with optional profile context
     ///
+    /// Successful writes use the primary backend, then the persistent fallback,
+    /// then volatile memory. `is_volatile_active()` reports unpersisted writes.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the primary backend fails to store the key or if the fallback backend fails to store the key.
+    /// Returns an error if updating a selected backend or its cached state fails.
     pub fn store_with_profile(&self, key: &str, value: &str, profile: Option<&str>) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
@@ -298,17 +308,15 @@ impl CredentialManager {
                     &self.service_name,
                 )?;
             }
-            crate::backup::transaction::capture_credential(
-                self.volatile.clone(),
-                &full_key,
-                &self.service_name,
-            )?;
+            self.memory.capture(&full_key, &self.service_name)?;
         }
 
         #[cfg(feature = "backup")]
         if crate::backup::transaction::active(&self.service_name) {
             self.primary.store(&full_key, value)?;
-            return self.volatile.store(&full_key, value);
+            return self
+                .memory
+                .store(&full_key, MemoryEntry::Cached(value.to_owned()));
         }
 
         // Always attempt primary backend first
@@ -322,7 +330,8 @@ impl CredentialManager {
                     fallback.remove(&full_key)?;
                 }
                 self.is_primary_failed.store(false, Ordering::Relaxed);
-                let _ = self.volatile.store(&full_key, value);
+                self.memory
+                    .store(&full_key, MemoryEntry::Cached(value.to_owned()))?;
                 return Ok(());
             }
             Err(e) => {
@@ -336,7 +345,8 @@ impl CredentialManager {
             match fallback.store(&full_key, value) {
                 Ok(()) => {
                     log::debug!("Stored credential '{key}' in persistent fallback");
-                    let _ = self.volatile.store(&full_key, value);
+                    self.memory
+                        .store(&full_key, MemoryEntry::Cached(value.to_owned()))?;
                     return Ok(());
                 }
                 Err(e) => {
@@ -349,7 +359,8 @@ impl CredentialManager {
 
         // Final attempt: Volatile memory (won't persist across restarts)
         log::warn!("Using volatile fallback for '{key}' - secret will NOT persist across restarts");
-        self.volatile.store(&full_key, value)
+        self.memory
+            .store(&full_key, MemoryEntry::VolatileWrite(value.to_owned()))
     }
 
     /// Retrieve a credential
@@ -363,7 +374,11 @@ impl CredentialManager {
         self.get_with_profile(key, None)
     }
 
-    /// Retrieve a credential with optional profile context
+    /// Retrieve a credential with optional profile context.
+    ///
+    /// Cached persistent values are used during read failures, never after a
+    /// confirmed absence. Writes accepted only in volatile memory remain readable
+    /// until removed or superseded by a persistent value.
     ///
     /// # Errors
     ///
@@ -372,29 +387,38 @@ impl CredentialManager {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let full_key = self.make_key_with_profile(key, profile);
+        #[cfg(feature = "backup")]
+        self.memory.capture(&full_key, &self.service_name)?;
 
         let mut backend_error = None;
+        let mut read_failed = false;
         let mut fallback_read = false;
         if let Some(fallback) = &self.fallback {
             match fallback.get(&full_key) {
                 Ok(Some(value)) => {
-                    self.volatile.store(&full_key, &value)?;
+                    self.memory
+                        .store(&full_key, MemoryEntry::Cached(value.clone()))?;
                     return Ok(Some(value));
                 }
                 Ok(None) => fallback_read = true,
-                Err(error) => backend_error = Some(error),
+                Err(error) => {
+                    read_failed = true;
+                    backend_error = Some(error);
+                }
             }
         }
         match self.primary.get(&full_key) {
             Ok(Some(value)) => {
                 self.is_primary_failed.store(false, Ordering::Relaxed);
-                self.volatile.store(&full_key, &value)?;
+                self.memory
+                    .store(&full_key, MemoryEntry::Cached(value.clone()))?;
                 return Ok(Some(value));
             }
             Ok(None) => {
                 self.is_primary_failed.store(false, Ordering::Relaxed);
             }
             Err(error) => {
+                read_failed = true;
                 self.is_primary_failed.store(true, Ordering::Relaxed);
                 if !fallback_read {
                     backend_error = Some(error);
@@ -402,13 +426,10 @@ impl CredentialManager {
             }
         }
 
-        match self.volatile.get(&full_key)? {
-            Some(value) => Ok(Some(value)),
-            None => match backend_error {
-                Some(error) => Err(error),
-                None => Ok(None),
-            },
+        if let Some(value) = self.memory.read_fallback(&full_key, read_failed)? {
+            return Ok(Some(value));
         }
+        backend_error.map_or(Ok(None), Err)
     }
 
     /// Remove a credential
@@ -445,11 +466,7 @@ impl CredentialManager {
                     &self.service_name,
                 )?;
             }
-            crate::backup::transaction::capture_credential(
-                self.volatile.clone(),
-                &full_key,
-                &self.service_name,
-            )?;
+            self.memory.capture(&full_key, &self.service_name)?;
         }
 
         #[cfg(feature = "backup")]
@@ -458,17 +475,19 @@ impl CredentialManager {
             if let Some(fallback) = &self.fallback {
                 fallback.remove(&full_key)?;
             }
-            return self.volatile.remove(&full_key);
+            return self.memory.remove(&full_key);
         }
 
-        // Remove from all backends
-        let _ = self.primary.remove(&full_key);
-        if let Some(ref fallback) = self.fallback {
-            let _ = fallback.remove(&full_key);
+        // Attempt every backend, but never report a failed deletion as success.
+        let mut failure = None;
+        for backend in std::iter::once(&self.primary).chain(self.fallback.iter()) {
+            if let Err(error) = backend.remove(&full_key) {
+                failure.get_or_insert(error);
+            }
         }
-        let _ = self.volatile.remove(&full_key);
-
-        Ok(())
+        self.memory.remove(&full_key)?;
+        self.invalidate_tracked_secrets_cache()?;
+        failure.map_or(Ok(()), Err)
     }
 
     /// Check if a credential exists
@@ -480,135 +499,106 @@ impl CredentialManager {
     /// Check if a credential exists with optional profile context
     #[must_use]
     pub fn exists_with_profile(&self, key: &str, profile: Option<&str>) -> bool {
-        let full_key = self.make_key_with_profile(key, profile);
-
-        if self.primary.exists(&full_key).unwrap_or(false) {
-            return true;
-        }
-
-        if let Some(ref fallback) = self.fallback
-            && fallback.exists(&full_key).unwrap_or(false)
-        {
-            return true;
-        }
-
-        self.volatile.exists(&full_key).unwrap_or(false)
+        self.try_exists_with_profile(key, profile).unwrap_or(false)
     }
 
-    /// Clear all credentials for this service.
+    /// Distinguish confirmed absence from access errors before pruning tracking.
+    pub(crate) fn try_exists_with_profile(&self, key: &str, profile: Option<&str>) -> Result<bool> {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
+        let full_key = self.make_key_with_profile(key, profile);
+        let mut failure = None;
+        for backend in std::iter::once(&self.primary).chain(self.fallback.iter()) {
+            match backend.exists(&full_key) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        #[cfg(feature = "backup")]
+        self.memory.capture(&full_key, &self.service_name)?;
+        if self
+            .memory
+            .read_fallback(&full_key, failure.is_some())?
+            .is_some()
+        {
+            return Ok(true);
+        }
+        failure.map_or(Ok(false), Err)
+    }
+
+    /// Clear all credentials for this service or the current profile.
+    ///
+    /// Tracking entries are removed only after all discovered secrets have been
+    /// deleted. On failure they remain available for a later cleanup attempt.
     ///
     /// # Errors
     ///
-    /// Returns an error if the cache invalidation fails.
+    /// Returns an error if enumeration, deletion, or cache invalidation fails.
     pub fn clear(&self) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
+        self.invalidate_tracked_secrets_cache()?;
         #[cfg(feature = "profiles")]
         let profile = self.profile_context.as_deref();
         #[cfg(not(feature = "profiles"))]
         let profile: Option<&str> = None;
 
-        let mut keys_to_remove = std::collections::HashSet::new();
-
-        // 1. Fetch tracked secrets from the credential store (__rcman_secrets__)
-        if let Ok(tracked) = self.get_tracked_secrets(profile) {
-            for key in tracked {
-                let full_key = self.make_key_with_profile(&key, profile);
-                keys_to_remove.insert(full_key);
-            }
-        }
-
-        // 2. Also query list_keys on backends
         #[cfg(feature = "profiles")]
-        let prefix = if let Some(profile_ctx) = &self.profile_context {
-            format!("{}:profiles:{}:", self.service_name, profile_ctx)
-        } else {
-            format!("{}:", self.service_name)
-        };
-
-        #[cfg(not(feature = "profiles"))]
-        let prefix = format!("{}:", self.service_name);
-
-        if let Ok(keys) = self.primary.list_keys() {
-            for key in keys {
-                if key.starts_with(&prefix) {
-                    keys_to_remove.insert(key);
-                }
+        if profile.is_none() {
+            for name in self.get_tracked_profiles()? {
+                self.with_profile_context(&name).clear()?;
             }
         }
 
-        if let Some(ref fallback) = self.fallback
-            && let Ok(keys) = fallback.list_keys()
+        let marker = self.make_key_with_profile("__rcman_secrets__", profile);
+        let prefix = self.make_key_with_profile("", profile);
+        let mut keys: std::collections::HashSet<_> = self
+            .get_tracked_secrets(profile)?
+            .into_iter()
+            .map(|key| self.make_key_with_profile(&key, profile))
+            .collect();
+        let mut failure = None;
+        for backend in std::iter::once(&self.primary)
+            .chain(self.fallback.iter())
+            .map(AsRef::as_ref)
         {
-            for key in keys {
-                if key.starts_with(&prefix) {
-                    keys_to_remove.insert(key);
+            match backend.list_keys() {
+                Ok(found) => keys.extend(found.into_iter().filter(|key| key.starts_with(&prefix))),
+                Err(error) => {
+                    failure.get_or_insert(error);
                 }
             }
         }
-
-        if let Ok(keys) = self.volatile.list_keys() {
-            for key in keys {
-                if key.starts_with(&prefix) {
-                    keys_to_remove.insert(key);
-                }
-            }
-        }
-
-        // 3. Always include __rcman_secrets__ itself in keys_to_remove
-        let rcman_secrets_key = self.make_key_with_profile("__rcman_secrets__", profile);
-        keys_to_remove.insert(rcman_secrets_key);
-
-        // Track per-key failures so we can log a useful aggregate without
-        // aborting the loop on the first error.
-        let mut failure_count: usize = 0;
-        let total = keys_to_remove.len();
-
-        for full_key in &keys_to_remove {
-            // Remove directly from backends using full key to avoid
-            // reconstruction overhead.  Each backend's `remove()` is
-            // idempotent — a `NoEntry` result is treated as success.
-            if let Err(e) = self.primary.remove(full_key) {
-                log::debug!("clear: primary.remove({full_key}) failed: {e}");
-                failure_count += 1;
-            }
-            if let Some(ref fallback) = self.fallback
-                && let Err(e) = fallback.remove(full_key)
-            {
-                log::debug!("clear: fallback.remove({full_key}) failed: {e}");
-                failure_count += 1;
-            }
-            if let Err(e) = self.volatile.remove(full_key) {
-                log::debug!("clear: volatile.remove({full_key}) failed: {e}");
-                failure_count += 1;
-            }
-        }
-
-        if let Err(e) = self.invalidate_tracked_secrets_cache() {
-            log::warn!("clear: failed to invalidate tracked_secrets_cache: {e}");
-            return Err(e);
-        }
-
+        keys.extend(
+            self.memory
+                .list_keys()?
+                .into_iter()
+                .filter(|key| key.starts_with(&prefix)),
+        );
+        keys.insert(marker);
         #[cfg(feature = "profiles")]
-        if self.profile_context.is_none() {
-            if let Ok(profiles) = self.get_tracked_profiles() {
-                for p in profiles {
-                    let profile_creds = self.with_profile_context(&p);
-                    let _ = profile_creds.clear();
-                }
+        if profile.is_none() {
+            keys.insert(self.make_key_with_profile("__rcman_profiles__", None));
+        }
+
+        let (markers, secrets): (Vec<_>, Vec<_>) = keys.into_iter().partition(|key| {
+            key.ends_with(":__rcman_secrets__") || key.ends_with(":__rcman_profiles__")
+        });
+        for full_key in secrets {
+            if let Err(error) = self.remove_with_profile(&full_key[prefix.len()..], profile) {
+                failure.get_or_insert(error);
             }
-            let _ = self.remove("__rcman_profiles__");
         }
-
-        if failure_count > 0 {
-            log::warn!(
-                "clear: {failure_count} of {} removals failed (see debug log for details)",
-                total * 3 // each key tried against up to 3 backends
-            );
-        } else {
-            log::debug!("clear: removed {total} keys");
+        self.invalidate_tracked_secrets_cache()?;
+        if let Some(error) = failure {
+            return Err(error);
         }
-
+        for full_key in markers {
+            self.remove_with_profile(&full_key[prefix.len()..], profile)?;
+        }
         Ok(())
     }
 
@@ -625,7 +615,7 @@ impl CredentialManager {
             if let Some(ref fallback) = self.fallback {
                 fallback.backend_name()
             } else {
-                self.volatile.backend_name()
+                "memory"
             }
         } else {
             self.primary.backend_name()
@@ -661,6 +651,8 @@ impl CredentialManager {
     ) -> Result<std::collections::HashSet<String>> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
+        #[cfg(feature = "profiles")]
+        let profile = profile.or(self.profile_context.as_deref());
         let profile_key = profile.map(ToString::to_string);
         {
             let cache_guard = self
@@ -706,6 +698,8 @@ impl CredentialManager {
     ) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
+        #[cfg(feature = "profiles")]
+        let profile = profile.or(self.profile_context.as_deref());
         let profile_key = profile.map(ToString::to_string);
         let list: Vec<&String> = secrets.iter().collect();
         let value_str = serde_json::to_string(&list).map_err(|e| {
@@ -717,7 +711,7 @@ impl CredentialManager {
 
         #[cfg(feature = "profiles")]
         if let Some(profile_name) = profile {
-            let _ = self.add_tracked_profile(profile_name);
+            self.add_tracked_profile(profile_name)?;
         }
 
         let mut cache_guard = self
@@ -735,6 +729,11 @@ impl CredentialManager {
     /// Returns an error if reading the credential store or parsing fails.
     #[cfg(feature = "profiles")]
     pub fn get_tracked_profiles(&self) -> Result<std::collections::HashSet<String>> {
+        if self.profile_context.is_some() {
+            let mut root = self.clone();
+            root.profile_context = None;
+            return root.get_tracked_profiles();
+        }
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         {
@@ -775,6 +774,11 @@ impl CredentialManager {
     /// Returns an error if storing the profile list in credentials fails.
     #[cfg(feature = "profiles")]
     pub fn add_tracked_profile(&self, profile: &str) -> Result<()> {
+        if self.profile_context.is_some() {
+            let mut root = self.clone();
+            root.profile_context = None;
+            return root.add_tracked_profile(profile);
+        }
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let mut profiles = self.get_tracked_profiles()?;
@@ -862,6 +866,8 @@ impl CredentialManager {
     pub fn clear_tracked_secrets_cache(&self, profile: Option<&str>) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
+        #[cfg(feature = "profiles")]
+        let profile = profile.or(self.profile_context.as_deref());
         let profile_key = profile.map(ToString::to_string);
         let mut cache_guard = self
             .tracked_secrets_cache
@@ -944,7 +950,7 @@ mod tests {
             service_name: "test-app".to_string(),
             #[cfg(feature = "profiles")]
             profile_context: None,
-            volatile: Arc::new(MemoryBackend::new()),
+            memory: Arc::new(CredentialMemory::default()),
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -957,7 +963,7 @@ mod tests {
             manager.get("api_key").unwrap().as_deref(),
             Some("fallback-value")
         );
-        manager.remove("api_key").unwrap();
+        assert!(manager.remove("api_key").is_err());
         assert_eq!(manager.get("api_key").unwrap(), None);
     }
 
@@ -971,7 +977,7 @@ mod tests {
             service_name: "test-app".to_string(),
             #[cfg(feature = "profiles")]
             profile_context: None,
-            volatile: Arc::new(MemoryBackend::new()),
+            memory: Arc::new(CredentialMemory::default()),
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -1104,7 +1110,7 @@ mod tests {
             service_name: "test-app".to_string(),
             #[cfg(feature = "profiles")]
             profile_context: None,
-            volatile: Arc::new(MemoryBackend::new()),
+            memory: Arc::new(CredentialMemory::default()),
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -1121,8 +1127,8 @@ mod tests {
             Some("top-secret".to_string())
         );
 
-        // Cleanup should also pass
-        manager.remove("api_key").unwrap();
+        // Persistent deletion cannot be confirmed, even though volatile data clears.
+        assert!(manager.remove("api_key").is_err());
         // An unavailable persistent backend cannot confirm that the key is absent.
         assert!(matches!(
             manager.get("api_key"),
@@ -1167,7 +1173,7 @@ mod tests {
             service_name: "test-app".to_string(),
             #[cfg(feature = "profiles")]
             profile_context: None,
-            volatile: Arc::new(MemoryBackend::new()),
+            memory: Arc::new(CredentialMemory::default()),
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -1177,6 +1183,9 @@ mod tests {
 
         // Primary store fails, stored in volatile memory
         manager.store("api_key", "top-secret").unwrap();
+
+        assert!(manager.exists("api_key"));
+        assert!(manager.is_volatile_active());
 
         // Primary get returns Ok(None), but volatile fallback has it
         assert_eq!(
@@ -1203,7 +1212,7 @@ mod tests {
     }
 
     #[test]
-    fn test_read_through_cache_populates_volatile() {
+    fn test_read_through_populates_cached_memory() {
         let primary = Arc::new(MemoryBackend::new());
         primary.store("test-app:cached_key", "secret-val").unwrap();
 
@@ -1215,7 +1224,7 @@ mod tests {
             service_name: "test-app".to_string(),
             #[cfg(feature = "profiles")]
             profile_context: None,
-            volatile: Arc::new(MemoryBackend::new()),
+            memory: Arc::new(CredentialMemory::default()),
             tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -1223,17 +1232,173 @@ mod tests {
             tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
         };
 
-        // Before read, volatile is empty
-        assert_eq!(manager.volatile.get("test-app:cached_key").unwrap(), None);
+        // Before read, memory is empty
+        assert_eq!(
+            manager
+                .memory
+                .read_fallback("test-app:cached_key", true)
+                .unwrap(),
+            None
+        );
 
         // Read from primary through manager
         let val = manager.get("cached_key").unwrap();
         assert_eq!(val, Some("secret-val".to_string()));
 
-        // After read, volatile is populated (read-through cache)
+        // After read, memory holds a cached persistent value
         assert_eq!(
-            manager.volatile.get("test-app:cached_key").unwrap(),
+            manager
+                .memory
+                .read_fallback("test-app:cached_key", true)
+                .unwrap(),
             Some("secret-val".to_string())
         );
+    }
+}
+
+#[cfg(all(test, any(feature = "keychain", feature = "encrypted-file")))]
+mod consistency_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    struct InterruptedBackend {
+        memory: MemoryBackend,
+        read_fails: AtomicBool,
+        delete_fails: AtomicBool,
+    }
+
+    impl InterruptedBackend {
+        fn new() -> Self {
+            Self {
+                memory: MemoryBackend::new(),
+                read_fails: AtomicBool::new(false),
+                delete_fails: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl CredentialBackend for InterruptedBackend {
+        fn store(&self, key: &str, value: &str) -> Result<()> {
+            self.memory.store(key, value)
+        }
+        fn get(&self, key: &str) -> Result<Option<String>> {
+            if self.read_fails.load(Ordering::Relaxed) {
+                return Err(crate::Error::Credential("read unavailable".into()));
+            }
+            self.memory.get(key)
+        }
+        fn remove(&self, key: &str) -> Result<()> {
+            if self.delete_fails.load(Ordering::Relaxed) && key.ends_with(":secret") {
+                return Err(crate::Error::Credential("delete unavailable".into()));
+            }
+            self.memory.remove(key)
+        }
+        fn list_keys(&self) -> Result<Vec<String>> {
+            self.memory.list_keys()
+        }
+        fn backend_name(&self) -> &'static str {
+            "interrupted"
+        }
+    }
+
+    #[test]
+    fn persistent_deletion_invalidates_cached_values_and_exists() {
+        let primary = Arc::new(MemoryBackend::new());
+        let manager = CredentialManager::with_backend("deletion", primary.clone());
+        manager.store("secret", "value").unwrap();
+        assert_eq!(manager.get("secret").unwrap().as_deref(), Some("value"));
+        assert!(!manager.is_volatile_active());
+        primary.remove("deletion:secret").unwrap();
+        assert!(!manager.exists("secret"));
+        assert_eq!(manager.get("secret").unwrap(), None);
+        assert_eq!(
+            manager
+                .memory
+                .read_fallback("deletion:secret", true)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn cached_values_survive_read_failure_with_an_empty_persistent_fallback() {
+        let primary = Arc::new(InterruptedBackend::new());
+        let mut manager = CredentialManager::with_backend("outage", primary.clone());
+        manager.fallback = Some(Arc::new(MemoryBackend::new()));
+        manager.store("secret", "value").unwrap();
+        primary.read_fails.store(true, Ordering::Relaxed);
+        assert!(manager.exists("secret"));
+        assert_eq!(manager.get("secret").unwrap().as_deref(), Some("value"));
+        primary.read_fails.store(false, Ordering::Relaxed);
+        primary.remove("outage:secret").unwrap();
+        assert_eq!(manager.get("secret").unwrap(), None);
+    }
+
+    #[test]
+    fn failed_delete_reports_error_and_still_clears_other_backends() {
+        let primary = Arc::new(InterruptedBackend::new());
+        let fallback = Arc::new(MemoryBackend::new());
+        let mut manager = CredentialManager::with_backend("delete", primary.clone());
+        manager.fallback = Some(fallback.clone());
+        manager.store("secret", "value").unwrap();
+        fallback.store("delete:secret", "stale").unwrap();
+        primary.delete_fails.store(true, Ordering::Relaxed);
+        assert!(manager.remove("secret").is_err());
+        assert!(primary.get("delete:secret").unwrap().is_some());
+        assert_eq!(fallback.get("delete:secret").unwrap(), None);
+        assert_eq!(
+            manager.memory.read_fallback("delete:secret", true).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn failed_clear_preserves_tracking_for_retry() {
+        let primary = Arc::new(InterruptedBackend::new());
+        let manager = CredentialManager::with_backend("clear", primary.clone());
+        manager.store("secret", "value").unwrap();
+        manager
+            .save_tracked_secrets(&HashSet::from(["secret".into()]), None)
+            .unwrap();
+        primary.delete_fails.store(true, Ordering::Relaxed);
+        assert!(manager.clear().is_err());
+        assert!(primary.get("clear:secret").unwrap().is_some());
+        assert!(primary.get("clear:__rcman_secrets__").unwrap().is_some());
+        primary.delete_fails.store(false, Ordering::Relaxed);
+        manager.clear().unwrap();
+        assert!(primary.list_keys().unwrap().is_empty());
+    }
+
+    #[cfg(feature = "profiles")]
+    #[test]
+    fn tracking_caches_and_global_registry_respect_scoped_managers() {
+        let manager = CredentialManager::memory_only("scopes");
+        let root_keys = HashSet::from(["root-token".into()]);
+        let work_keys = HashSet::from(["work-token".into()]);
+        let personal_keys = HashSet::from(["personal-token".into()]);
+        manager.save_tracked_secrets(&root_keys, None).unwrap();
+        let work = manager.with_profile_context("work");
+        work.save_tracked_secrets(&work_keys, None).unwrap();
+        work.save_tracked_secrets(&personal_keys, Some("personal"))
+            .unwrap();
+        assert_eq!(manager.get_tracked_secrets(None).unwrap(), root_keys);
+        assert_eq!(work.get_tracked_secrets(None).unwrap(), work_keys);
+        assert_eq!(
+            manager.get_tracked_secrets(Some("work")).unwrap(),
+            work_keys
+        );
+        assert_eq!(
+            work.get_tracked_secrets(Some("personal")).unwrap(),
+            personal_keys
+        );
+        assert_eq!(
+            manager.get_tracked_profiles().unwrap(),
+            HashSet::from(["work".into(), "personal".into()])
+        );
+        work.clear_tracked_secrets_cache(None).unwrap();
+        assert!(work.get_tracked_secrets(None).unwrap().is_empty());
+        assert_eq!(manager.get_tracked_secrets(None).unwrap(), root_keys);
+        work.invalidate_tracked_secrets_cache().unwrap();
+        assert_eq!(work.get_tracked_secrets(None).unwrap(), work_keys);
     }
 }

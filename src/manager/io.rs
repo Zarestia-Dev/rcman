@@ -673,6 +673,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
             let metadata = self.schema_metadata.get(&key);
             if metadata.is_some_and(SettingMetadata::is_secret) {
+                // Prune only confirmed absences. Unreadable credentials remain
+                // tracked, and pending extractions must not be overwritten.
+                if !changes.iter().any(|(changed, _)| changed == &key)
+                    && matches!(creds.try_exists_with_profile(&key, profile), Ok(false))
+                {
+                    changes.push((key, None));
+                }
                 continue;
             }
             if let Some(value) = creds.get_with_profile(&key, profile)?
@@ -768,6 +775,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             };
             let metadata = schema.get(path);
             if metadata.is_some_and(SettingMetadata::is_secret) {
+                // Prune only confirmed absences. Unreadable credentials remain
+                // tracked, and pending extractions must not be overwritten.
+                if !changes.iter().any(|(changed, _)| changed == &key)
+                    && matches!(creds.try_exists_with_profile(&key, profile), Ok(false))
+                {
+                    changes.push((key, None));
+                }
                 continue;
             }
             if let Some(secret) = creds.get_with_profile(&key, profile)?
