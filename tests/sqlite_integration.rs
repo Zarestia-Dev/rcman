@@ -586,6 +586,7 @@ fn sqlite_sub_settings_table_mode_caching_strategies() {
 }
 
 #[test]
+#[cfg(feature = "profiles")]
 fn sqlite_sub_settings_table_mode_profiles() {
     let temp = TempDir::new().unwrap();
     let sub = SubSettingsConfig::table("servers").with_profiles();

@@ -170,6 +170,19 @@ pub struct ProfileManager<S: StorageBackend = crate::storage::JsonStorage> {
 
     /// Callback to invalidate caches when profile switches
     on_invalidate: RwLock<Option<InvalidateCallback>>,
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    credentials: Option<(
+        crate::credentials::CredentialManager,
+        crate::credentials::ProfileSecretScope,
+    )>,
+
+    // Shared with the owning settings store, including direct profile mutations.
+    operation_lock: Arc<RwLock<()>>,
+    on_store_change: Option<InvalidateCallback>,
+
+    #[cfg(feature = "vault")]
+    vault: crate::vault::SharedVault,
 }
 
 impl<S: StorageBackend> ProfileManager<S> {
@@ -192,17 +205,109 @@ impl<S: StorageBackend> ProfileManager<S> {
             manifest: RwLock::new(None),
             on_event: RwLock::new(None),
             on_invalidate: RwLock::new(None),
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+            credentials: None,
+            operation_lock: Arc::new(RwLock::new(())),
+            on_store_change: None,
+            #[cfg(feature = "vault")]
+            vault: Arc::new(RwLock::new(None)),
         }
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    pub(crate) fn with_credentials(
+        mut self,
+        credentials: Option<crate::credentials::CredentialManager>,
+        scope: crate::credentials::ProfileSecretScope,
+    ) -> Self {
+        self.credentials = credentials.map(|manager| (manager, scope));
+        self
+    }
+
+    pub(crate) fn with_owner(
+        mut self,
+        lock: Arc<RwLock<()>>,
+        invalidate: InvalidateCallback,
+    ) -> Self {
+        self.operation_lock = lock;
+        self.on_store_change = Some(invalidate);
+        self
+    }
+
+    fn invalidate_store(&self) {
+        if let Some(invalidate) = &self.on_store_change {
+            invalidate();
+        }
+    }
+
+    #[cfg(feature = "vault")]
+    pub(crate) fn with_vault(mut self, vault: crate::vault::SharedVault) -> Self {
+        self.vault = vault;
+        self
+    }
+
+    #[cfg(feature = "vault")]
+    fn copy_vault_profile(&self, source: &Path, target: &Path) -> Result<bool> {
+        let vault = self.vault.read_recovered()?.clone();
+        let Some(vault) = vault else {
+            return Ok(false);
+        };
+        if vault.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+        crate::vault::relocate::copy_profile(&self.storage, &vault, source, target)?;
+        Ok(true)
+    }
+
+    fn copy_profile(&self, source: &Path, target: &Path) -> Result<()> {
+        if target.exists() {
+            return Err(Error::Config(
+                "Profile destination already exists on disk".into(),
+            ));
+        }
+        #[cfg(feature = "vault")]
+        if self.copy_vault_profile(source, target)? {
+            return Ok(());
+        }
+        let result = if source.exists() {
+            copy_dir_recursive(source, target)
+        } else {
+            crate::utils::security::ensure_secure_dir(target)
+        };
+        result.map_err(|error| discard_copy(target, error))
+    }
+
+    // Returns true when vault rebinding kept the source for cleanup after commit.
+    fn move_profile(&self, source: &Path, target: &Path) -> Result<bool> {
+        if std::fs::symlink_metadata(target).is_ok() {
+            return Err(Error::Config(
+                "Profile destination already exists on disk".into(),
+            ));
+        }
+        #[cfg(feature = "vault")]
+        if self.copy_vault_profile(source, target)? {
+            return Ok(true);
+        }
+        if source.exists() {
+            std::fs::rename(source, target).map_err(|source| Error::FileWrite {
+                path: target.to_path_buf(),
+                source,
+            })?;
+        } else {
+            crate::utils::security::ensure_secure_dir(target)?;
+        }
+        Ok(false)
     }
 
     /// Initialize the profile manager, running migrations if enabled
     ///
-    /// This is a helper to centralize initialization logic that was previously in `SettingsManager`.
+    /// Automatic migration moves only the main settings file into the default
+    /// profile. Independent sub-settings and credential files stay at the root.
     ///
     /// # Arguments
     ///
     /// * `config_dir` - The root configuration directory
-    /// * `target_name` - The name of the target (e.g. "settings")
+    /// * `target_name` - Main settings filename stem (e.g. "settings")
     /// * `storage` - Storage backend
     /// * `enabled` - Whether profiles are enabled
     /// * `migrator` - Migration strategy
@@ -225,13 +330,29 @@ impl<S: StorageBackend> ProfileManager<S> {
         enabled: bool,
         migrator: &crate::profiles::ProfileMigrator,
     ) -> Result<(PathBuf, Option<Self>)> {
+        let filename = format!("{target_name}.{}", storage.extension());
+        Self::initialize_file(
+            config_dir,
+            target_name,
+            &filename,
+            storage,
+            enabled,
+            migrator,
+        )
+    }
+
+    pub(crate) fn initialize_file(
+        config_dir: &Path,
+        target_name: &str,
+        filename: &str,
+        storage: S,
+        enabled: bool,
+        migrator: &crate::profiles::ProfileMigrator,
+    ) -> Result<(PathBuf, Option<Self>)> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(config_dir)?;
         if enabled {
-            // Run migration if needed
-            // For main settings, we assume multi-file mode (false) and no specific extension (None)
-            // as it manages a directory of settings.
-            crate::profiles::migrate(config_dir, target_name, false, &storage, migrator)?;
+            crate::profiles::migrator::migrate_settings(config_dir, filename, &storage, migrator)?;
 
             let pm = Self::new(config_dir, target_name, storage);
             // Use active path from manifest (defaults to "default")
@@ -287,29 +408,25 @@ impl<S: StorageBackend> ProfileManager<S> {
 
     /// Emit a profile event
     fn emit_event(&self, event: ProfileEvent) {
-        if let Ok(guard) = self.on_event.read_recovered() {
-            if let Some(callback) = guard.as_ref() {
-                callback(event);
-            }
-        } else {
-            debug!(
-                "Failed to emit profile event for '{}' due to lock recovery error",
-                self.target_name
-            );
+        let callback = self
+            .on_event
+            .read_recovered()
+            .ok()
+            .and_then(|guard| guard.clone());
+        if let Some(callback) = callback {
+            callback(event);
         }
     }
 
     /// Invalidate caches
     fn invalidate_caches(&self) {
-        if let Ok(guard) = self.on_invalidate.read_recovered() {
-            if let Some(callback) = guard.as_ref() {
-                callback();
-            }
-        } else {
-            debug!(
-                "Failed to run profile invalidation callback for '{}' due to lock recovery error",
-                self.target_name
-            );
+        let callback = self
+            .on_invalidate
+            .read_recovered()
+            .ok()
+            .and_then(|guard| guard.clone());
+        if let Some(callback) = callback {
+            callback();
         }
     }
 
@@ -406,6 +523,16 @@ impl<S: StorageBackend> ProfileManager<S> {
         Ok(())
     }
 
+    // Publish the new active profile only after its manifest is persisted.
+    fn update_manifest(&self, update: impl FnOnce(&mut ProfileManifest)) -> Result<()> {
+        let mut guard = self.manifest.write_recovered()?;
+        let mut manifest = guard.as_ref().ok_or(Error::NotInitialized)?.clone();
+        update(&mut manifest);
+        self.storage.write(&self.manifest_path, &manifest)?;
+        *guard = Some(manifest);
+        Ok(())
+    }
+
     // =========================================================================
     // Public API
     // =========================================================================
@@ -495,6 +622,7 @@ impl<S: StorageBackend> ProfileManager<S> {
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
         validate_profile_name(name)?;
+        let operation_guard = self.operation_lock.write_recovered()?;
         self.ensure_manifest()?;
 
         // Check if already exists
@@ -513,16 +641,10 @@ impl<S: StorageBackend> ProfileManager<S> {
         let profile_dir = self.profile_path(name);
         crate::utils::security::ensure_secure_dir(&profile_dir)?;
 
-        // Update manifest
-        {
-            let mut guard = self.manifest.write_recovered()?;
-            guard
-                .as_mut()
-                .ok_or(Error::NotInitialized)?
-                .add_profile(name.to_string());
-        }
-        self.save_manifest()?;
+        self.update_manifest(|manifest| manifest.add_profile(name.to_string()))?;
 
+        self.invalidate_store();
+        drop(operation_guard);
         info!("Created profile '{}' for '{}'", name, self.target_name);
         self.emit_event(ProfileEvent::Created {
             name: name.to_string(),
@@ -547,6 +669,7 @@ impl<S: StorageBackend> ProfileManager<S> {
         let _operation_guard = crate::backup::transaction::enter(
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
+        let operation_guard = self.operation_lock.write_recovered()?;
         self.ensure_manifest()?;
 
         let from = {
@@ -563,16 +686,12 @@ impl<S: StorageBackend> ProfileManager<S> {
             return Ok(());
         }
 
-        // Update manifest
-        {
-            let mut guard = self.manifest.write_recovered()?;
-            guard
-                .as_mut()
-                .ok_or(Error::NotInitialized)?
-                .set_active(name);
-        }
-        self.save_manifest()?;
+        self.update_manifest(|manifest| {
+            manifest.set_active(name);
+        })?;
 
+        self.invalidate_store();
+        drop(operation_guard);
         info!(
             "Switched profile for '{}': {} -> {}",
             self.target_name, from, name
@@ -591,8 +710,11 @@ impl<S: StorageBackend> ProfileManager<S> {
 
     /// Delete a profile
     ///
-    /// Removes the profile directory and updates the manifest.
+    /// Removes the profile directory, this target's secret credentials, and its
+    /// manifest entry. Other settings groups retain their credentials.
     /// Cannot delete the active profile or the last remaining profile.
+    /// Credential or manifest failures attempt to restore the directory; incomplete
+    /// rollback is reported. This operation does not provide crash recovery.
     ///
     /// # Arguments
     ///
@@ -606,6 +728,7 @@ impl<S: StorageBackend> ProfileManager<S> {
         let _operation_guard = crate::backup::transaction::enter(
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
+        let operation_guard = self.operation_lock.write_recovered()?;
         self.ensure_manifest()?;
 
         {
@@ -625,25 +748,51 @@ impl<S: StorageBackend> ProfileManager<S> {
             }
         }
 
-        // Delete profile directory
         let profile_dir = self.profile_path(name);
-        if profile_dir.exists() {
-            std::fs::remove_dir_all(&profile_dir).map_err(|e| Error::FileDelete {
-                path: profile_dir.clone(),
-                source: e,
+        let pending = self.profiles_dir.join(format!(".rcman-delete-{name}"));
+        let moved = if profile_dir.exists() {
+            if std::fs::symlink_metadata(&pending).is_ok() {
+                return Err(Error::Config(
+                    "Pending profile deletion already exists".into(),
+                ));
+            }
+            std::fs::rename(&profile_dir, &pending).map_err(|source| Error::FileWrite {
+                path: pending.clone(),
+                source,
+            })?;
+            true
+        } else {
+            false
+        };
+        let finish = || {
+            self.update_manifest(|manifest| {
+                manifest.remove_profile(name);
+            })
+        };
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        let result = if let Some((credentials, scope)) = &self.credentials {
+            credentials.remove_profile_secrets(name, scope, finish)
+        } else {
+            finish()
+        };
+        #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+        let result = finish();
+        if let Err(error) = result {
+            return Err(if moved {
+                rollback_move(&profile_dir, &pending, false, error)
+            } else {
+                error
+            });
+        }
+        if moved {
+            std::fs::remove_dir_all(&pending).map_err(|source| Error::FileDelete {
+                path: pending,
+                source,
             })?;
         }
 
-        // Update manifest
-        {
-            let mut guard = self.manifest.write_recovered()?;
-            guard
-                .as_mut()
-                .ok_or(Error::NotInitialized)?
-                .remove_profile(name);
-        }
-        self.save_manifest()?;
-
+        self.invalidate_store();
+        drop(operation_guard);
         info!("Deleted profile '{}' from '{}'", name, self.target_name);
         self.emit_event(ProfileEvent::Deleted {
             name: name.to_string(),
@@ -653,6 +802,11 @@ impl<S: StorageBackend> ProfileManager<S> {
     }
 
     /// Rename a profile
+    ///
+    /// Managed settings follow the new name, including when this is the active
+    /// profile. Credential-backed secrets for this target move to the new namespace.
+    /// Unencrypted directories are moved; encrypted files are rebound to their
+    /// new authenticated paths before the source directory is removed.
     ///
     /// # Arguments
     ///
@@ -668,6 +822,7 @@ impl<S: StorageBackend> ProfileManager<S> {
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
         validate_profile_name(to)?;
+        let operation_guard = self.operation_lock.write_recovered()?;
         self.ensure_manifest()?;
 
         {
@@ -687,32 +842,32 @@ impl<S: StorageBackend> ProfileManager<S> {
         let from_dir = self.profile_path(from);
         let to_dir = self.profile_path(to);
 
-        if from_dir.exists() {
-            std::fs::rename(&from_dir, &to_dir).map_err(|e| Error::FileWrite {
-                path: std::path::PathBuf::from(format!(
-                    "{} -> {}",
-                    from_dir.display(),
-                    to_dir.display()
-                )),
-                source: e,
-            })?;
+        let copied = self.move_profile(&from_dir, &to_dir)?;
+        let finish = || {
+            self.update_manifest(|manifest| {
+                manifest.rename_profile(from, to.to_string());
+            })
+        };
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        let result = if let Some((credentials, scope)) = &self.credentials {
+            credentials.transfer_profile(from, to, scope, true, finish)
         } else {
-            // Create the new directory if old didn't exist
-            std::fs::create_dir_all(&to_dir).map_err(|e| Error::DirectoryCreate {
-                path: to_dir.clone(),
-                source: e,
+            finish()
+        };
+        #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+        let result = finish();
+        if let Err(error) = result {
+            return Err(rollback_move(&from_dir, &to_dir, copied, error));
+        }
+        if copied && from_dir.exists() {
+            std::fs::remove_dir_all(&from_dir).map_err(|source| Error::FileDelete {
+                path: from_dir,
+                source,
             })?;
         }
-
-        // Update manifest
-        {
-            let mut guard = self.manifest.write_recovered()?;
-            guard
-                .as_mut()
-                .ok_or(Error::NotInitialized)?
-                .rename_profile(from, to.to_string());
-        }
-        self.save_manifest()?;
+        self.invalidate_store();
+        drop(operation_guard);
+        self.invalidate_caches();
 
         info!(
             "Renamed profile '{}' -> '{}' in '{}'",
@@ -730,6 +885,8 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// Duplicate a profile
     ///
     /// Copies all contents from the source profile to a new profile.
+    /// When obtained from a settings manager, also copies this target's secret
+    /// credentials; other settings groups keep their own credential namespaces.
     ///
     /// # Arguments
     ///
@@ -745,6 +902,7 @@ impl<S: StorageBackend> ProfileManager<S> {
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
         validate_profile_name(target)?;
+        let operation_guard = self.operation_lock.write_recovered()?;
         self.ensure_manifest()?;
 
         {
@@ -763,26 +921,23 @@ impl<S: StorageBackend> ProfileManager<S> {
         let source_dir = self.profile_path(source);
         let target_dir = self.profile_path(target);
 
-        // Copy directory contents
-        if source_dir.exists() {
-            copy_dir_recursive(&source_dir, &target_dir)?;
+        self.copy_profile(&source_dir, &target_dir)?;
+
+        let finish = || self.update_manifest(|manifest| manifest.add_profile(target.to_string()));
+        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+        let result = if let Some((credentials, scope)) = &self.credentials {
+            credentials.transfer_profile(source, target, scope, false, finish)
         } else {
-            std::fs::create_dir_all(&target_dir).map_err(|e| Error::DirectoryCreate {
-                path: target_dir.clone(),
-                source: e,
-            })?;
+            finish()
+        };
+        #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+        let result = finish();
+        if let Err(error) = result {
+            return Err(discard_copy(&target_dir, error));
         }
 
-        // Update manifest
-        {
-            let mut guard = self.manifest.write_recovered()?;
-            guard
-                .as_mut()
-                .ok_or(Error::NotInitialized)?
-                .add_profile(target.to_string());
-        }
-        self.save_manifest()?;
-
+        self.invalidate_store();
+        drop(operation_guard);
         info!(
             "Duplicated profile '{}' -> '{}' in '{}'",
             source, target, self.target_name
@@ -823,6 +978,7 @@ impl<S: StorageBackend> ProfileManager<S> {
     /// # Errors
     ///
     /// Returns an error if the rollback fails
+    /// or a vault is enabled. Disable vault encryption before changing storage layout.
     pub fn rollback_to_flat(&self) -> Result<()> {
         use crate::profiles::rollback_migration;
 
@@ -830,6 +986,14 @@ impl<S: StorageBackend> ProfileManager<S> {
         let _operation_guard = crate::backup::transaction::enter(
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
+
+        let operation_guard = self.operation_lock.write_recovered()?;
+        #[cfg(feature = "vault")]
+        if self.vault.read_recovered()?.is_some() {
+            return Err(Error::Vault(
+                "Disable the vault before changing the profile storage layout".into(),
+            ));
+        }
 
         // Need to construct the root_dir from profiles_dir parent
         let root_dir = self
@@ -844,6 +1008,8 @@ impl<S: StorageBackend> ProfileManager<S> {
 
         rollback_migration(root_dir, &self.target_name, single_file_mode, &self.storage)?;
 
+        self.invalidate_store();
+        drop(operation_guard);
         // Invalidate caches
         self.invalidate_caches();
 
@@ -880,8 +1046,14 @@ impl<S: StorageBackend> ProfileManager<S> {
             return Ok(false);
         }
 
-        // Check if there are existing files to migrate
-        if !detect_existing() {
+        // Detection is application code and may read through the owning store.
+        let existing = detect_existing();
+        let _profile_guard = self.operation_lock.write_recovered()?;
+        if self.manifest_path.exists() {
+            self.ensure_manifest()?;
+            return Ok(false);
+        }
+        if !existing {
             // No existing files, just initialize fresh
             self.ensure_manifest()?;
 
@@ -930,6 +1102,7 @@ impl<S: StorageBackend> ProfileManager<S> {
         let _operation_guard = crate::backup::transaction::enter(
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
+        let _profile_guard = self.operation_lock.write_recovered()?;
         self.save_manifest()?;
         info!("Profile migration complete for '{}'", self.target_name);
         Ok(())
@@ -991,6 +1164,30 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn rollback_move(source: &Path, target: &Path, copied: bool, error: Error) -> Error {
+    if copied {
+        return discard_copy(target, error);
+    }
+    match std::fs::rename(target, source) {
+        Ok(()) => error,
+        Err(rollback) => Error::TransactionFailed {
+            source: Box::new(error),
+            rollback_errors: vec![rollback.to_string()],
+        },
+    }
+}
+
+fn discard_copy(path: &Path, source: Error) -> Error {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => source,
+        Err(error) => Error::TransactionFailed {
+            source: Box::new(source),
+            rollback_errors: vec![error.to_string()],
+        },
+    }
 }
 
 // =============================================================================

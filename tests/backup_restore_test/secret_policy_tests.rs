@@ -1,9 +1,10 @@
 use super::*;
+use rcman::BackupOptions;
 #[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
 use rcman::RestoreOptions;
-use rcman::{
-    BackupOptions, SettingMetadata, SettingsManager, SettingsSchema, SubSettingsConfig, settings,
-};
+#[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
+use rcman::{SettingMetadata, SettingsManager, SettingsSchema, SubSettingsConfig, settings};
+#[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
@@ -32,9 +33,12 @@ fn test_encrypted_only_redacts_without_credentials_backend() {
         .build()
         .unwrap();
 
-    manager
-        .save_setting("secrets", "api_key", &json!("plain-file-secret"))
-        .unwrap();
+    // Seed a legacy plaintext file: current managed writes reject secrets without a backend.
+    std::fs::write(
+        temp.path().join("cfg/settings.json"),
+        r#"{"secrets":{"api_key":"plain-file-secret"}}"#,
+    )
+    .unwrap();
 
     let backup_path = manager
         .backup()
@@ -99,14 +103,12 @@ fn test_encrypted_only_redacts_subsettings_secret_fields_without_password() {
         )
         .unwrap();
 
-    manager
-        .sub_settings("remotes")
-        .unwrap()
-        .set(
-            "gdrive",
-            &json!({"type": "drive", "token": "sub-secret-token"}),
-        )
-        .unwrap();
+    std::fs::create_dir_all(temp.path().join("cfg/remotes")).unwrap();
+    std::fs::write(
+        temp.path().join("cfg/remotes/gdrive.json"),
+        r#"{"type":"drive","token":"sub-secret-token"}"#,
+    )
+    .unwrap();
 
     let backup_path = manager
         .backup()

@@ -13,6 +13,25 @@ struct Undo {
 
 type SnapshotResult = (Vec<Arc<dyn CredentialBackend>>, Vec<Undo>);
 
+/// A target owns declared main keys or a sub-settings credential prefix.
+#[cfg(feature = "profiles")]
+pub(crate) enum ProfileSecretScope {
+    /// Declared main settings, including categories named `sub`.
+    Keys(std::collections::HashSet<String>),
+    /// Every entry belonging to one sub-settings group.
+    Prefix(String),
+}
+
+#[cfg(feature = "profiles")]
+impl ProfileSecretScope {
+    fn owns(&self, key: &str) -> bool {
+        match self {
+            Self::Keys(keys) => keys.contains(key),
+            Self::Prefix(prefix) => key.starts_with(prefix),
+        }
+    }
+}
+
 impl CredentialManager {
     pub(crate) fn commit_settings<F>(
         &self,
@@ -31,6 +50,116 @@ impl CredentialManager {
 
         let _guard = self.commit_lock.lock().map_err(|_| Error::LockPoisoned)?;
         let updates = self.prepare_updates(changes, profile)?;
+        self.commit_updates(updates, changes, finish)
+    }
+
+    #[cfg(feature = "profiles")]
+    pub(crate) fn transfer_profile<F>(
+        &self,
+        source: &str,
+        target: &str,
+        scope: &ProfileSecretScope,
+        remove_source: bool,
+        finish: F,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        #[cfg(feature = "backup")]
+        let _operation = crate::backup::transaction::enter_credentials(&self.service_name)?;
+        let _guard = self.commit_lock.lock().map_err(|_| Error::LockPoisoned)?;
+        let owned = |key: &str| scope.owns(key);
+        let mut target_changes = self
+            .get_tracked_secrets(Some(target))?
+            .into_iter()
+            .filter(|key| owned(key))
+            .map(|key| (key, None))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut source_changes = Vec::new();
+        let source_keys = self.get_tracked_secrets(Some(source))?;
+        for key in source_keys.iter().filter(|key| owned(key)).cloned() {
+            target_changes.insert(key.clone(), self.get_with_profile(&key, Some(source))?);
+            if remove_source {
+                source_changes.push((key, None));
+            }
+        }
+        let target_changes: Vec<_> = target_changes.into_iter().collect();
+        if source_changes.is_empty() && target_changes.is_empty() {
+            return finish();
+        }
+        let mut updates = self.prepare_updates(&target_changes, Some(target))?;
+        if !source_changes.is_empty() {
+            updates.extend(self.prepare_updates(&source_changes, Some(source))?);
+        }
+        // Both namespaces update the same profile index; publish their union once.
+        let profile_key = self.make_key_with_profile("__rcman_profiles__", None);
+        updates.retain(|(key, _)| key != &profile_key);
+        let mut profiles = self.get_tracked_profiles()?;
+        if remove_source && source_keys.iter().all(|key| owned(key)) {
+            profiles.remove(source);
+            let source_marker = self.make_key_with_profile("__rcman_secrets__", Some(source));
+            updates.retain(|(key, _)| key != &source_marker);
+            updates.push((source_marker, None));
+        } else {
+            profiles.insert(source.to_owned());
+        }
+        profiles.insert(target.to_owned());
+        let mut profiles: Vec<_> = profiles.into_iter().collect();
+        profiles.sort();
+        updates.push((profile_key, Some(serde_json::to_string(&profiles)?)));
+        let changes: Vec<_> = target_changes.into_iter().chain(source_changes).collect();
+        self.commit_updates(updates, &changes, finish)
+    }
+
+    #[cfg(feature = "profiles")]
+    pub(crate) fn remove_profile_secrets<F>(
+        &self,
+        profile: &str,
+        scope: &ProfileSecretScope,
+        finish: F,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        #[cfg(feature = "backup")]
+        let _operation = crate::backup::transaction::enter_credentials(&self.service_name)?;
+        let _guard = self.commit_lock.lock().map_err(|_| Error::LockPoisoned)?;
+        let tracked = self.get_tracked_secrets(Some(profile))?;
+        let changes: Vec<_> = tracked
+            .iter()
+            .filter(|key| scope.owns(key))
+            .map(|key| (key.clone(), None))
+            .collect();
+        if changes.is_empty() {
+            return finish();
+        }
+        let mut updates = self.prepare_updates(&changes, Some(profile))?;
+        if changes.len() == tracked.len() {
+            let marker = self.make_key_with_profile("__rcman_secrets__", Some(profile));
+            updates.retain(|(key, _)| key != &marker);
+            updates.push((marker, None));
+            let index = self.make_key_with_profile("__rcman_profiles__", None);
+            updates.retain(|(key, _)| key != &index);
+            let mut profiles: Vec<_> = self
+                .get_tracked_profiles()?
+                .into_iter()
+                .filter(|name| name != profile)
+                .collect();
+            profiles.sort();
+            updates.push((index, Some(serde_json::to_string(&profiles)?)));
+        }
+        self.commit_updates(updates, &changes, finish)
+    }
+
+    fn commit_updates<F>(
+        &self,
+        updates: Vec<(String, Option<String>)>,
+        changes: &[(String, Option<String>)],
+        finish: F,
+    ) -> Result<()>
+    where
+        F: FnOnce() -> Result<()>,
+    {
         let (backends, mut snapshots) = self.snapshot_backends(&updates, changes)?;
 
         // Invalidate before mutation, including errors and partial rollback.
@@ -305,5 +434,78 @@ mod tests {
         );
         assert_eq!(manager.get("key").unwrap(), None);
         assert!(manager.get_tracked_secrets(None).unwrap().is_empty());
+    }
+
+    #[cfg(feature = "profiles")]
+    #[test]
+    fn failed_profile_transfer_restores_values_and_both_tracking_namespaces() {
+        let backend = Arc::new(MemoryBackend::new());
+        let manager = CredentialManager::with_backend("profile-rollback", backend.clone());
+        manager
+            .commit_settings(
+                &[("token".into(), Some("original".into()))],
+                Some("source"),
+                || Ok(()),
+            )
+            .unwrap();
+        manager
+            .commit_settings(
+                &[("sub.items.one.token".into(), Some("independent".into()))],
+                Some("source"),
+                || Ok(()),
+            )
+            .unwrap();
+        manager
+            .commit_settings(
+                &[("sub.items.one.token".into(), Some("target".into()))],
+                Some("target"),
+                || Ok(()),
+            )
+            .unwrap();
+        let before = backend
+            .list_keys()
+            .unwrap()
+            .into_iter()
+            .map(|key| {
+                let value = backend.get(&key).unwrap();
+                (key, value)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert!(
+            manager
+                .transfer_profile(
+                    "source",
+                    "target",
+                    &ProfileSecretScope::Keys(["token".to_owned()].into()),
+                    true,
+                    || Err(Error::Config("manifest write failed".into()))
+                )
+                .is_err()
+        );
+        let after = backend
+            .list_keys()
+            .unwrap()
+            .into_iter()
+            .map(|key| {
+                let value = backend.get(&key).unwrap();
+                (key, value)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(before, after);
+        assert_eq!(
+            manager
+                .get_with_profile("token", Some("source"))
+                .unwrap()
+                .as_deref(),
+            Some("original")
+        );
+        assert_eq!(
+            manager.get_with_profile("token", Some("target")).unwrap(),
+            None
+        );
+        assert_eq!(
+            manager.get_tracked_secrets(Some("source")).unwrap().len(),
+            2
+        );
     }
 }

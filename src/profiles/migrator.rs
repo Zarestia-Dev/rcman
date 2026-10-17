@@ -135,6 +135,54 @@ pub fn migrate<S: StorageBackend>(
     }
 }
 
+// Main settings share their root with credentials and independent sub-settings.
+// Only their configured file belongs to the main profile migration.
+pub(crate) fn migrate_settings<S: StorageBackend>(
+    root: &Path,
+    filename: &str,
+    storage: &S,
+    strategy: &ProfileMigrator,
+) -> Result<()> {
+    let manifest_path = root.join(format!(".profiles.{}", storage.extension()));
+    if manifest_path.exists() {
+        return Ok(());
+    }
+    match strategy {
+        ProfileMigrator::None => Ok(()),
+        ProfileMigrator::Custom(migrate) => migrate(root),
+        ProfileMigrator::Auto => {
+            let source = root.join(filename);
+            let destination = root.join(PROFILES_DIR).join(DEFAULT_PROFILE).join(filename);
+            match storage.read::<serde_json::Value>(&source) {
+                Ok(value) => {
+                    match storage.read::<serde_json::Value>(&destination) {
+                        Ok(existing) if existing == value => {}
+                        Ok(_) => {
+                            return Err(Error::Config(format!(
+                                "Profile migration destination already contains settings: {}",
+                                destination.display()
+                            )));
+                        }
+                        Err(Error::FileRead { source, .. })
+                            if source.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            storage.write(&destination, &value)?;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                    // Use the owner backend so SQLite WAL data is included and
+                    // unrelated rows in a shared database stay at the root.
+                    storage.remove(&source)?;
+                }
+                Err(Error::FileRead { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            storage.write(&manifest_path, &crate::profiles::ProfileManifest::default())
+        }
+    }
+}
+
 fn run_auto_migration<S: StorageBackend>(
     root_dir: &Path,
     target_name: &str,
@@ -178,6 +226,11 @@ fn run_auto_migration<S: StorageBackend>(
                 // Determine manifest filename to skip
                 let ext = storage.extension();
                 let manifest_filename = format!(".profiles.{ext}");
+
+                #[cfg(feature = "vault")]
+                if path.ends_with(crate::vault::metadata::FILE_NAME) {
+                    continue;
+                }
 
                 if path.ends_with(&manifest_filename) || path.ends_with(PROFILES_DIR) {
                     continue;

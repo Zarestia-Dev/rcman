@@ -5,8 +5,6 @@ use crate::config::CredentialConfig;
 use crate::config::{SettingMetadata, SettingsConfig, SettingsSchema};
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 use crate::credentials::CredentialManager;
-#[cfg(feature = "vault")]
-use crate::error::Error;
 use crate::error::Result;
 use crate::manager::EventManager;
 use crate::manager::cache::SettingsCache;
@@ -58,9 +56,6 @@ pub struct SettingsManager<
     /// Storage backend (defaults to `JsonStorage`)
     pub(super) storage: S,
 
-    /// Directory where settings file is located (may change if profiles enabled)
-    pub(super) settings_dir: RwLock<std::path::PathBuf>,
-
     /// Registered sub-settings handlers
     pub(super) sub_settings: RwLock<HashMap<String, Arc<SubSettings<S>>>>,
 
@@ -68,10 +63,10 @@ pub struct SettingsManager<
     pub(super) events: Arc<EventManager>,
 
     /// Unified settings cache
-    pub(super) settings_cache: SettingsCache,
+    pub(super) settings_cache: Arc<SettingsCache>,
 
     /// Isolates managed reads from in-progress settings and credential commits.
-    pub(super) settings_write_lock: RwLock<()>,
+    pub(super) settings_write_lock: Arc<RwLock<()>>,
 
     /// Environment variable handler
     pub(super) env_handler: EnvironmentHandler,
@@ -129,12 +124,21 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// # Ok::<(), rcman::Error>(())
     /// ```
     pub fn new(config: SettingsConfig<S, Schema>) -> Result<Self> {
+        Self::new_with_sub_settings(config, Vec::new())
+    }
+
+    pub(super) fn new_with_sub_settings(
+        config: SettingsConfig<S, Schema>,
+        sub_settings: Vec<crate::sub_settings::SubSettingsConfig>,
+    ) -> Result<Self> {
         #[cfg(feature = "vault")]
-        let (config, password) = {
-            let mut config = config;
-            let password = config.vault_password.take().map(zeroize::Zeroizing::new);
-            (config, password)
-        };
+        let mut config = config;
+        #[cfg(feature = "vault")]
+        let password = config
+            .vault_password
+            .take()
+            .map(crate::credentials::SecretPasswordSource::resolve_vault)
+            .transpose()?;
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&config.config_dir)?;
         // Ensure config directory exists with secure permissions
@@ -144,25 +148,52 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         let storage = config.storage.clone();
 
-        // Initialize credential manager if enabled and feature is available
+        #[cfg(feature = "vault")]
+        let initial_vault =
+            Self::initialize_vault(&config, password.as_deref().map(String::as_str))?;
+        #[cfg(feature = "vault")]
+        let _startup_pin = initial_vault
+            .as_ref()
+            .filter(|_| password.is_some())
+            .map(|vault| vault.begin_migration())
+            .transpose()?;
+        #[cfg(feature = "vault")]
+        let vault = Arc::new(RwLock::new(initial_vault.clone()));
+        #[cfg(all(feature = "vault", feature = "profiles"))]
+        Self::check_profile_initialization(&config, &storage, &vault)?;
+
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         let credentials = Self::initialize_credentials(&config);
 
+        let settings_write_lock = Arc::new(RwLock::new(()));
+        let settings_cache = Arc::new(SettingsCache::new());
         // Initialize profile manager if profiles are enabled
         #[cfg(feature = "profiles")]
-        let (settings_dir, profile_manager) = crate::profiles::ProfileManager::initialize(
+        let (_, profile_manager) = crate::profiles::ProfileManager::initialize_file(
             &config.config_dir,
             "settings",
+            &config.settings_file,
             storage.clone(),
             config.profiles_enabled,
             &config.profile_migrator,
         )?;
-
-        #[cfg(not(feature = "profiles"))]
-        let settings_dir = config.config_dir.clone();
-
-        // Pre-compute schema metadata/defaults ONCE (memory optimization)
+        // Compute schema metadata once for cache defaults and credential ownership.
         let metadata = Arc::new(Schema::get_metadata());
+        #[cfg(feature = "profiles")]
+        let profile_manager = profile_manager.map(|profiles| {
+            let profiles = profiles.with_owner(
+                Arc::clone(&settings_write_lock),
+                settings_cache.invalidator(),
+            );
+            #[cfg(feature = "vault")]
+            let profiles = profiles.with_vault(Arc::clone(&vault));
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+            let profiles = profiles.with_credentials(
+                credentials.clone(),
+                crate::credentials::ProfileSecretScope::Keys(metadata.keys().cloned().collect()),
+            );
+            profiles
+        });
         let schema_defaults = Arc::new(
             metadata
                 .iter()
@@ -170,33 +201,17 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 .collect(),
         );
 
-        let env_handler =
-            EnvironmentHandler::new(config.env_prefix.clone(), config.env_source.clone());
-
-        log::debug!(
-            "Initialized rcman SettingsManager at: {:?}",
-            config.config_dir.display()
-        );
-
-        #[cfg(feature = "vault")]
-        let vault = Self::initialize_vault(
-            &config,
-            &storage,
-            &settings_dir,
-            password.as_ref().map(|p| p.as_str()),
-        )?;
-
-        let events = Arc::new(EventManager::new());
-
         let manager = Self {
+            env_handler: EnvironmentHandler::new(
+                config.env_prefix.clone(),
+                config.env_source.clone(),
+            ),
             config,
             storage,
-            settings_dir: RwLock::new(settings_dir),
             sub_settings: RwLock::new(HashMap::new()),
-            events,
-            settings_cache: SettingsCache::new(),
-            settings_write_lock: RwLock::new(()),
-            env_handler,
+            events: Arc::new(EventManager::new()),
+            settings_cache,
+            settings_write_lock,
             schema_defaults,
             schema_metadata: metadata,
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -209,34 +224,20 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             #[cfg(feature = "profiles")]
             profile_manager,
             #[cfg(feature = "vault")]
-            vault: Arc::new(RwLock::new(vault)),
+            vault,
             _schema: PhantomData,
         };
 
+        for config in sub_settings {
+            manager.register_sub_settings_inner(config, !cfg!(feature = "vault"))?;
+        }
         #[cfg(feature = "vault")]
-        if let Some(vault) = manager
-            .vault
-            .read()
-            .map_err(|_| Error::LockPoisoned)?
-            .as_ref()
-        {
-            manager.configure_vault_events(vault);
-        }
-
-        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        {
-            #[cfg(feature = "vault")]
-            if !manager.is_locked() {
-                manager.migrate_secret_keys()?;
-            }
-            #[cfg(not(feature = "vault"))]
-            manager.migrate_secret_keys()?;
-        }
-
-        #[cfg(feature = "vault")]
-        if password.is_some() {
-            manager.persist_vault()?;
-        }
+        manager.finish_vault_initialization(password.as_ref().map(|p| p.as_str()))?;
+        #[cfg(all(
+            any(feature = "keychain", feature = "encrypted-file"),
+            not(feature = "vault")
+        ))]
+        manager.migrate_secret_keys()?;
 
         Ok(manager)
     }

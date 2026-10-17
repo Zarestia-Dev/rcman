@@ -1,9 +1,17 @@
 #[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
-use rcman::RestoreOptions;
+use super::{create_credentials_manager, read_settings_from_backup_data};
+#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+use rcman::{BackupOptions, RestoreOptions};
 #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
 use rcman::{SettingMetadata, SettingsManager, SettingsSchema, SubSettingsConfig, settings};
 #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
 use serde::{Deserialize, Serialize};
+#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+use serde_json::json;
+#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+use std::fs;
+#[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
+use tempfile::TempDir;
 
 #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
 #[derive(Default, Serialize, Deserialize, Clone)]
@@ -30,13 +38,12 @@ fn test_encrypted_only_redacts_without_credentials_backend() {
         .build()
         .unwrap();
 
-    manager
-        .save_setting(
-            "secrets",
-            "api_key",
-            &serde_json::json!("plain-file-secret"),
-        )
-        .unwrap();
+    // Seed a legacy plaintext file: current managed writes reject secrets without a backend.
+    std::fs::write(
+        temp.path().join("cfg/settings.json"),
+        r#"{"secrets":{"api_key":"plain-file-secret"}}"#,
+    )
+    .unwrap();
 
     let backup_path = manager
         .backup()
@@ -101,14 +108,12 @@ fn test_encrypted_only_redacts_subsettings_secret_fields_without_password() {
         )
         .unwrap();
 
-    manager
-        .sub_settings("remotes")
-        .unwrap()
-        .set(
-            "gdrive",
-            &serde_json::json!({"type": "drive", "token": "sub-secret-token"}),
-        )
-        .unwrap();
+    std::fs::create_dir_all(temp.path().join("cfg/remotes")).unwrap();
+    std::fs::write(
+        temp.path().join("cfg/remotes/gdrive.json"),
+        r#"{"type":"drive","token":"sub-secret-token"}"#,
+    )
+    .unwrap();
 
     let backup_path = manager
         .backup()

@@ -77,7 +77,7 @@ fn test_vault_lock_lifecycle() {
 
     // Unlocking with invalid password must fail and remain locked
     let bad_unlock = manager.unlock("wrong_pass").unwrap_err();
-    assert!(matches!(bad_unlock, Error::InvalidPassword));
+    assert!(matches!(bad_unlock, Error::VaultUnlockFailed));
     assert!(manager.is_locked());
 
     // Unlocking with correct password succeeds
@@ -158,21 +158,21 @@ fn test_vault_change_password() {
     assert!(manager.is_locked());
 
     let old_attempt = manager.unlock("old_pass").unwrap_err();
-    assert!(matches!(old_attempt, Error::InvalidPassword));
+    assert!(matches!(old_attempt, Error::VaultUnlockFailed));
 
     manager.unlock("new_pass").unwrap();
     assert!(!manager.is_locked());
     assert_eq!(manager.get_all().unwrap().ui.theme, "light");
 
     // Lock and test password rotation while locked
-    manager.lock_vault().unwrap();
+    manager.lock().unwrap();
     assert!(manager.is_locked());
 
     // Wrong old password while locked fails
     let err = manager
         .change_vault_password("wrong_attempt", "third_pass")
         .unwrap_err();
-    assert!(matches!(err, Error::InvalidPassword));
+    assert!(matches!(err, Error::VaultUnlockFailed));
 
     // Correct old password while locked unlocks and rotates
     manager
@@ -1217,7 +1217,6 @@ fn startup_password_source_encrypts_existing_sub_settings_and_preserves_spaces()
         .with_config_dir(temp.path())
         .with_vault_preset(Argon2Preset::Fast)
         .with_vault_password_source(rcman::SecretPasswordSource::file(&password_path))
-        .unwrap()
         .with_sub_settings(SubSettingsConfig::singlefile("connections"))
         .build()
         .unwrap();
@@ -1240,11 +1239,13 @@ fn startup_password_source_encrypts_existing_sub_settings_and_preserves_spaces()
             .with_vault_password_source(rcman::SecretPasswordSource::file(
                 temp.path().join("missing")
             ))
+            .build()
             .is_err()
     );
     assert!(
         SettingsManager::builder("empty", "1.0")
             .with_vault_password_source(rcman::SecretPasswordSource::provided(""))
+            .build()
             .is_err()
     );
 }
@@ -1431,7 +1432,7 @@ fn malformed_envelope_cannot_unlock_or_initialize_a_vault() {
         .unwrap();
     manager.lock().unwrap();
     std::fs::write(
-        temp.path().join("settings.json"),
+        temp.path().join(".rcman-vault.json"),
         r#"{"__rcman_vault__":1}"#,
     )
     .unwrap();
@@ -1462,7 +1463,7 @@ fn empty_profile_stays_encrypted_across_lock_and_restart() {
     manager.lock().unwrap();
     assert!(matches!(
         manager.unlock("wrong"),
-        Err(Error::InvalidPassword)
+        Err(Error::VaultUnlockFailed)
     ));
     manager.unlock("password").unwrap();
     drop(manager);
@@ -1486,7 +1487,7 @@ fn empty_profile_stays_encrypted_across_lock_and_restart() {
 
 #[cfg(feature = "profiles")]
 #[test]
-fn legacy_empty_active_profile_detects_existing_vault() {
+fn empty_active_profile_opens_from_root_metadata() {
     let dir = TempDir::new().unwrap();
     let manager = SettingsManager::builder("legacy-empty-vault", "1")
         .with_config_dir(dir.path())
@@ -1496,7 +1497,7 @@ fn legacy_empty_active_profile_detects_existing_vault() {
         .build()
         .unwrap();
     manager.create_profile("empty").unwrap();
-    // The old implementation switched the manifest without writing an envelope.
+    // Profile activation does not require a main settings file.
     manager.profiles().unwrap().switch("empty").unwrap();
     drop(manager);
     let reopened = SettingsManager::builder("legacy-empty-vault", "1")
@@ -1509,7 +1510,7 @@ fn legacy_empty_active_profile_detects_existing_vault() {
     assert!(reopened.is_locked());
     assert!(matches!(
         reopened.unlock("wrong"),
-        Err(Error::InvalidPassword)
+        Err(Error::VaultUnlockFailed)
     ));
     reopened.unlock("password").unwrap();
     reopened
@@ -1533,7 +1534,7 @@ fn startup_password_is_consumed_before_exposing_manager() {
     assert!(manager.config().vault_password.is_none());
     assert!(matches!(
         manager.unlock("wrong"),
-        Err(Error::InvalidPassword)
+        Err(Error::VaultUnlockFailed)
     ));
     manager.unlock("password").unwrap();
 }

@@ -143,8 +143,12 @@ impl SqliteStorage {
         {
             ensure_secure_dir(parent)?;
         }
-        Connection::open(path)
-            .map_err(|e| Error::Config(format!("sqlite open {}: {e}", path.display())))
+        let connection = Connection::open(path)
+            .map_err(|e| Error::Config(format!("sqlite open {}: {e}", path.display())))?;
+        connection
+            .pragma_update(None, "secure_delete", "ON")
+            .map_err(|e| Error::Config(format!("sqlite secure_delete: {e}")))?;
+        Ok(connection)
     }
 
     /// Idempotently create the settings table if it does not yet exist.
@@ -153,7 +157,7 @@ impl SqliteStorage {
         // safely interpolate it. SQLite does not support parameterized
         // identifiers.
         let sql = format!(
-            "CREATE TABLE IF NOT EXISTS {table} (
+            "CREATE TABLE IF NOT EXISTS \"{table}\" (
                 key  TEXT PRIMARY KEY NOT NULL,
                 data TEXT NOT NULL
             )",
@@ -182,6 +186,11 @@ impl StorageBackend for SqliteStorage {
         serde_json::from_str(content).map_err(Error::from)
     }
 
+    #[cfg(feature = "vault")]
+    fn vault_entry_id(&self) -> Option<String> {
+        Some(sqlite_entry_id(&self.table_name, &self.key))
+    }
+
     fn read<T: DeserializeOwned>(&self, path: &Path) -> Result<T> {
         if !is_valid_identifier(&self.table_name) {
             return Err(Error::Config("Invalid SQLite table name".into()));
@@ -198,7 +207,7 @@ impl StorageBackend for SqliteStorage {
                 source: std::io::Error::other(e.to_string()),
             })?;
         let sql = format!(
-            "SELECT data FROM {table} WHERE key = ?1",
+            "SELECT data FROM \"{table}\" WHERE key = ?1",
             table = self.table_name
         );
         let row_data: Option<String> = conn
@@ -252,7 +261,7 @@ impl StorageBackend for SqliteStorage {
             .map_err(|error| Error::Config(format!("sqlite schema query: {error}")))?;
         if exists {
             conn.execute(
-                &format!("DELETE FROM {} WHERE key = ?1", self.table_name),
+                &format!("DELETE FROM \"{}\" WHERE key = ?1", self.table_name),
                 [&self.key],
             )
             .map_err(|error| Error::Config(format!("sqlite delete: {error}")))?;
@@ -266,18 +275,71 @@ impl StorageBackend for SqliteStorage {
         let content = self.serialize(data)?;
         let conn = self.connect(path)?;
         self.ensure_schema(&conn)?;
+        #[cfg(feature = "vault")]
+        let encrypted = crate::vault::is_vault_value(&serde_json::from_str(&content)?);
+        #[cfg(feature = "vault")]
+        let scrub = if encrypted {
+            let previous = conn.query_row(
+                &format!("SELECT data FROM \"{}\" WHERE key = ?1", self.table_name),
+                [&self.key],
+                |row| row.get::<_, String>(0),
+            );
+            match previous {
+                Ok(previous) => !crate::vault::is_vault_value(&serde_json::from_str(&previous)?),
+                Err(rusqlite::Error::QueryReturnedNoRows) => true,
+                Err(error) => {
+                    return Err(Error::Vault(format!(
+                        "Cannot inspect SQLite vault migration: {error}"
+                    )));
+                }
+            }
+        } else {
+            false
+        };
         let sql = format!(
-            "INSERT INTO {table} (key, data) VALUES (?1, ?2)
+            "INSERT INTO \"{table}\" (key, data) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET data = excluded.data",
             table = self.table_name
         );
         conn.execute(&sql, rusqlite::params![self.key, content])
             .map_err(|e| Error::Config(format!("sqlite upsert: {e}")))?;
+        #[cfg(feature = "vault")]
+        if scrub {
+            conn.execute_batch("VACUUM").map_err(|error| {
+                Error::Vault(format!("Cannot scrub SQLite vault migration: {error}"))
+            })?;
+            checkpoint_encrypted(&conn)?;
+        }
         // Best-effort: tighten permissions on the database file to match the
         // file-based backends. Errors here are not fatal.
         let _ = set_secure_file_permissions(path);
         Ok(())
     }
+}
+
+// SQLite identifiers are ASCII case-insensitive and cannot contain ':'.
+#[cfg(feature = "vault")]
+pub(crate) fn sqlite_entry_id(table: &str, key: &str) -> String {
+    format!("{}:{key}", table.to_ascii_lowercase())
+}
+
+// Old plaintext can remain in WAL frames after secure_delete clears live pages.
+// A busy checkpoint must be surfaced rather than claiming successful encryption.
+#[cfg(feature = "vault")]
+pub(crate) fn checkpoint_encrypted(conn: &Connection) -> Result<()> {
+    let (busy, _, _): (i32, i32, i32) = conn
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|error| {
+            Error::Vault(format!("Cannot checkpoint encrypted SQLite data: {error}"))
+        })?;
+    if busy != 0 {
+        return Err(Error::Vault(
+            "SQLite readers prevented removal of plaintext WAL frames".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Validate that `name` is a safe SQLite identifier.

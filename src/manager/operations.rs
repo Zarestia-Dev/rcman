@@ -260,6 +260,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns an error if the sub-settings handler cannot be initialized (e.g. invalid path).
     pub fn register_sub_settings(&self, config: SubSettingsConfig) -> Result<()> {
+        self.register_sub_settings_inner(config, true)
+    }
+
+    pub(super) fn register_sub_settings_inner(
+        &self,
+        config: SubSettingsConfig,
+        initialize: bool,
+    ) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let name = config.name.clone();
@@ -280,19 +288,22 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             vault,
         )?);
 
-        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        {
+        if initialize {
             #[cfg(feature = "vault")]
-            if !self.is_locked() {
+            if !self.is_locked() && (self.config.vault_requested || self.is_vault_enabled()) {
+                for directory in handler.vault_directories()? {
+                    handler.read_entries(&directory)?;
+                }
+            }
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+            {
+                #[cfg(feature = "vault")]
+                if !self.is_locked() {
+                    self.finish_sub_settings_secret_migration(&handler)?;
+                }
+                #[cfg(not(feature = "vault"))]
                 self.migrate_sub_settings_secret_keys(&handler)?;
             }
-            #[cfg(not(feature = "vault"))]
-            self.migrate_sub_settings_secret_keys(&handler)?;
-        }
-
-        #[cfg(feature = "vault")]
-        if self.is_vault_enabled() && !self.is_locked() {
-            Self::persist_sub_settings(&handler)?;
         }
 
         self.sub_settings

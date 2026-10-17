@@ -110,6 +110,42 @@ impl Default for SubSettingsConfig {
     }
 }
 impl SubSettingsConfig {
+    fn validate(&self) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if std::path::Path::new(&self.name)
+            .file_name()
+            .is_some_and(|name| name == crate::vault::metadata::FILE_NAME)
+            || std::path::Path::new(&format!(
+                "{}.{}",
+                self.name,
+                self.extension.as_deref().unwrap_or("json")
+            ))
+            .file_name()
+            .is_some_and(|name| name == crate::vault::metadata::FILE_NAME)
+        {
+            return Err(Error::Config(
+                "The vault metadata filename is reserved".into(),
+            ));
+        }
+
+        if let Err(e) = self.cache_strategy.validate() {
+            return Err(Error::InvalidCacheStrategy(e.to_string()));
+        }
+
+        if let Some(schema) = &self.schema {
+            for (key, metadata) in schema.iter() {
+                if let Err(reason) = metadata.validate_schema() {
+                    return Err(Error::InvalidSettingMetadata {
+                        key: format!("{}.{}", self.name, key),
+                        reason,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -223,16 +259,16 @@ pub struct SubSettings<S: StorageBackend = crate::storage::JsonStorage> {
     credential_manager: Option<crate::credentials::CredentialManager>,
 
     /// The active store implementation
-    pub(crate) store: RwLock<Box<dyn SubSettingsStore>>,
-    pub(crate) operation_lock: RwLock<()>,
+    pub(crate) store: Arc<RwLock<Box<dyn SubSettingsStore>>>,
+    pub(crate) operation_lock: Arc<RwLock<()>>,
 
     /// We keep storage around mostly for profiles logic if needed,
     /// or simple ref storage.
     /// The storage backend instance (kept for recreating stores)
-    #[cfg(any(feature = "profiles", feature = "backup"))]
+    #[cfg(any(feature = "profiles", feature = "backup", feature = "vault"))]
     storage: S,
 
-    #[cfg(not(any(feature = "profiles", feature = "backup")))]
+    #[cfg(not(any(feature = "profiles", feature = "backup", feature = "vault")))]
     _marker: std::marker::PhantomData<S>,
 
     /// Callback for change notifications
@@ -318,32 +354,17 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     ) -> Result<Self> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(config_dir)?;
-        if config.extension.is_none() {
-            config.extension = Some(storage.extension().to_string());
-        }
+        config
+            .extension
+            .get_or_insert_with(|| storage.extension().to_string());
 
-        if let Err(e) = config.cache_strategy.validate() {
-            return Err(Error::InvalidCacheStrategy(e.to_string()));
-        }
-
-        if let Some(schema) = &config.schema {
-            for (key, metadata) in schema.iter() {
-                if let Err(reason) = metadata.validate_schema() {
-                    return Err(Error::InvalidSettingMetadata {
-                        key: format!("{}.{}", config.name, key),
-                        reason,
-                    });
-                }
-            }
-        }
+        config.validate()?;
 
         #[cfg(feature = "profiles")]
-        let root_dir = if config.profiles_enabled {
+        let root_dir = if config.profiles_enabled || !config.mode.is_file_or_table() {
             config_dir.join(&config.name)
-        } else if config.mode.is_file_or_table() {
-            config_dir.to_path_buf()
         } else {
-            config_dir.join(&config.name)
+            config_dir.to_path_buf()
         };
 
         #[cfg(not(feature = "profiles"))]
@@ -353,10 +374,13 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             config_dir.join(&config.name)
         };
 
+        let operation_lock = Arc::new(RwLock::new(()));
         // Determine initial base_dir (active profile or root)
         #[cfg(feature = "profiles")]
         let (base_dir, profile_manager) = if config.profiles_enabled {
             let is_single_file = config.mode.is_file_or_table();
+            #[cfg(feature = "vault")]
+            Self::check_profile_migration(config_dir, &root_dir, &config, &storage, &vault)?;
             crate::profiles::migrate(
                 &root_dir,
                 &config.name,
@@ -367,7 +391,14 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             .map_err(|e| Error::ProfileMigrationFailed(e.to_string()))?;
 
             let pm = crate::profiles::ProfileManager::new(&root_dir, &config.name, storage.clone());
-            let active_path = pm.profile_path(crate::profiles::DEFAULT_PROFILE);
+            #[cfg(feature = "vault")]
+            let pm = pm.with_vault(Arc::clone(&vault));
+            #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+            let pm = pm.with_credentials(
+                credential_manager.clone(),
+                crate::credentials::ProfileSecretScope::Prefix(format!("sub.{}.", config.name)),
+            );
+            let active_path = pm.active_path()?;
             (active_path, Some(pm))
         } else {
             (root_dir.clone(), None)
@@ -384,15 +415,21 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             Arc::clone(&vault),
         );
 
+        let store = Arc::new(RwLock::new(store));
+        #[cfg(feature = "profiles")]
+        let profile_manager = profile_manager.map(|profiles| {
+            profiles.with_owner(Arc::clone(&operation_lock), Self::store_invalidator(&store))
+        });
+
         Ok(Self {
             config,
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             credential_manager,
-            store: RwLock::new(store),
-            operation_lock: RwLock::new(()),
-            #[cfg(any(feature = "profiles", feature = "backup"))]
+            store,
+            operation_lock,
+            #[cfg(any(feature = "profiles", feature = "backup", feature = "vault"))]
             storage,
-            #[cfg(not(any(feature = "profiles", feature = "backup")))]
+            #[cfg(not(any(feature = "profiles", feature = "backup", feature = "vault")))]
             _marker: std::marker::PhantomData,
             on_change: RwLock::new(None),
             #[cfg(feature = "profiles")]
@@ -401,6 +438,18 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             root_dir,
             #[cfg(feature = "vault")]
             vault,
+        })
+    }
+
+    #[cfg(feature = "profiles")]
+    fn store_invalidator(
+        store: &Arc<RwLock<Box<dyn SubSettingsStore>>>,
+    ) -> Arc<dyn Fn() + Send + Sync> {
+        let store = Arc::clone(store);
+        Arc::new(move || {
+            if let Ok(store) = store.read_recovered() {
+                store.invalidate_cache();
+            }
         })
     }
 
@@ -474,28 +523,93 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         false
     }
 
-    /// Read persisted entries without running migrations or switching the active profile.
-    #[cfg(feature = "backup")]
-    pub(crate) fn backup_entries(
+    #[cfg(all(feature = "vault", feature = "profiles"))]
+    fn check_profile_migration(
+        config_dir: &std::path::Path,
+        root: &std::path::Path,
+        config: &SubSettingsConfig,
+        storage: &S,
+        vault: &crate::vault::SharedVault,
+    ) -> Result<()> {
+        let single_file = config.mode.is_file_or_table();
+        let manifest = root.join(format!(".profiles.{}", storage.extension()));
+        let legacy_exists = if single_file {
+            root.with_extension(storage.extension()).exists()
+        } else if root.exists() && !manifest.exists() {
+            std::fs::read_dir(root)
+                .map_err(|source| Error::DirectoryRead {
+                    path: root.to_path_buf(),
+                    source,
+                })?
+                .next()
+                .transpose()
+                .map_err(|source| Error::DirectoryRead {
+                    path: root.to_path_buf(),
+                    source,
+                })?
+                .is_some()
+        } else {
+            false
+        };
+        if legacy_exists {
+            if vault.read_recovered()?.is_some() {
+                return Err(Error::Vault(
+                    "Disable the vault before changing the profile storage layout".into(),
+                ));
+            }
+            let flat_dir = if single_file { config_dir } else { root };
+            Self::read_entries_at(config, flat_dir, storage.clone(), Arc::clone(vault))?;
+        }
+        Ok(())
+    }
+
+    /// Read persisted entries without schema migration or active-profile changes.
+    #[cfg(any(feature = "backup", feature = "vault"))]
+    pub(crate) fn read_entries(
         &self,
         directory: &std::path::Path,
     ) -> Result<HashMap<String, Value>> {
-        #[cfg(feature = "sqlite")]
-        if self.is_table() {
-            return table::TableStore::new(
-                &self.config,
-                directory.to_path_buf(),
-                #[cfg(feature = "vault")]
-                Arc::clone(&self.vault),
-            )
-            .backup_entries();
-        }
-        self.backup_store(directory).get_all()
+        Self::read_entries_at(
+            &self.config,
+            directory,
+            self.storage.clone(),
+            #[cfg(feature = "vault")]
+            Arc::clone(&self.vault),
+        )
     }
 
-    /// A detached store keeps backup I/O from changing active-profile state or migrating source files.
-    #[cfg(feature = "backup")]
-    pub(crate) fn backup_store(&self, directory: &std::path::Path) -> Box<dyn SubSettingsStore> {
+    #[cfg(any(feature = "backup", feature = "vault"))]
+    fn read_entries_at(
+        config: &SubSettingsConfig,
+        directory: &std::path::Path,
+        storage: S,
+        #[cfg(feature = "vault")] vault: crate::vault::SharedVault,
+    ) -> Result<HashMap<String, Value>> {
+        #[cfg(feature = "sqlite")]
+        if config.mode == SubSettingsMode::Table {
+            return table::TableStore::new(
+                config,
+                directory.to_path_buf(),
+                #[cfg(feature = "vault")]
+                vault,
+            )
+            .read_entries();
+        }
+        let mut config = config.clone();
+        config.migrator = None;
+        Self::make_store(
+            &config,
+            directory.to_path_buf(),
+            storage,
+            #[cfg(feature = "vault")]
+            vault,
+        )
+        .get_all()
+    }
+
+    /// Open an independent store for backup or trusted migration snapshots.
+    #[cfg(any(feature = "vault", all(feature = "backup", feature = "profiles")))]
+    pub(crate) fn detached_store(&self, directory: &std::path::Path) -> Box<dyn SubSettingsStore> {
         let mut config = self.config.clone();
         config.migrator = None;
         Self::make_store(
@@ -505,6 +619,33 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             #[cfg(feature = "vault")]
             Arc::clone(&self.vault),
         )
+    }
+
+    /// Run schema migration in an independent store before extracting or checking secrets.
+    #[cfg(feature = "vault")]
+    pub(crate) fn secret_migration_store(
+        &self,
+        directory: &std::path::Path,
+    ) -> Box<dyn SubSettingsStore> {
+        Self::make_store(
+            &self.config,
+            directory.to_path_buf(),
+            self.storage.clone(),
+            Arc::clone(&self.vault),
+        )
+    }
+
+    #[cfg(feature = "vault")]
+    pub(crate) fn vault_directories(&self) -> Result<Vec<PathBuf>> {
+        #[cfg(feature = "profiles")]
+        if let Some(profiles) = &self.profile_manager {
+            return Ok(profiles
+                .list()?
+                .iter()
+                .map(|name| profiles.profile_path(name))
+                .collect());
+        }
+        Ok(vec![self.active_store()?.base_path()])
     }
 
     /// Switch to a different profile
@@ -523,29 +664,36 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     pub fn switch_profile(&self, name: &str) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
-        let _guard = self.operation_lock.write_recovered()?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
         }
 
         let pm = self.profiles()?;
-        pm.switch(name)?;
+        pm.switch(name)
+    }
 
-        // Re-create store pointing to new path
-        let new_path = pm.profile_path(name);
-        let new_store = Self::make_store(
-            &self.config,
-            new_path,
-            self.storage.clone(),
-            #[cfg(feature = "vault")]
-            Arc::clone(&self.vault),
-        );
-
-        let mut store_guard = self.store.write_recovered()?;
-        *store_guard = new_store;
-
-        Ok(())
+    /// Resolve the active manifest path before using a cached store.
+    pub(crate) fn active_store(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, Box<dyn SubSettingsStore>>> {
+        #[cfg(feature = "profiles")]
+        if let Some(profiles) = &self.profile_manager {
+            let path = profiles.active_path()?;
+            if self.store.read_recovered()?.base_path() != path {
+                let mut store = self.store.write_recovered()?;
+                if store.base_path() != path {
+                    *store = Self::make_store(
+                        &self.config,
+                        path,
+                        self.storage.clone(),
+                        #[cfg(feature = "vault")]
+                        Arc::clone(&self.vault),
+                    );
+                }
+            }
+        }
+        self.store.read_recovered()
     }
 
     /// Set the change callback
@@ -687,6 +835,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
     #[cfg(all(
         feature = "backup",
+        feature = "profiles",
         any(feature = "keychain", feature = "encrypted-file")
     ))]
     pub(crate) fn extract_and_store_secrets_for_profile(
@@ -857,7 +1006,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             return Err(Error::ConfigLocked);
         }
 
-        let store = self.store.read_recovered()?;
+        let store = self.active_store()?;
 
         // Try to get the entry from the store
         let value = match store.get(name) {
@@ -952,7 +1101,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
         let existed = self.exists_inner(name)?;
 
-        let store = self.store.read_recovered()?;
+        let store = self.active_store()?;
         let finish = || Self::commit_entries(&**store, &[(name.to_owned(), Some(json_value))]);
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         if let Some(creds) = &self.credential_manager {
@@ -994,7 +1143,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         if !self.exists_inner(name)? {
             return Ok(());
         }
-        let store = self.store.read_recovered()?;
+        let store = self.active_store()?;
         let finish = || Self::commit_entries(&**store, &[(name.to_owned(), None)]);
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         if let Some(creds) = &self.credential_manager {
@@ -1033,7 +1182,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             return Err(Error::ConfigLocked);
         }
 
-        let store = self.store.read_recovered()?;
+        let store = self.active_store()?;
         store.list()
     }
 
@@ -1057,7 +1206,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         }
 
         let result = {
-            let store = self.store.read_recovered()?;
+            let store = self.active_store()?;
             store.get_all()?
         };
 
@@ -1095,7 +1244,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             return Err(Error::ConfigLocked);
         }
 
-        let store = self.store.read_recovered()?;
+        let store = self.active_store()?;
         if store.exists(name)? {
             return Ok(true);
         }
@@ -1110,17 +1259,13 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
 
     // Legacy support methods that might need to remain or be refactored differently
     pub fn directory(&self) -> PathBuf {
-        self.store
-            .read_recovered()
+        self.active_store()
             .map(|s| s.base_path())
             .unwrap_or_default()
     }
 
     pub fn file_path(&self) -> Option<PathBuf> {
-        self.store
-            .read_recovered()
-            .ok()
-            .and_then(|s| s.single_file_path())
+        self.active_store().ok().and_then(|s| s.single_file_path())
     }
 }
 

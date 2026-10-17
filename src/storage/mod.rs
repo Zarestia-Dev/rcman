@@ -14,6 +14,9 @@
 #[cfg(feature = "sqlite")]
 mod sqlite;
 
+#[cfg(all(feature = "sqlite", feature = "vault"))]
+pub(crate) use sqlite::{checkpoint_encrypted, sqlite_entry_id};
+
 use crate::error::{Error, Result};
 use crate::utils::security::{ensure_secure_dir, set_secure_file_permissions};
 use serde::{Serialize, de::DeserializeOwned};
@@ -59,6 +62,24 @@ pub trait StorageBackend: Clone + Send + Sync {
     ///
     /// * `Error::Io` - If the data cannot be deserialized
     fn deserialize<T: DeserializeOwned>(&self, content: &str) -> Result<T>;
+
+    /// Identify the logical record within a file for vault authentication.
+    ///
+    /// File backends use `None`, binding encryption to the file path. Backends
+    /// sharing a file between records must return a stable, unambiguous identity
+    /// including both the namespace and record key. Wrappers must forward this
+    /// identity to preserve their underlying backend's isolation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rcman::{JsonStorage, StorageBackend};
+    /// assert_eq!(JsonStorage::new().vault_entry_id(), None);
+    /// ```
+    #[cfg(feature = "vault")]
+    fn vault_entry_id(&self) -> Option<String> {
+        None
+    }
 
     /// Read and deserialize from file
     ///

@@ -37,12 +37,6 @@ use rcman::{SettingMetadata, SettingsSchema, settings};
     not(feature = "keychain")
 ))]
 use serde::{Deserialize, Serialize};
-#[cfg(all(
-    feature = "backup",
-    feature = "encrypted-file",
-    not(feature = "keychain")
-))]
-use std::collections::HashMap;
 
 // =============================================================================
 // Profile CRUD Operations

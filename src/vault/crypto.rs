@@ -6,13 +6,21 @@ use crate::error::{Error, Result};
 use crate::vault::envelope::Argon2Params;
 use aes_gcm::{
     Aes256Gcm, Nonce,
-    aead::{Aead, KeyInit},
+    aead::{Aead, KeyInit, Payload},
 };
-use argon2::{
-    Argon2,
-    password_hash::{PasswordHasher, SaltString},
-};
+use argon2::Argon2;
 use rand::RngExt;
+use zeroize::{Zeroize, Zeroizing};
+
+struct ArgonMemory(Vec<argon2::Block>);
+
+impl Drop for ArgonMemory {
+    fn drop(&mut self) {
+        for block in &mut self.0 {
+            block.as_mut().zeroize();
+        }
+    }
+}
 
 /// Generate a cryptographically secure 16-byte random salt
 #[must_use]
@@ -29,13 +37,19 @@ pub fn generate_nonce() -> [u8; 12] {
 /// Derive a 32-byte AES-256 encryption key from a password and salt using Argon2id
 ///
 /// # Errors
-/// Returns `Error::Vault` if hashing or encoding fails.
+/// Returns `Error::Vault` for invalid or excessive parameters, or derivation failure.
 pub fn derive_key(password: &str, salt: &[u8; 16], params: &Argon2Params) -> Result<[u8; 32]> {
-    let salt_string = SaltString::encode_b64(salt)
-        .map_err(|e| Error::Vault(format!("Invalid salt bytes for Argon2: {e}")))?;
+    params.validate()?;
 
     let argon_params = argon2::Params::new(params.m_cost, params.t_cost, params.p_cost, Some(32))
         .map_err(|e| Error::Vault(format!("Invalid Argon2 parameters: {e}")))?;
+    let block_count = argon_params.block_count();
+    let mut memory = ArgonMemory(Vec::new());
+    memory
+        .0
+        .try_reserve_exact(block_count)
+        .map_err(|error| Error::Vault(format!("Cannot allocate Argon2 working memory: {error}")))?;
+    memory.0.resize_with(block_count, argon2::Block::default);
 
     let argon2 = Argon2::new(
         argon2::Algorithm::Argon2id,
@@ -43,38 +57,40 @@ pub fn derive_key(password: &str, salt: &[u8; 16], params: &Argon2Params) -> Res
         argon_params,
     );
 
-    let password_hash = argon2
-        .hash_password(password.as_bytes(), &salt_string)
+    let mut key = Zeroizing::new([0u8; 32]);
+    argon2
+        .hash_password_into_with_memory(password.as_bytes(), salt, key.as_mut(), &mut memory.0)
         .map_err(|e| Error::Vault(format!("Argon2 key derivation failed: {e}")))?;
-
-    let output = password_hash
-        .hash
-        .ok_or_else(|| Error::Vault("Argon2 hash output missing".into()))?;
-
-    let bytes = output.as_bytes();
-    if bytes.len() < 32 {
-        return Err(Error::Vault(format!(
-            "Argon2 output too short: expected >= 32, got {}",
-            bytes.len()
-        )));
-    }
-
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&bytes[..32]);
-    Ok(key)
+    Ok(*key)
 }
 
 /// Encrypt plaintext using AES-256-GCM
 ///
 /// # Errors
 /// Returns `Error::Vault` if encryption fails.
-pub fn encrypt(key: &[u8; 32], nonce_bytes: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>> {
+#[cfg(test)]
+fn encrypt(key: &[u8; 32], nonce_bytes: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>> {
+    encrypt_authenticated(key, nonce_bytes, plaintext, &[])
+}
+
+pub(crate) fn encrypt_authenticated(
+    key: &[u8; 32],
+    nonce_bytes: &[u8; 12],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| Error::Vault(format!("Invalid key length: {e}")))?;
     let nonce = Nonce::from_slice(nonce_bytes);
 
     cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|e| Error::Vault(format!("AES-256-GCM encryption failed: {e}")))
 }
 
@@ -82,13 +98,29 @@ pub fn encrypt(key: &[u8; 32], nonce_bytes: &[u8; 12], plaintext: &[u8]) -> Resu
 ///
 /// # Errors
 /// Returns `Error::InvalidPassword` if authentication fails, or `Error::Vault` for structural errors.
-pub fn decrypt(key: &[u8; 32], nonce_bytes: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>> {
+#[cfg(test)]
+fn decrypt(key: &[u8; 32], nonce_bytes: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>> {
+    decrypt_authenticated(key, nonce_bytes, ciphertext, &[])
+}
+
+pub(crate) fn decrypt_authenticated(
+    key: &[u8; 32],
+    nonce_bytes: &[u8; 12],
+    ciphertext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>> {
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| Error::Vault(format!("Invalid key length: {e}")))?;
     let nonce = Nonce::from_slice(nonce_bytes);
 
     cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(
+            nonce,
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map_err(|_| Error::InvalidPassword)
 }
 

@@ -329,7 +329,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     let sub_export_dir = export_dir.join(settings_type);
 
                     let mut value = sub
-                        .backup_entries(&sub.directory())?
+                        .read_entries(&sub.directory())?
                         .remove(name)
                         .ok_or_else(|| Error::SubSettingsEntryNotFound(name.clone()))?;
                     let metadata = sub.schema_metadata().unwrap_or_default();
@@ -662,7 +662,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
                 // Process secrets entry-by-entry with sub-settings schema paths.
                 // Single-file structure is typically: { "entry": { ...fields... } }
-                let mut raw_entries = sub.backup_entries(&sub.directory())?;
+                let mut raw_entries = sub.read_entries(&sub.directory())?;
                 if let Some(selected) = options.include_sub_settings_items.get(sub_type)
                     && !selected.is_empty()
                 {
@@ -709,7 +709,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             let mut total_size = 0u64;
             let mut items = Vec::new();
 
-            for (name, mut value) in sub.backup_entries(&sub.directory())? {
+            for (name, mut value) in sub.read_entries(&sub.directory())? {
                 if options
                     .include_sub_settings_items
                     .get(sub_type)
@@ -812,7 +812,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             let profile_path = entry.path();
             let profile_export_dir = dest_profiles_dir.join(&profile_name);
 
-            let entries = sub.backup_entries(&profile_path)?;
+            let entries = sub.read_entries(&profile_path)?;
             let mut items_in_profile = Vec::new();
             let metadata = sub.schema_metadata().unwrap_or_default();
             let include_secrets = match options.secret_policy {

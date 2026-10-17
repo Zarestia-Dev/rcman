@@ -38,8 +38,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// If profiles are enabled, this points to the active profile's directory.
     pub(crate) fn settings_path(&self) -> Result<std::path::PathBuf> {
-        let dir = self.settings_dir.read_recovered()?;
-        Ok(dir.join(&self.config.settings_file))
+        #[cfg(feature = "profiles")]
+        if let Some(profiles) = &self.profile_manager {
+            return Ok(profiles.active_path()?.join(&self.config.settings_file));
+        }
+        Ok(self.config.config_dir.join(&self.config.settings_file))
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -50,14 +53,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn get_tracked_secrets(&self) -> Result<std::collections::HashSet<String>> {
+    fn get_tracked_secrets(
+        &self,
+        profile: Option<&str>,
+    ) -> Result<std::collections::HashSet<String>> {
         let creds = self.require_credentials()?;
-        let profile = self.active_profile_name()?;
-        let profile_ref = profile.as_deref();
-
         // Check if __rcman_secrets__ exists in credential store
-        if self
-            .get_credential_with_profile("__rcman_secrets__")?
+        if creds
+            .get_with_profile("__rcman_secrets__", profile)?
             .is_none()
         {
             // Set the is_upgraded flag to indicate we did a fallback scan
@@ -68,15 +71,15 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             // Scan all keys in the schema metadata to check what is in credentials
             let mut initial_tracked = std::collections::HashSet::new();
             for full_key in self.schema_metadata.keys() {
-                if self.get_credential_with_profile(full_key)?.is_some() {
+                if creds.get_with_profile(full_key, profile)?.is_some() {
                     initial_tracked.insert(full_key.clone());
                 }
             }
-            creds.save_tracked_secrets(&initial_tracked, profile_ref)?;
+            creds.save_tracked_secrets(&initial_tracked, profile)?;
             return Ok(initial_tracked);
         }
 
-        creds.get_tracked_secrets(profile_ref)
+        creds.get_tracked_secrets(profile)
     }
 
     /// Invalidate the settings cache.
@@ -326,8 +329,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     // Preserve the raw envelope, including encryption, when undoing an I/O error.
     fn commit_file(&self, value: &Value) -> Result<()> {
-        let path = self.settings_path()?;
-        let original: Option<Value> = match self.storage.read(&path) {
+        self.commit_file_at(&self.settings_path()?, value)
+    }
+
+    fn commit_file_at(&self, path: &std::path::Path, value: &Value) -> Result<()> {
+        let original: Option<Value> = match self.storage.read(path) {
             Ok(value) => Some(value),
             Err(Error::PathNotFound(_)) => None,
             Err(Error::FileRead { source, .. })
@@ -337,10 +343,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
             Err(error) => return Err(error),
         };
-        if let Err(source) = self.write_settings_to_disk(&path, value) {
+        if let Err(source) = self.write_settings_to_disk(path, value) {
             let restored = match original {
-                Some(value) => self.storage.write(&path, &value),
-                None => self.storage.remove(&path),
+                Some(value) => self.storage.write(path, &value),
+                None => self.storage.remove(path),
             };
             self.settings_cache.invalidate();
             return match restored {
@@ -470,20 +476,18 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let value: Value = self.storage.read(path)?;
 
         #[cfg(feature = "vault")]
-        if crate::vault::is_vault_value(&value) {
-            let envelope: crate::vault::VaultEnvelope = serde_json::from_value(value)
-                .map_err(|e| Error::InvalidVaultEnvelope(format!("Invalid vault envelope: {e}")))?;
+        {
             let guard = self.vault.read().map_err(|_| Error::LockPoisoned)?;
-            let Some(ref vault) = *guard else {
-                return Err(Error::ConfigLocked);
-            };
-            if vault.is_locked() {
-                return Err(Error::ConfigLocked);
+            if let Some(vault) = guard.as_ref() {
+                let plaintext = vault.decrypt_managed(
+                    &value,
+                    path,
+                    self.storage.vault_entry_id().as_deref(),
+                )?;
+                return self.storage.deserialize(&plaintext);
+            } else if value.get("__rcman_vault__").is_some() {
+                return Err(Error::VaultNotFound);
             }
-            let decrypted_bytes = vault.decrypt_envelope(&envelope)?;
-            let decrypted_str = String::from_utf8(decrypted_bytes)
-                .map_err(|e| Error::Vault(format!("Decrypted settings is not UTF-8: {e}")))?;
-            return self.storage.deserialize(&decrypted_str);
         }
 
         Ok(value)
@@ -491,6 +495,22 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     /// Write settings value to disk, automatically encrypting if vault is enabled.
     pub(crate) fn write_settings_to_disk(
+        &self,
+        path: &std::path::Path,
+        value: &Value,
+    ) -> Result<()> {
+        #[cfg(feature = "vault")]
+        match self.read_settings_from_disk(path) {
+            Ok(_) => {}
+            Err(Error::FileRead { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        self.write_settings_snapshot(path, value)
+    }
+
+    /// Persist a trusted snapshot without reading data encrypted with a previous key.
+    pub(super) fn write_settings_snapshot(
         &self,
         path: &std::path::Path,
         value: &Value,
@@ -505,7 +525,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                     return Err(Error::ConfigLocked);
                 }
                 let serialized = self.storage.serialize(value)?;
-                let envelope = vault.encrypt_payload(serialized.as_bytes())?;
+                let envelope = vault.encrypt_managed(
+                    serialized.as_bytes(),
+                    path,
+                    self.storage.vault_entry_id().as_deref(),
+                )?;
                 self.storage.write(path, &envelope)?;
                 vault.touch();
                 return Ok(());
@@ -566,6 +590,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     pub fn ensure_cache_populated(&self) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
+        let _guard = self.settings_write_lock.read_recovered()?;
         self.ensure_cache_populated_inner()
     }
 
@@ -575,24 +600,43 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             return Err(Error::ConfigLocked);
         }
 
-        self.settings_cache.populate(|| self.load_from_disk())
+        self.settings_cache
+            .populate(&self.settings_path()?, || self.load_from_disk())
     }
 
     /// Migrate settings between the settings file and credential store if their secret schema status has changed.
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub(crate) fn migrate_secret_keys(&self) -> Result<()> {
+        let _guard = self.settings_write_lock.write_recovered()?;
+        let profile = self.active_profile_name()?;
+        self.migrate_secret_keys_locked(&self.settings_path()?, profile.as_deref())
+    }
+
+    #[cfg(all(
+        feature = "vault",
+        feature = "profiles",
+        any(feature = "keychain", feature = "encrypted-file")
+    ))]
+    pub(super) fn migrate_secret_keys_in(
+        &self,
+        path: &std::path::Path,
+        profile: Option<&str>,
+    ) -> Result<()> {
+        let _write_guard = self.settings_write_lock.write_recovered()?;
+        self.migrate_secret_keys_locked(path, profile)
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    fn migrate_secret_keys_locked(
+        &self,
+        path: &std::path::Path,
+        profile: Option<&str>,
+    ) -> Result<()> {
         if self.credentials.is_none() {
             return Ok(());
         }
-
-        let _write_guard = self
-            .settings_write_lock
-            .write()
-            .map_err(|_| Error::Config("Settings write lock poisoned".into()))?;
-
-        let path = self.settings_path()?;
-        let mut stored: Value = match self.read_settings_from_disk(&path) {
-            Ok(v) => v,
+        let mut stored: Value = match self.read_settings_from_disk(path) {
+            Ok(value) => value,
             Err(Error::PathNotFound(_)) => json!({}),
             Err(Error::FileRead { source, .. })
                 if source.kind() == std::io::ErrorKind::NotFound =>
@@ -602,12 +646,21 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             Err(error) => return Err(error),
         };
         let original = stored.clone();
-        let tracked = self.get_tracked_secrets()?;
+        if let Some(migrator) = &self.config.migrator {
+            stored = migrator(stored);
+        }
+        let creds = self.require_credentials()?;
+        let tracked = self.get_tracked_secrets(profile)?;
         let mut changes = Vec::new();
         for (key, metadata) in self.schema_metadata.iter() {
             if metadata.is_secret()
                 && let Some(value) = crate::utils::value::remove_path(&mut stored, key)
             {
+                // Normalizers can recreate absent secret defaults. The credential
+                // store remains authoritative after an earlier extraction.
+                if value == metadata.default && creds.get_with_profile(key, profile)?.is_some() {
+                    continue;
+                }
                 changes.push((
                     key.clone(),
                     (value != metadata.default).then(|| crate::credentials::encode_setting(&value)),
@@ -615,14 +668,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
         }
         for key in tracked {
-            if key.starts_with("sub.") {
+            if key.starts_with("sub.") && !self.schema_metadata.contains_key(&key) {
                 continue;
             }
             let metadata = self.schema_metadata.get(&key);
             if metadata.is_some_and(SettingMetadata::is_secret) {
                 continue;
             }
-            if let Some(value) = self.get_credential_with_profile(&key)?
+            if let Some(value) = creds.get_with_profile(&key, profile)?
                 && let Some(metadata) = metadata
             {
                 let value = crate::credentials::decode_setting(&value, metadata)?;
@@ -635,39 +688,48 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         if let Some(object) = stored.as_object_mut() {
             object.retain(|_, value| !value.as_object().is_some_and(serde_json::Map::is_empty));
         }
-        let profile = self.active_profile_name()?;
-        self.require_credentials()?
-            .commit_settings(&changes, profile.as_deref(), || {
-                if stored != original {
-                    self.commit_file(&stored)?;
-                }
-                Ok(())
-            })?;
+        creds.commit_settings(&changes, profile, || {
+            if stored != original {
+                self.commit_file_at(path, &stored)?;
+            }
+            Ok(())
+        })?;
         if stored != original {
-            self.settings_cache.update_stored(stored)?;
+            self.settings_cache.invalidate();
         }
         Ok(())
     }
 
     /// Migrate sub-settings secret keys between the sub-settings files and credential store if their secret schema status has changed.
-    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    #[cfg(all(
+        any(feature = "keychain", feature = "encrypted-file"),
+        any(not(feature = "vault"), feature = "profiles")
+    ))]
     pub(crate) fn migrate_sub_settings_secret_keys(
         &self,
         sub: &crate::sub_settings::SubSettings<S>,
     ) -> Result<()> {
+        let _guard = sub.operation_lock.write_recovered()?;
+        let profile = sub.active_secret_profile()?;
+        let store = sub.active_store()?;
+        self.migrate_sub_settings_secrets_in(sub, &**store, profile.as_deref())
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    pub(super) fn migrate_sub_settings_secrets_in(
+        &self,
+        sub: &crate::sub_settings::SubSettings<S>,
+        store: &dyn crate::sub_settings::SubSettingsStore,
+        profile: Option<&str>,
+    ) -> Result<()> {
         if self.credentials.is_none() {
             return Ok(());
         }
-
         let Some(schema) = sub.config.schema.as_ref() else {
             return Ok(());
         };
-
-        let _guard = sub.operation_lock.write_recovered()?;
         let creds = self.require_credentials()?;
-        let profile = sub.active_secret_profile()?;
-        let tracked = creds.get_tracked_secrets(profile.as_deref())?;
-        let store = sub.store.read_recovered()?;
+        let tracked = creds.get_tracked_secrets(profile)?;
         let mut entries = indexmap::IndexMap::new();
         let mut changes = Vec::new();
         for name in store.list()? {
@@ -676,14 +738,18 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             for (path, metadata) in schema.iter().filter(|(_, metadata)| metadata.is_secret()) {
                 let key = sub.secret_credential_key(&name, path);
                 if let Some(secret) = crate::utils::value::remove_path(&mut value, path) {
-                    changes.push((
-                        key,
-                        (secret != metadata.default)
-                            .then(|| crate::credentials::encode_setting(&secret)),
-                    ));
                     modified = true;
+                    if secret != metadata.default
+                        || creds.get_with_profile(&key, profile)?.is_none()
+                    {
+                        changes.push((
+                            key,
+                            (secret != metadata.default)
+                                .then(|| crate::credentials::encode_setting(&secret)),
+                        ));
+                    }
                 } else if self.is_upgraded.load(std::sync::atomic::Ordering::Relaxed)
-                    && let Some(secret) = creds.get_with_profile(&key, profile.as_deref())?
+                    && let Some(secret) = creds.get_with_profile(&key, profile)?
                 {
                     changes.push((key, Some(secret)));
                 }
@@ -704,7 +770,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             if metadata.is_some_and(SettingMetadata::is_secret) {
                 continue;
             }
-            if let Some(secret) = creds.get_with_profile(&key, profile.as_deref())?
+            if let Some(secret) = creds.get_with_profile(&key, profile)?
                 && let Some(metadata) = metadata
             {
                 let value = crate::credentials::decode_setting(&secret, metadata)?;
@@ -725,8 +791,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             changes.push((key, None));
         }
         let entries: Vec<_> = entries.into_iter().collect();
-        creds.commit_settings(&changes, profile.as_deref(), || {
-            crate::sub_settings::SubSettings::<S>::commit_entries(&**store, &entries)
+        creds.commit_settings(&changes, profile, || {
+            crate::sub_settings::SubSettings::<S>::commit_entries(store, &entries)
         })
     }
 }

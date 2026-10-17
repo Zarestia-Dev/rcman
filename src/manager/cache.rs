@@ -19,10 +19,15 @@ pub struct CachedSettings {
 
 pub struct SettingsCache {
     /// The actual cache, protected by `RwLock`
-    state: RwLock<Option<CachedSettings>>,
+    state: RwLock<Option<(std::path::PathBuf, CachedSettings)>>,
 }
 
 impl SettingsCache {
+    #[cfg(feature = "profiles")]
+    pub(crate) fn invalidator(self: &Arc<Self>) -> Arc<dyn Fn() + Send + Sync> {
+        let cache = Arc::clone(self);
+        Arc::new(move || cache.invalidate())
+    }
     pub fn new() -> Self {
         Self {
             state: RwLock::new(None),
@@ -42,7 +47,7 @@ impl SettingsCache {
         key: &str,
     ) -> Result<Option<Value>> {
         let guard = self.state.read_recovered()?;
-        if let Some(cached) = guard.as_ref() {
+        if let Some((_, cached)) = guard.as_ref() {
             // Check stored
             let stored = if category.is_empty() {
                 cached.stored.get(setting_name)
@@ -73,7 +78,7 @@ impl SettingsCache {
         // Fast path: read lock, return if merged is already cached
         {
             let guard = self.state.read_recovered()?;
-            if let Some(cached) = guard.as_ref() {
+            if let Some((_, cached)) = guard.as_ref() {
                 if let Some(ref merged) = cached.merged {
                     return Ok(merged.clone());
                 }
@@ -86,6 +91,7 @@ impl SettingsCache {
         let mut guard = self.state.write_recovered()?;
         let cached = guard
             .as_mut()
+            .map(|(_, cached)| cached)
             .ok_or_else(|| Error::Config("Cache not populated".into()))?;
 
         // Double-check: another thread may have filled it while we waited
@@ -100,32 +106,34 @@ impl SettingsCache {
 
     pub fn get_stored(&self) -> Result<Option<Value>> {
         let guard = self.state.read_recovered()?;
-        Ok(guard.as_ref().map(|c| c.stored.clone()))
+        Ok(guard.as_ref().map(|(_, c)| c.stored.clone()))
     }
 
     /// Populate the cache if empty.
     ///
     /// Checks the read lock first, then double-checks under the write lock
     /// before loading an empty cache.
-    pub fn populate<F>(&self, factory: F) -> Result<()>
+    pub fn populate<F>(&self, path: &std::path::Path, factory: F) -> Result<()>
     where
         F: FnOnce() -> Result<CachedSettings>,
     {
-        if self.state.read_recovered()?.is_some() {
+        let matches = |cached: &Option<(std::path::PathBuf, CachedSettings)>| {
+            cached.as_ref().is_some_and(|(source, _)| source == path)
+        };
+        if matches(&*self.state.read_recovered()?) {
             return Ok(());
         }
         let mut guard = self.state.write_recovered()?;
-        if guard.is_some() {
-            return Ok(());
+        if !matches(&guard) {
+            *guard = None;
+            *guard = Some((path.to_path_buf(), factory()?));
         }
-
-        *guard = Some(factory()?);
         Ok(())
     }
 
     pub fn update_stored(&self, new_stored: Value) -> Result<()> {
         let mut guard = self.state.write_recovered()?;
-        if let Some(ref mut cached) = *guard {
+        if let Some((_, ref mut cached)) = *guard {
             cached.stored = new_stored;
             cached.merged = None; // Invalidate merged — will be recomputed lazily
         }

@@ -207,12 +207,33 @@ pub enum Error {
     ConfigLocked,
 
     #[cfg(feature = "vault")]
-    #[error("Configuration vault is already unlocked")]
-    VaultAlreadyUnlocked,
-
-    #[cfg(feature = "vault")]
     #[error("Configuration vault is not enabled")]
     VaultNotEnabled,
+
+    /// Required root metadata is absent; encrypted files must not be enrolled again.
+    #[cfg(feature = "vault")]
+    #[error("Vault metadata was not found")]
+    VaultNotFound,
+
+    /// Root metadata cannot be parsed or violates the supported format.
+    #[cfg(feature = "vault")]
+    #[error("Invalid vault metadata: {0}")]
+    InvalidVaultMetadata(String),
+
+    /// The password or authenticated metadata is invalid; these cannot be distinguished.
+    #[cfg(feature = "vault")]
+    #[error("Vault unlock failed: incorrect password or damaged metadata")]
+    VaultUnlockFailed,
+
+    /// An encrypted file claims an identity different from the active vault.
+    #[cfg(feature = "vault")]
+    #[error("Vault identity mismatch at {0}")]
+    VaultMismatch(String),
+
+    /// File authentication failed under the already validated shared key.
+    #[cfg(feature = "vault")]
+    #[error("Vault data authentication failed at {0}")]
+    VaultDataAuthenticationFailed(String),
 
     #[cfg(feature = "vault")]
     #[error("Invalid vault envelope: {0}")]
@@ -257,8 +278,12 @@ impl Error {
         matches!(
             self,
             Error::ConfigLocked
-                | Error::VaultAlreadyUnlocked
                 | Error::VaultNotEnabled
+                | Error::VaultNotFound
+                | Error::InvalidVaultMetadata(_)
+                | Error::VaultUnlockFailed
+                | Error::VaultMismatch(_)
+                | Error::VaultDataAuthenticationFailed(_)
                 | Error::InvalidVaultEnvelope(_)
                 | Error::Vault(_)
         )
@@ -273,15 +298,15 @@ impl Error {
 }
 
 // =============================================================================
-// Filesystem Helper Functions (backup feature)
+// Filesystem Helper Functions (backup and vault features)
 // =============================================================================
-// These reduce repetitive map_err patterns in the backup module.
+// These reduce repetitive map_err patterns in filesystem operations.
 
-#[cfg(feature = "backup")]
+#[cfg(any(feature = "backup", all(feature = "vault", feature = "profiles")))]
 use std::path::Path;
 
 /// Read directory entries with proper error handling
-#[cfg(feature = "backup")]
+#[cfg(any(feature = "backup", all(feature = "vault", feature = "profiles")))]
 pub fn read_dir(path: &Path) -> Result<std::fs::ReadDir> {
     std::fs::read_dir(path).map_err(|e| Error::DirectoryRead {
         path: path.to_path_buf(),

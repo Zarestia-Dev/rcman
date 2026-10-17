@@ -72,17 +72,40 @@ impl SecretPasswordSource {
     /// # Errors
     /// Returns error if environment variable is missing or file cannot be read.
     pub fn resolve(&self) -> crate::Result<String> {
+        let password = self.clone().resolve_untrimmed()?;
+        if matches!(self, Self::File(_)) {
+            Ok(password.trim().to_owned())
+        } else {
+            Ok(password)
+        }
+    }
+
+    /// Resolve a vault startup password once, retaining spaces and rejecting empty input.
+    #[cfg(feature = "vault")]
+    pub(crate) fn resolve_vault(self) -> crate::Result<zeroize::Zeroizing<String>> {
+        let file = matches!(self, Self::File(_));
+        let mut password = zeroize::Zeroizing::new(self.resolve_untrimmed()?);
+        if file {
+            let length = password.trim_end_matches(['\r', '\n']).len();
+            password.truncate(length);
+        }
+        if password.is_empty() {
+            return Err(crate::Error::Config(
+                "Vault password must not be empty".into(),
+            ));
+        }
+        Ok(password)
+    }
+
+    /// Read once without changing password whitespace; callers apply their documented policy.
+    pub(crate) fn resolve_untrimmed(self) -> crate::Result<String> {
         match self {
-            Self::Environment(var) => std::env::var(var).map_err(|_| {
+            Self::Environment(var) => std::env::var(&var).map_err(|_| {
                 crate::Error::Credential(format!("Environment variable '{var}' not found"))
             }),
-            Self::File(path) => std::fs::read_to_string(path)
-                .map(|s| s.trim().to_string())
-                .map_err(|e| crate::Error::FileRead {
-                    path: path.clone(),
-                    source: e,
-                }),
-            Self::Provided(pass) => Ok(pass.clone()),
+            Self::File(path) => std::fs::read_to_string(&path)
+                .map_err(|source| crate::Error::FileRead { path, source }),
+            Self::Provided(password) => Ok(password),
         }
     }
 }

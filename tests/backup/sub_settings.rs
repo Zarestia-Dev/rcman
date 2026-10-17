@@ -39,10 +39,40 @@ fn setup_fixture() -> TestFixture {
     fixture
 }
 
+// Seed legacy plaintext only when no credential backend is compiled in.
+fn write_entry(fixture: &TestFixture, group: &str, name: &str, value: serde_json::Value) {
+    #[cfg(any(feature = "encrypted-file", feature = "keychain"))]
+    fixture
+        .manager
+        .sub_settings(group)
+        .unwrap()
+        .set(name, &value)
+        .unwrap();
+    #[cfg(not(any(feature = "encrypted-file", feature = "keychain")))]
+    {
+        let directory = fixture.config_dir();
+        if group == "connections" {
+            let path = directory.join("connections.json");
+            let mut entries: serde_json::Value = std::fs::read(&path)
+                .ok()
+                .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+                .unwrap_or_else(|| json!({}));
+            entries[name] = value;
+            std::fs::write(path, serde_json::to_vec(&entries).unwrap()).unwrap();
+        } else {
+            std::fs::create_dir_all(directory.join(group)).unwrap();
+            std::fs::write(
+                directory.join(group).join(format!("{name}.json")),
+                serde_json::to_vec(&value).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+}
+
 // =============================================================================
 // Helper: Extract connections.json from backup
 // =============================================================================
-#[cfg(any(feature = "encrypted-file", feature = "keychain"))]
 fn extract_connections_from_backup(
     backup_path: &std::path::Path,
     password: Option<&str>,
@@ -79,7 +109,6 @@ fn extract_connections_from_backup(
     serde_json::from_str(&connections_content).ok()
 }
 
-#[cfg(any(feature = "encrypted-file", feature = "keychain"))]
 fn extract_remotes_from_backup(
     backup_path: &std::path::Path,
     remote_name: &str,
@@ -128,17 +157,16 @@ fn test_sub_settings_secrets_excluded() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Add some connections with secret data
-    let connections = fixture.manager.sub_settings("connections").unwrap();
-    connections
-        .set(
-            "Local",
-            &json!({
-                "host": "127.0.0.1",
-                "port": 51900,
-                "password": "secret123"
-            }),
-        )
-        .unwrap();
+    write_entry(
+        &fixture,
+        "connections",
+        "Local",
+        json!({
+            "host": "127.0.0.1",
+            "port": 51900,
+            "password": "secret123"
+        }),
+    );
 
     // Create backup with Exclude policy (no secrets)
     let backup_path = fixture
@@ -154,7 +182,6 @@ fn test_sub_settings_secrets_excluded() {
     // Verify backup was created
     assert!(backup_path.exists(), "Backup file should exist");
 
-    #[cfg(any(feature = "encrypted-file", feature = "keychain"))]
     {
         let connections = extract_connections_from_backup(&backup_path, None)
             .expect("Should be able to extract connections from backup");
@@ -171,17 +198,16 @@ fn test_sub_settings_secrets_encrypted_with_password() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Add connections
-    let connections = fixture.manager.sub_settings("connections").unwrap();
-    connections
-        .set(
-            "Local",
-            &json!({
-                "host": "127.0.0.1",
-                "port": 51900,
-                "password": "secret123"
-            }),
-        )
-        .unwrap();
+    write_entry(
+        &fixture,
+        "connections",
+        "Local",
+        json!({
+            "host": "127.0.0.1",
+            "port": 51900,
+            "password": "secret123"
+        }),
+    );
 
     // Create backup with EncryptedOnly policy + password
     let backup_path = fixture
@@ -198,7 +224,6 @@ fn test_sub_settings_secrets_encrypted_with_password() {
     // Verify backup was created
     assert!(backup_path.exists(), "Backup file should exist");
 
-    #[cfg(any(feature = "encrypted-file", feature = "keychain"))]
     {
         let connections = extract_connections_from_backup(&backup_path, Some("backup_password"))
             .expect("Should be able to extract connections from backup");
@@ -215,27 +240,26 @@ fn test_mixed_secrets_in_connections() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Add connections: some with secrets, some without
-    let connections = fixture.manager.sub_settings("connections").unwrap();
-    connections
-        .set(
-            "WithSecret",
-            &json!({
-                "host": "127.0.0.1",
-                "port": 51900,
-                "password": "secret_value"
-            }),
-        )
-        .unwrap();
-    connections
-        .set(
-            "NoSecret",
-            &json!({
-                "host": "192.168.1.1",
-                "port": 5572,
-                "password": "empty_pass"
-            }),
-        )
-        .unwrap();
+    write_entry(
+        &fixture,
+        "connections",
+        "WithSecret",
+        json!({
+            "host": "127.0.0.1",
+            "port": 51900,
+            "password": "secret_value"
+        }),
+    );
+    write_entry(
+        &fixture,
+        "connections",
+        "NoSecret",
+        json!({
+            "host": "192.168.1.1",
+            "port": 5572,
+            "password": "empty_pass"
+        }),
+    );
 
     // Create backup
     let backup_path = fixture
@@ -252,7 +276,6 @@ fn test_mixed_secrets_in_connections() {
     // Verify backup was created
     assert!(backup_path.exists(), "Backup file should exist");
 
-    #[cfg(any(feature = "encrypted-file", feature = "keychain"))]
     {
         let connections = extract_connections_from_backup(&backup_path, Some("backup_password"))
             .expect("Should be able to extract connections from backup");
@@ -268,18 +291,17 @@ fn test_multiple_secrets_per_connection() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Add a connection with multiple secret fields
-    let connections = fixture.manager.sub_settings("connections").unwrap();
-    connections
-        .set(
-            "MainConnection",
-            &json!({
-                "host": "127.0.0.1",
-                "port": 51900,
-                "password": "auth_pass",
-                "config_password": "config_pass"
-            }),
-        )
-        .unwrap();
+    write_entry(
+        &fixture,
+        "connections",
+        "MainConnection",
+        json!({
+            "host": "127.0.0.1",
+            "port": 51900,
+            "password": "auth_pass",
+            "config_password": "config_pass"
+        }),
+    );
 
     // Create backup
     let backup_path = fixture
@@ -295,7 +317,6 @@ fn test_multiple_secrets_per_connection() {
     // Verify backup was created
     assert!(backup_path.exists(), "Backup file should exist");
 
-    #[cfg(any(feature = "encrypted-file", feature = "keychain"))]
     {
         let connections = extract_connections_from_backup(&backup_path, None)
             .expect("Should be able to extract connections from backup");
@@ -311,18 +332,17 @@ fn test_remote_secrets_excluded() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Add a remote
-    let remotes = fixture.manager.sub_settings("remotes").unwrap();
-    remotes
-        .set(
-            "gdrive",
-            &json!({
-                "type": "drive",
-                "scope": "drive",
-                "client_id": "id_12345",
-                "client_secret": "secret_abcde"
-            }),
-        )
-        .unwrap();
+    write_entry(
+        &fixture,
+        "remotes",
+        "gdrive",
+        json!({
+            "type": "drive",
+            "scope": "drive",
+            "client_id": "id_12345",
+            "client_secret": "secret_abcde"
+        }),
+    );
 
     // Create backup with EXCLUDE policy
     let backup_path = fixture
@@ -338,7 +358,6 @@ fn test_remote_secrets_excluded() {
     // Verify backup was created
     assert!(backup_path.exists(), "Backup file should exist");
 
-    #[cfg(any(feature = "encrypted-file", feature = "keychain"))]
     {
         let remote = extract_remotes_from_backup(&backup_path, "gdrive", None)
             .expect("Should be able to extract remote from backup");
@@ -353,18 +372,17 @@ fn test_remote_secrets_encrypted() {
     let temp_dir = tempfile::tempdir().unwrap();
 
     // Add a remote
-    let remotes = fixture.manager.sub_settings("remotes").unwrap();
-    remotes
-        .set(
-            "s3",
-            &json!({
-                "type": "s3",
-                "bucket": "my-bucket",
-                "access_key": "AKIAIOSFODNN7EXAMPLE",
-                "secret_key": "wJalrXUtnFEMI/K7MDENG"
-            }),
-        )
-        .unwrap();
+    write_entry(
+        &fixture,
+        "remotes",
+        "s3",
+        json!({
+            "type": "s3",
+            "bucket": "my-bucket",
+            "access_key": "AKIAIOSFODNN7EXAMPLE",
+            "secret_key": "wJalrXUtnFEMI/K7MDENG"
+        }),
+    );
 
     // Create backup with EncryptedOnly policy + password
     let backup_path = fixture
@@ -381,7 +399,6 @@ fn test_remote_secrets_encrypted() {
     // Verify backup was created
     assert!(backup_path.exists(), "Backup file should exist");
 
-    #[cfg(any(feature = "encrypted-file", feature = "keychain"))]
     {
         let remote = extract_remotes_from_backup(&backup_path, "s3", Some("backup_password"))
             .expect("Should be able to extract remote from backup");

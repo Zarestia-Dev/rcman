@@ -982,8 +982,11 @@ manager.enable_vault("new_password")?;  // Encrypt to vault envelope
 
 For an existing application, register all sub-settings before calling
 `enable_vault(password)`. The migration covers both single-file and multi-file
-stores, SQLite table stores, and their profiles. `.with_vault()` alone leaves
-plaintext configurations usable; `unlock(password)` opens an already encrypted vault.
+stores, SQLite table stores, and their profiles. `.with_vault()` enables startup
+checks without requiring a password. Existing metadata is detected automatically;
+provide `.with_vault_password(password)` to unlock it, or create a new vault on
+first startup. A startup password also enables vault handling. Without metadata
+or a password, plaintext settings remain usable.
 
 For headless startup, use the same password-source type as credential storage:
 
@@ -992,28 +995,57 @@ use rcman::{SecretPasswordSource, SettingsManager, SubSettingsConfig};
 
 let manager = SettingsManager::builder("my-app", "1.0.0")
     .with_sub_settings(SubSettingsConfig::singlefile("connections"))
-    .with_vault_password_source(SecretPasswordSource::file("/run/secrets/vault"))?
+    .with_vault()
+    .with_vault_password_source(SecretPasswordSource::file("/run/secrets/vault"))
     .build()?;
 ```
 
-Missing or empty password sources return an error. Vault password files strip
+Password sources are read during `build()`; missing or empty passwords fail
+construction. Vault password files strip
 trailing CR/LF characters while preserving spaces. The startup password is consumed
 and zeroized during manager construction; `manager.config().vault_password` is
 `None`, including while unlocked. Copies held by the caller, environment variables,
 and password files remain under the application's control.
 
-With profiles enabled, switching to an empty profile writes an encrypted settings
-envelope before activating it. Locking, unlocking, and restarting therefore work
-before the first setting is saved. For configurations created by older versions,
-startup also checks other main-settings profiles when the active profile has no
-envelope.
+Vault identity, salt, KDF parameters, timeout, and an encrypted password verifier
+live in `config_dir/.rcman-vault.json`, outside profile directories. Main settings
+are optional; a vault containing only sub-settings or no settings can be reopened,
+locked, and unlocked. Empty profiles do not create placeholder settings files.
 
 Timeout changes require an unlocked vault and are persisted before updating the
 running timer. Applications
 should serialize vault migrations with settings edits; migration rollback handles
 reported write failures but is not a crash-atomic transaction across files.
 
-- **Boot Detection**: rcman automatically detects vaulted files on disk at startup and boots into a locked state if no password is provided.
+Registered encrypted files without metadata return `VaultNotFound`; damaged
+metadata returns `InvalidVaultMetadata`. Password or metadata authentication failure
+returns `VaultUnlockFailed`, since those causes cannot be distinguished cryptographically.
+Unlocked startup, reads, and writes reject inserted plaintext and foreign encrypted
+files. Locked startup checks registered data on unlock. Files from another vault
+return `VaultMismatch`, even when both vaults use the same password. Authentication
+failure under the active key returns `VaultDataAuthenticationFailed` with the
+file/row. Offending files are preserved. Required secret migration completes before
+unlock reports success, without changing active profiles or emitting profile switches.
+
+Vault envelopes authenticate their headers and relative file/row identities.
+Their `context` is an object such as `{"path":"remotes/primary.json"}`;
+SQLite contexts also include an `entry` identifying the table and row. Inactivity
+timeout is stored only in root metadata. `config().vault_requested` records the
+startup option; `is_vault_enabled()` reports whether encryption is active.
+Profile duplication and renaming re-encrypt data for the destination identity.
+Disable the vault before changing between flat and profiled storage layouts;
+moving the entire configuration directory preserves relative identities. Managed
+filenames must be valid UTF-8. Replaying an older envelope at the same identity
+is outside the vault's guarantees. Replacing all metadata and data produces a
+valid cloned vault; detecting that requires identity pinned outside this directory.
+
+Auto-lock cannot discard migration keys before rollback completes. SQLite
+migration scrubs freed database pages and truncates WAL history; readers that
+prevent cleanup cause an error. This does not erase external backups or deleted
+filesystem blocks. Argon2 inputs are validated before derivation and limited to
+256 MiB, 10 passes, and 16 lanes.
+
+- **Boot Detection**: rcman automatically detects root vault metadata at startup and boots into a locked state if no password is provided.
 - **Sub-Settings Inheritance**: Registered sub-settings (e.g. per-entity remote files) automatically inherit vault encryption when enabled on the manager.
 - **Inactivity Timeout**: Optional auto-lock timeout wipes the active key and blocks settings access when idle.
 - **Memory Handling**: The active key buffer is zeroized upon locking or dropping. Values already returned to callers are not erased by locking.

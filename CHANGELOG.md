@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Serialize profile mutations with their owning store and invalidate its cache at commit; allow profile callbacks to read settings and replace themselves.
+- Scope profile secret transfers and deletion to declared main keys or the sub-settings group, restore directories after failed commits, and preserve filesystem moves for unencrypted renames.
+- Preserve unrelated SQLite row types during profile rebinding; keep independent sub-settings lazy when vault startup checks were not requested.
+- Preserve extracted credentials when normalizers recreate secret defaults, avoid repeating migration before vault disable, and pin rotation keys before reading snapshots.
+- Follow the active profile manifest for main and sub-settings paths and caches, including direct switches and active profile renames; copy and rename target-scoped secret credentials with their profile.
+- Refuse conflicting main profile migration destinations, preserving both copies; allow retries after an identical payload was copied.
+- Keep startup vault validation pinned during slow I/O, resolve password sources at construction, and consistently reject empty new passwords.
+- Store readable structured vault contexts and keep timeout only in root metadata; distinguish requested startup handling from active encryption.
+- Quote validated SQLite table identifiers so reserved words work in both main and sub-settings stores.
+- Exercise legacy secret redaction without credential features while preserving rejection of managed plaintext secret writes.
+- Complete schema and secret migration across main profiles before disabling vault encryption; preserve the locked state on failure and refuse plaintext output of pending secret fields.
+- Keep independent sub-settings and credentials at the root when enabling main profiles, and migrate the configured main payload through its storage backend.
+- Bind SQLite vault authentication to both table and row identity, including profile copies and renames.
+- Preserve foreign vault files during cached writes and deletes; read migration snapshots without changing active profiles or scanning registered data repeatedly.
+- Allow normal encrypted SQLite updates with concurrent WAL readers; keep plaintext-history cleanup in vault migration.
+
+- Keep vault migration keys available through rollback, complete required secret migration on unlock, and reject plaintext replacements during ordinary vault reads.
+- Authenticate vault headers and file/row identities without changing the unreleased format version; re-encrypt duplicated or renamed profiles and reject unsupported envelope formats and excessive Argon2 costs.
+- Scrub SQLite freelist pages and WAL history during vault migration; report cleanup failures and preserve table migration atomicity.
 - Propagate sub-settings bulk credential read and decoding errors instead of returning a partially populated map.
 - Reject secret writes without a credential backend instead of writing plaintext; validate secret fields and preserve typed values across reads, updates, migration, and backup.
 - Roll back managed setting/credential writes after backend failures; report incomplete rollback explicitly. Managed saves require a readable, writable primary credential backend rather than silently accepting volatile fallback writes. Cross-backend commits are not crash-atomic.
@@ -19,6 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Independent `.rcman-vault.json` metadata with automatic creation and opening through the existing parameterless `with_vault()` and startup-password API; empty and sub-settings-only vaults no longer require main settings.
+- Authenticated shared vault identities and distinct metadata, unlock, identity mismatch, and data authentication errors. Startup passwords unlock an existing vault or enroll registered plaintext stores on first startup.
 - **Configuration Vault & Envelope (`vault` feature)**:
     - Added comprehensive at-rest configuration encryption using AES-256-GCM authenticated encryption and Argon2id key derivation.
     - Implemented `VaultEnvelope` containing format version, algorithm identifier (`aes-256-gcm+argon2id`), cryptographic salt, nonce, ciphertext, and optional KDF parameters.
@@ -27,8 +48,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
         - `enable_vault(&self, password: &str) -> Result<()>`: Migrates existing plaintext configurations on disk into encrypted vault envelopes.
         - `enable_vault_with_params(&self, password: &str, params: Argon2Params) -> Result<()>`: Enables vault with custom Argon2id derivation parameters.
         - `disable_vault(&self, password: &str) -> Result<()>`: Decrypts all configuration files back to plain text formats.
-        - `unlock(&self, password: &str) -> Result<()>`: Validates master password and enables transparent configuration access (with `unlock_vault` preserved as a convenience alias).
-        - `lock(&self) -> Result<()>`: Purges decrypted caches and securely wipes in-memory cryptographic keys from RAM (with `lock_vault` preserved as a convenience alias).
+        - `unlock(&self, password: &str) -> Result<()>`: Validates master password and enables transparent configuration access.
+        - `lock(&self) -> Result<()>`: Purges decrypted caches and securely wipes in-memory cryptographic keys from RAM.
         - `verify_vault_password(&self, password: &str) -> Result<bool>`: Verifies a candidate master password without unlocking or mutating vault state (ideal for confirmation modals).
         - `vault_info(&self) -> Option<VaultInfo>`: Provides a complete diagnostic snapshot (`enabled`, `is_locked`, `lock_timeout`, `kdf_params`, `time_since_last_activity`).
         - `set_vault_lock_timeout(&self, timeout: Option<Duration>) -> Result<()>` and `vault_lock_timeout(&self) -> Option<Duration>`: Runtime auto-lock timeout adjustment.
@@ -39,7 +60,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Vault-Aware Hot-Reload Coordination (`hot-reload` feature)**:
     - Added `HotReloadEvent::SkippedLocked`: when an external file modification occurs while the vault is locked, the in-memory cache is invalidated and the event is emitted without failing or spamming errors. Decryption occurs transparently once the user unlocks.
 - **Vault State & Store Deduplication**:
-    - Centralized `decrypt_vault_value_to_str` and `encrypt_value` in `VaultState`, deduplicating vault I/O logic across `SingleFileStore`, `MultiFileStore`, and `TableStore`.
+    - Centralized authenticated file/row encryption and decryption internally across `SingleFileStore`, `MultiFileStore`, and `TableStore`.
     - Implemented `Display` for `VaultEvent` and added constant-time key comparisons.
 - **Configurable Argon2id Parameters & Developer Presets**:
     - Added `Argon2Params` struct (`m_cost`, `t_cost`, `p_cost`) with predefined presets:
@@ -54,7 +75,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Added `EventManager::on_vault_event`, `EventManager::on_vault_lock`, and `EventManager::on_vault_unlock` reactive listener methods.
     - Auto-lock detection automatically dispatches `VaultEvent::AutoLocked` when the configured inactivity threshold is exceeded.
 - **Full Multi-Profile & Sub-Settings Vault Synchronization**:
-    - `enable_vault`, `disable_vault`, `change_vault_password`, and `set_vault_password` atomically synchronize all existing profiles (main settings and sub-settings) on disk.
+    - `enable_vault`, `disable_vault`, and `change_vault_password` migrate registered main settings and sub-settings across their profiles, with best-effort rollback after reported failures.
     - Direct store-level re-encryption preserves existing keychain credentials, prevents redundant keychain writes, and avoids firing spurious `SubSettingsAction::Updated` notifications during key rotation.
 - **Sub-Settings & Named Profiles Vault Inheritance**:
     - Sub-settings stores (`SingleFileStore`, `MultiFileStore`, and `TableStore`) automatically inherit the parent manager's vault configuration.

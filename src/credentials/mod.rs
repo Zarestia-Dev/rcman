@@ -17,6 +17,11 @@ mod memory;
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 mod transaction;
 mod types;
+#[cfg(all(
+    feature = "profiles",
+    any(feature = "keychain", feature = "encrypted-file")
+))]
+pub(crate) use transaction::ProfileSecretScope;
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 pub(crate) use transaction::{decode_setting, encode_setting};
 

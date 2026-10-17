@@ -407,8 +407,8 @@ pub use credentials::CredentialManager;
 /// Vault module for encrypted configuration and locking.
 #[cfg(feature = "vault")]
 pub use vault::{
-    Argon2Params, Argon2Preset, VaultEnvelope, VaultEvent, VaultEventCallback, VaultInfo,
-    VaultState,
+    Argon2Params, Argon2Preset, VaultContext, VaultEnvelope, VaultEvent, VaultEventCallback,
+    VaultInfo,
 };
 
 // -----------------------------------------------------------------------------

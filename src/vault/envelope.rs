@@ -30,6 +30,24 @@ impl Default for Argon2Params {
 }
 
 impl Argon2Params {
+    /// Validate parameters against the vault's resource budget before allocating memory.
+    ///
+    /// At most 256 `MiB`, 10 passes, and 16 lanes are accepted. These limits bound
+    /// work requested by an unauthenticated file.
+    ///
+    /// # Errors
+    /// Returns `Error::Vault` for invalid parameters or costs exceeding the budget.
+    pub fn validate(&self) -> Result<()> {
+        if self.m_cost > 262_144 || self.t_cost > 10 || self.p_cost > 16 {
+            return Err(Error::Vault(
+                "Argon2 parameters exceed the vault resource budget".into(),
+            ));
+        }
+        argon2::Params::new(self.m_cost, self.t_cost, self.p_cost, Some(32))
+            .map_err(|error| Error::Vault(format!("Invalid Argon2 parameters: {error}")))?;
+        Ok(())
+    }
+
     /// Create custom Argon2 parameters
     #[must_use]
     pub const fn new(m_cost: u32, t_cost: u32, p_cost: u32) -> Self {
@@ -92,6 +110,18 @@ impl Argon2Preset {
     }
 }
 
+/// Relative location authenticated by a managed vault envelope.
+///
+/// Paths use `/` separators on every platform and are relative to the vault root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultContext {
+    /// Relative managed filename, including any profile and group directories.
+    pub path: String,
+    /// Logical record identity for storage backends that share a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+}
+
 /// On-disk envelope for encrypted settings
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultEnvelope {
@@ -101,30 +131,30 @@ pub struct VaultEnvelope {
     pub version: u32,
     /// Cryptographic algorithm suite
     pub algorithm: String,
+    /// Base64-encoded random 16-byte identity shared by every file in this vault.
+    pub vault_id: String,
     /// Base64-encoded 16-byte Argon2id salt
     pub salt: String,
     /// Base64-encoded 12-byte AES-GCM nonce
     pub nonce: String,
     /// Base64-encoded ciphertext with authentication tag
     pub ciphertext: String,
-    /// Key derivation parameters used to derive the AES key (optional for backwards compatibility)
+    /// Key derivation parameters used to derive the AES key
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kdf_params: Option<Argon2Params>,
-    /// Inactivity auto-lock timeout in milliseconds (optional for backwards compatibility)
+    /// Inactivity timeout in milliseconds, stored only in root vault metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock_timeout_ms: Option<u64>,
+    /// Authenticated logical file and optional row identity for managed envelopes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<VaultContext>,
 }
 
 impl VaultEnvelope {
-    /// Create a new vault envelope with default KDF parameters
-    #[must_use]
-    pub fn new(salt: &[u8; 16], nonce: &[u8; 12], ciphertext: &[u8]) -> Self {
-        Self::with_params(salt, nonce, ciphertext, None)
-    }
-
     /// Create a new vault envelope with explicit KDF parameters and optional timeout
     #[must_use]
-    pub fn with_params_and_timeout(
+    pub(crate) fn with_params_and_timeout(
+        vault_id: String,
         salt: &[u8; 16],
         nonce: &[u8; 12],
         ciphertext: &[u8],
@@ -135,23 +165,58 @@ impl VaultEnvelope {
             __rcman_vault__: 1,
             version: VAULT_VERSION,
             algorithm: VAULT_ALGORITHM.to_string(),
+            vault_id,
             salt: BASE64.encode(salt),
             nonce: BASE64.encode(nonce),
             ciphertext: BASE64.encode(ciphertext),
             kdf_params,
             lock_timeout_ms,
+            context: None,
         }
     }
 
-    /// Create a new vault envelope with explicit KDF parameters
-    #[must_use]
-    pub fn with_params(
-        salt: &[u8; 16],
-        nonce: &[u8; 12],
-        ciphertext: &[u8],
-        kdf_params: Option<Argon2Params>,
-    ) -> Self {
-        Self::with_params_and_timeout(salt, nonce, ciphertext, kdf_params, None)
+    /// Validate the format and cheap structural properties before deriving a key.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported formats, invalid encodings, truncated tags,
+    /// or Argon2 costs outside the supported resource budget.
+    pub fn validate(&self) -> Result<()> {
+        if self.__rcman_vault__ != 1
+            || self.version != VAULT_VERSION
+            || self.algorithm != VAULT_ALGORITHM
+        {
+            return Err(Error::InvalidVaultEnvelope(
+                "Unsupported vault format or algorithm".into(),
+            ));
+        }
+        self.kdf_params().validate()?;
+        if BASE64
+            .decode(&self.vault_id)
+            .map_or(true, |id| id.len() != 16)
+        {
+            return Err(Error::InvalidVaultEnvelope("Invalid vault identity".into()));
+        }
+        self.decode_salt()?;
+        self.decode_nonce()?;
+        if self.decode_ciphertext()?.len() < 16 {
+            return Err(Error::InvalidVaultEnvelope(
+                "Ciphertext is missing its authentication tag".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authenticated_data(&self) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(&(
+            self.__rcman_vault__,
+            self.version,
+            &self.algorithm,
+            &self.vault_id,
+            &self.salt,
+            self.kdf_params,
+            self.lock_timeout_ms,
+            &self.context,
+        ))?)
     }
 
     /// Retrieve the configured auto-lock timeout, if present
@@ -242,12 +307,7 @@ pub fn parse_envelope(content: &str) -> Result<Option<VaultEnvelope>> {
     let envelope: VaultEnvelope = serde_json::from_str(content)
         .map_err(|e| Error::InvalidVaultEnvelope(format!("Failed to parse vault envelope: {e}")))?;
 
-    if envelope.__rcman_vault__ != 1 {
-        return Err(Error::InvalidVaultEnvelope(format!(
-            "Unsupported vault magic marker: {}",
-            envelope.__rcman_vault__
-        )));
-    }
+    envelope.validate()?;
 
     Ok(Some(envelope))
 }
@@ -262,7 +322,14 @@ mod tests {
         let nonce = [2u8; 12];
         let ciphertext = b"encrypted_payload";
 
-        let env = VaultEnvelope::new(&salt, &nonce, ciphertext);
+        let env = VaultEnvelope::with_params_and_timeout(
+            BASE64.encode([1; 16]),
+            &salt,
+            &nonce,
+            ciphertext,
+            None,
+            None,
+        );
         let serialized = serde_json::to_string_pretty(&env).unwrap();
 
         assert!(is_vault_content(&serialized));

@@ -818,7 +818,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             if !self.options.flags.control.overwrite_existing
                 && sub_ctx
                     .sub
-                    .backup_entries(&sub_ctx.sub.directory())?
+                    .read_entries(&sub_ctx.sub.directory())?
                     .contains_key(&entry_name)
             {
                 result.add_skipped(entry_id, RestoreSkipReason::ExistsConflict);
@@ -954,9 +954,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         let existing = if self.options.flags.control.overwrite_existing {
             std::collections::HashMap::new()
         } else {
-            sub_ctx.sub.backup_entries(&dest_profile_path)?
+            sub_ctx.sub.read_entries(&dest_profile_path)?
         };
-        let store = sub_ctx.sub.backup_store(&dest_profile_path);
+        let store = sub_ctx.sub.detached_store(&dest_profile_path);
         for entry in crate::error::read_dir(&src_profile_path)? {
             let entry = entry.map_err(|source| Error::DirectoryRead {
                 path: src_profile_path.clone(),
@@ -1074,7 +1074,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
                                 if sub_ctx
                                     .sub
-                                    .backup_entries(&sub_ctx.sub.directory())?
+                                    .read_entries(&sub_ctx.sub.directory())?
                                     .contains_key(&k)
                                     && !self.options.flags.control.overwrite_existing
                                 {
@@ -1097,7 +1097,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
 
                     if sub_ctx
                         .sub
-                        .backup_entries(&sub_ctx.sub.directory())?
+                        .read_entries(&sub_ctx.sub.directory())?
                         .contains_key(&stem)
                         && !self.options.flags.control.overwrite_existing
                     {

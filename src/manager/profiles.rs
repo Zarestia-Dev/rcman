@@ -58,6 +58,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Get the profile manager for main settings
     ///
     /// Returns None if profiles are not enabled for main settings.
+    /// Direct operations affect main settings only; use `switch_profile()` to
+    /// also switch registered sub-settings and emit setting change events.
     pub fn profiles(&self) -> Option<&crate::profiles::ProfileManager<S>> {
         self.profile_manager.as_ref()
     }
@@ -66,8 +68,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// This switches the active profile for main settings and updates internal paths.
     /// All subsequent operations will use the new profile's settings.
-    /// With an enabled vault, an empty profile receives an encrypted settings
-    /// envelope before activation so it can be locked and reopened immediately.
+    /// Empty profiles use schema defaults without creating a settings file.
     ///
     /// If change listeners are registered via `events().on_change(...)`, this emits
     /// callbacks for keys whose effective values differ between the previous and
@@ -104,38 +105,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             if !pm.exists(name)? {
                 return Err(Error::ProfileNotFound(name.to_string()));
             }
-            let path = pm.profile_path(name).join(&self.config.settings_file);
-            if !path.exists() {
-                self.write_settings_to_disk(&path, &serde_json::json!({}))?;
-            }
         }
 
-        let settings_guard = self
-            .settings_write_lock
-            .write()
-            .map_err(|_| Error::LockPoisoned)?;
-        // Step 1: Switch the profile in ProfileManager (this handles manifest updates)
-        // This must be done first to ensure the profile exists and is valid
         pm.switch(name)?;
-
-        // Resolve the target while managed settings writes are serialized.
-        let new_path = pm.profile_path(name);
-
-        // Step 3: Update settings_dir atomically
-        {
-            let mut settings_dir = self.settings_dir.write_recovered()?;
-            *settings_dir = new_path;
-        } // Lock released immediately
-
-        // Invalidate before releasing the settings lock so readers see the new profile.
-        self.invalidate_cache();
-        drop(settings_guard);
-
-        // Clear in-memory tracked secrets cache so it will be reloaded for the new profile
-        #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        if let Some(ref creds) = self.credentials {
-            creds.invalidate_tracked_secrets_cache()?;
-        }
 
         // Step 4.5: Migrate secret keys for the new profile
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -202,9 +174,13 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .ok_or(Error::ProfilesNotEnabled)?;
         pm.create(name)?;
 
-        // Propagate to sub-settings
-        let sub_settings = self.sub_settings.read_recovered()?;
-        for (key, sub) in sub_settings.iter() {
+        let sub_settings: Vec<_> = self
+            .sub_settings
+            .read_recovered()?
+            .iter()
+            .map(|(key, sub)| (key.clone(), Arc::clone(sub)))
+            .collect();
+        for (key, sub) in sub_settings {
             match sub.profiles() {
                 Ok(pm) => match pm.create(name) {
                     Ok(()) => debug!("Created profile '{name}' in sub-settings '{key}'"),

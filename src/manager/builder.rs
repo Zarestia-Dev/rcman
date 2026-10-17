@@ -134,11 +134,11 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         self
     }
 
-    /// Configure vault support without encrypting existing plaintext settings.
+    /// Enable automatic vault startup handling without selecting a mode.
     ///
-    /// Existing encrypted settings are detected automatically. Use
-    /// `SettingsManager::enable_vault` to encrypt an existing configuration,
-    /// or `with_vault_password` to supply a password at startup.
+    /// Existing metadata starts locked unless a password is supplied. Plaintext
+    /// remains usable without a password; orphaned encrypted stores are rejected.
+    /// Use `with_vault_password` to create or unlock the shared vault at startup.
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault(mut self) -> Self {
@@ -146,7 +146,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         self
     }
 
-    /// Supply a password to unlock an existing vault or encrypt settings at startup.
+    /// Unlock an existing vault, or encrypt all registered settings on first startup.
     ///
     /// Manager construction consumes and zeroizes its password buffer, including
     /// on failure. `manager.config().vault_password` is `None` after construction;
@@ -160,13 +160,10 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
 
     /// Read a vault startup password from a file, environment variable, or supplied value.
     ///
-    /// Resolution happens immediately; missing sources return an error instead of
-    /// silently falling back to an unencrypted configuration. File sources strip
+    /// Resolution happens during manager construction; missing or empty sources
+    /// fail construction instead of silently using plaintext. File sources strip
     /// trailing line endings while preserving spaces in the password. Manager
     /// construction consumes and zeroizes the resolved password buffer.
-    ///
-    /// # Errors
-    /// Returns an error if the source cannot be read or contains an empty password.
     ///
     /// # Examples
     ///
@@ -176,19 +173,20 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     /// let manager = rcman::SettingsManager::builder("my-app", "1.0")
     ///     .with_vault_password_source(rcman::SecretPasswordSource::file(
     ///         "/run/secrets/settings-password",
-    ///     ))?
+    ///     ))
     ///     .build()?;
     /// assert!(!manager.is_locked());
     /// # Ok(())
     /// # }
     /// ```
     #[cfg(feature = "vault")]
+    #[must_use]
     pub fn with_vault_password_source(
         mut self,
         source: crate::credentials::SecretPasswordSource,
-    ) -> crate::Result<Self> {
-        self.config_builder = self.config_builder.with_vault_password_source(source)?;
-        Ok(self)
+    ) -> Self {
+        self.config_builder = self.config_builder.with_vault_password_source(source);
+        self
     }
 
     /// Set an auto-lock inactivity timeout for the vault.
@@ -431,13 +429,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         S: 'static,
     {
         let config = self.config_builder.build();
-        let manager = SettingsManager::new(config)?;
-
-        for sub_config in self.sub_settings {
-            manager.register_sub_settings(sub_config)?;
-        }
-
-        Ok(manager)
+        SettingsManager::new_with_sub_settings(config, self.sub_settings)
     }
 }
 

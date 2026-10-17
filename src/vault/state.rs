@@ -2,10 +2,12 @@
 
 use crate::error::{Error, Result};
 use crate::vault::crypto::{
-    constant_time_eq, decrypt, derive_key, encrypt, generate_nonce, generate_salt, zeroize_bytes,
+    constant_time_eq, decrypt_authenticated, derive_key, encrypt_authenticated, generate_nonce,
+    generate_salt, zeroize_bytes,
 };
 use crate::vault::envelope::{Argon2Params, VaultEnvelope};
-use std::sync::atomic::{AtomicBool, Ordering};
+use base64::Engine as _;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -92,6 +94,21 @@ pub struct VaultState {
     kdf_params: RwLock<Argon2Params>,
     event_callback: RwLock<Option<VaultEventCallback>>,
     watchdog_running: Arc<AtomicBool>,
+    migration_pins: AtomicUsize,
+    root: std::path::PathBuf,
+    identity: String,
+}
+
+/// Keeps the active key available throughout a managed migration and rollback.
+pub(crate) struct MigrationGuard<'a> {
+    vault: &'a VaultState,
+}
+
+impl Drop for MigrationGuard<'_> {
+    fn drop(&mut self) {
+        self.vault.touch();
+        self.vault.migration_pins.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Drop for VaultState {
@@ -103,10 +120,12 @@ impl Drop for VaultState {
 impl VaultState {
     /// Create a new vault state
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
+        root: &std::path::Path,
         salt: Option<[u8; 16]>,
         lock_timeout: Option<Duration>,
         kdf_params: Option<Argon2Params>,
+        identity: Option<String>,
     ) -> Self {
         Self {
             status: RwLock::new(VaultStatus::Locked { salt }),
@@ -115,7 +134,120 @@ impl VaultState {
             kdf_params: RwLock::new(kdf_params.unwrap_or_default()),
             event_callback: RwLock::new(None),
             watchdog_running: Arc::new(AtomicBool::new(false)),
+            migration_pins: AtomicUsize::new(0),
+            root: root.to_path_buf(),
+            identity: identity.unwrap_or_else(|| {
+                base64::engine::general_purpose::STANDARD.encode(generate_salt())
+            }),
         }
+    }
+
+    pub(crate) fn identity(&self) -> &str {
+        &self.identity
+    }
+
+    pub(crate) fn begin_migration(&self) -> Result<MigrationGuard<'_>> {
+        // Serialize pin acquisition with the watchdog's decision to destroy a key.
+        let status = self.status.write().map_err(|_| Error::LockPoisoned)?;
+        if matches!(*status, VaultStatus::Locked { .. }) {
+            return Err(Error::ConfigLocked);
+        }
+        self.migration_pins.fetch_add(1, Ordering::SeqCst);
+        Ok(MigrationGuard { vault: self })
+    }
+
+    fn context_for(
+        &self,
+        path: &std::path::Path,
+        entry: Option<&str>,
+    ) -> Result<super::envelope::VaultContext> {
+        let relative = path
+            .strip_prefix(&self.root)
+            .map_err(|_| Error::Vault("Managed path is outside the vault root".into()))?;
+        let parts = relative
+            .components()
+            .map(|part| {
+                if let std::path::Component::Normal(name) = part {
+                    name.to_str().ok_or_else(|| {
+                        Error::Vault("Vault identities require UTF-8 filenames".into())
+                    })
+                } else {
+                    Err(Error::Vault("Invalid managed vault path".into()))
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(super::envelope::VaultContext {
+            path: parts.join("/"),
+            entry: entry.map(str::to_owned),
+        })
+    }
+
+    pub(crate) fn encrypt_managed(
+        &self,
+        plaintext: &[u8],
+        path: &std::path::Path,
+        entry: Option<&str>,
+    ) -> Result<VaultEnvelope> {
+        self.encrypt_with_context(plaintext, Some(self.context_for(path, entry)?), None)
+    }
+
+    pub(crate) fn encrypt_managed_with_timeout(
+        &self,
+        plaintext: &[u8],
+        path: &std::path::Path,
+        timeout: Option<Duration>,
+    ) -> Result<VaultEnvelope> {
+        self.encrypt_with_context(plaintext, Some(self.context_for(path, None)?), timeout)
+    }
+
+    pub(crate) fn decrypt_managed(
+        &self,
+        value: &serde_json::Value,
+        path: &std::path::Path,
+        entry: Option<&str>,
+    ) -> Result<String> {
+        if !crate::vault::is_vault_value(value) {
+            if value.get("__rcman_vault__").is_some() {
+                return Err(Error::InvalidVaultEnvelope("Invalid vault marker".into()));
+            }
+            return Err(Error::InvalidVaultEnvelope(
+                "Expected encrypted managed settings".into(),
+            ));
+        }
+        let envelope: VaultEnvelope = serde_json::from_value(value.clone())?;
+        self.validate_context(&envelope, path, entry)?;
+        self.decrypt_envelope_to_str(&envelope).map_err(|error| {
+            if matches!(error, Error::InvalidPassword) {
+                Error::VaultDataAuthenticationFailed(format!(
+                    "{} (entry {entry:?})",
+                    path.display()
+                ))
+            } else {
+                error
+            }
+        })
+    }
+
+    pub(crate) fn validate_context(
+        &self,
+        envelope: &VaultEnvelope,
+        path: &std::path::Path,
+        entry: Option<&str>,
+    ) -> Result<()> {
+        envelope.validate()?;
+        if envelope.vault_id != self.identity() {
+            return Err(Error::VaultMismatch(format!(
+                "{} (entry {entry:?})",
+                path.display()
+            )));
+        }
+        if envelope.context.as_ref() != Some(&self.context_for(path, entry)?) {
+            return Err(Error::VaultDataAuthenticationFailed(format!(
+                "{} (entry {entry:?})",
+                path.display()
+            )));
+        }
+        Ok(())
     }
 
     /// Start the background auto-lock watchdog thread if not already running.
@@ -196,7 +328,7 @@ impl VaultState {
     }
 
     /// Set or update the active Argon2 KDF parameters
-    pub fn set_kdf_params(&self, params: Argon2Params) {
+    fn set_kdf_params(&self, params: Argon2Params) {
         if let Ok(mut guard) = self.kdf_params.write() {
             *guard = params;
         }
@@ -216,7 +348,7 @@ impl VaultState {
                 .last_activity
                 .read()
                 .map_or(Duration::MAX, |t| t.elapsed());
-            if elapsed >= timeout {
+            if elapsed >= timeout && self.migration_pins.load(Ordering::SeqCst) == 0 {
                 if let VaultStatus::Unlocked { salt, .. } = &*status {
                     let salt = *salt;
                     *status = VaultStatus::Locked { salt: Some(salt) };
@@ -301,9 +433,13 @@ impl VaultState {
     /// Explicitly lock the vault and scrub the encryption key from RAM
     ///
     /// # Errors
-    /// Returns `Error::LockPoisoned` if the internal lock is poisoned.
+    /// Returns `Error::LockPoisoned` if the internal lock is poisoned, or
+    /// `Error::ConcurrentModification` while a managed migration needs the key.
     pub fn lock(&self) -> Result<()> {
         let mut guard = self.status.write().map_err(|_| Error::LockPoisoned)?;
+        if self.migration_pins.load(Ordering::SeqCst) != 0 {
+            return Err(Error::ConcurrentModification);
+        }
         let current_salt = match &*guard {
             VaultStatus::Locked { salt } => *salt,
             VaultStatus::Unlocked { salt, .. } => Some(*salt),
@@ -325,12 +461,17 @@ impl VaultState {
         envelope: Option<&VaultEnvelope>,
     ) -> Result<Option<Vec<u8>>> {
         let (salt, active_params, key_bytes, payload) = if let Some(env) = envelope {
+            env.validate()?;
+            if env.vault_id != self.identity {
+                return Err(Error::VaultMismatch("vault metadata".into()));
+            }
             let salt = env.decode_salt()?;
             let params = env.kdf_params();
-            let key = derive_key(password, &salt, &params)?;
+            let key = zeroize::Zeroizing::new(derive_key(password, &salt, &params)?);
             let nonce = env.decode_nonce()?;
             let ciphertext = env.decode_ciphertext()?;
-            let payload = decrypt(&key, &nonce, &ciphertext)?;
+            let payload =
+                decrypt_authenticated(&key, &nonce, &ciphertext, &env.authenticated_data()?)?;
             (salt, params, key, Some(payload))
         } else {
             let current_salt = {
@@ -342,7 +483,7 @@ impl VaultState {
             };
             let salt = current_salt.unwrap_or_else(generate_salt);
             let params = self.kdf_params();
-            let key = derive_key(password, &salt, &params)?;
+            let key = zeroize::Zeroizing::new(derive_key(password, &salt, &params)?);
             (salt, params, key, None)
         };
 
@@ -351,37 +492,28 @@ impl VaultState {
 
         let mut guard = self.status.write().map_err(|_| Error::LockPoisoned)?;
         *guard = VaultStatus::Unlocked {
-            key: VaultKey(key_bytes),
+            key: VaultKey(*key_bytes),
             salt,
         };
         self.touch();
         Ok(payload)
     }
 
-    /// Obtain a copy of the active 32-byte key for encryption/decryption operations
-    ///
-    /// # Errors
-    /// Returns `Error::ConfigLocked` if currently locked (or timed out).
-    pub fn key(&self) -> Result<[u8; 32]> {
-        if self.is_locked() {
-            return Err(Error::ConfigLocked);
-        }
-
-        let guard = self.status.read().map_err(|_| Error::LockPoisoned)?;
-        match &*guard {
-            VaultStatus::Unlocked { key, .. } => {
-                self.touch();
-                Ok(key.0)
-            }
-            VaultStatus::Locked { .. } => Err(Error::ConfigLocked),
-        }
-    }
-
     /// Encrypt a byte slice payload and pack into a `VaultEnvelope`
     ///
     /// # Errors
     /// Returns `Error::ConfigLocked` if locked, or `Error::Vault` if encryption fails.
-    pub fn encrypt_payload(&self, plaintext: &[u8]) -> Result<VaultEnvelope> {
+    #[cfg(test)]
+    fn encrypt_payload(&self, plaintext: &[u8]) -> Result<VaultEnvelope> {
+        self.encrypt_with_context(plaintext, None, self.lock_timeout())
+    }
+
+    fn encrypt_with_context(
+        &self,
+        plaintext: &[u8],
+        context: Option<super::envelope::VaultContext>,
+        timeout: Option<Duration>,
+    ) -> Result<VaultEnvelope> {
         if self.is_locked() {
             return Err(Error::ConfigLocked);
         }
@@ -390,19 +522,31 @@ impl VaultState {
         match &*guard {
             VaultStatus::Unlocked { key, salt } => {
                 let nonce = generate_nonce();
-                let ciphertext = encrypt(&key.0, &nonce, plaintext)?;
-                self.touch();
                 let params = self.kdf_params();
-                let timeout_ms = self
-                    .lock_timeout()
-                    .and_then(|d| u64::try_from(d.as_millis()).ok());
-                Ok(VaultEnvelope::with_params_and_timeout(
+                let timeout_ms = timeout
+                    .map(|d| u64::try_from(d.as_millis()))
+                    .transpose()
+                    .map_err(|_| {
+                        Error::Config("Vault timeout exceeds the supported duration".into())
+                    })?;
+                let mut envelope = VaultEnvelope::with_params_and_timeout(
+                    self.identity().to_owned(),
                     salt,
                     &nonce,
-                    &ciphertext,
+                    &[],
                     Some(params),
                     timeout_ms,
-                ))
+                );
+                envelope.context = context;
+                let ciphertext = encrypt_authenticated(
+                    &key.0,
+                    &nonce,
+                    plaintext,
+                    &envelope.authenticated_data()?,
+                )?;
+                envelope.ciphertext = base64::engine::general_purpose::STANDARD.encode(ciphertext);
+                self.touch();
+                Ok(envelope)
             }
             VaultStatus::Locked { .. } => Err(Error::ConfigLocked),
         }
@@ -413,84 +557,19 @@ impl VaultState {
     /// # Errors
     /// Returns `Error::ConfigLocked` if locked, or `Error::InvalidPassword` if tag verification fails.
     pub fn decrypt_envelope(&self, envelope: &VaultEnvelope) -> Result<Vec<u8>> {
-        let key = self.key()?;
-        let nonce = envelope.decode_nonce()?;
-        let ciphertext = envelope.decode_ciphertext()?;
-        decrypt(&key, &nonce, &ciphertext)
-    }
-
-    /// Change the vault password while unlocked (or by verifying old password)
-    ///
-    /// # Errors
-    /// Returns `Error::InvalidPassword` if `old_password` does not match, `Error::ConfigLocked` if locked, or `Error::Vault` on crypto error.
-    pub fn change_password(&self, old_password: &str, new_password: &str) -> Result<()> {
-        let active_params = self.kdf_params();
-        let (current_salt, current_key) = {
-            let guard = self.status.read().map_err(|_| Error::LockPoisoned)?;
-            let VaultStatus::Unlocked { key, salt } = &*guard else {
+        if self.is_locked() {
+            return Err(Error::ConfigLocked);
+        }
+        let key = {
+            let status = self.status.read().map_err(|_| Error::LockPoisoned)?;
+            let VaultStatus::Unlocked { key, .. } = &*status else {
                 return Err(Error::ConfigLocked);
             };
-            (*salt, key.0)
+            zeroize::Zeroizing::new(key.0)
         };
-
-        // Verify old password derives identical key
-        let derived = derive_key(old_password, &current_salt, &active_params)?;
-        if derived != current_key {
-            return Err(Error::InvalidPassword);
-        }
-
-        // Generate a new salt for security on password rotation
-        let new_salt = generate_salt();
-        let new_key = derive_key(new_password, &new_salt, &active_params)?;
-
-        let mut guard = self.status.write().map_err(|_| Error::LockPoisoned)?;
-        let VaultStatus::Unlocked {
-            key: active_key, ..
-        } = &*guard
-        else {
-            return Err(Error::ConfigLocked);
-        };
-        // Verify key was not changed or locked during Argon2 derivation
-        if active_key.0 != current_key {
-            return Err(Error::ConfigLocked);
-        }
-
-        *guard = VaultStatus::Unlocked {
-            key: VaultKey(new_key),
-            salt: new_salt,
-        };
-        self.touch();
-        Ok(())
-    }
-
-    /// Encrypt a serde `Value` and wrap it into a `Value` containing a `VaultEnvelope`
-    ///
-    /// # Errors
-    /// Returns `Error::ConfigLocked` if locked, or `Error::Vault` if encryption or serialization fails.
-    pub fn encrypt_value(&self, value: &serde_json::Value) -> Result<serde_json::Value> {
-        if self.is_locked() {
-            return Err(Error::ConfigLocked);
-        }
-        let serialized = serde_json::to_vec(value)?;
-        let envelope = self.encrypt_payload(&serialized)?;
-        Ok(serde_json::to_value(envelope)?)
-    }
-
-    /// Decrypt a serde `Value` if it represents a `VaultEnvelope`, or return as-is
-    ///
-    /// # Errors
-    /// Returns `Error::ConfigLocked` if locked, or `Error::InvalidPassword` if decryption fails.
-    pub fn decrypt_value(&self, value: &serde_json::Value) -> Result<serde_json::Value> {
-        if !crate::vault::is_vault_value(value) {
-            return Ok(value.clone());
-        }
-        if self.is_locked() {
-            return Err(Error::ConfigLocked);
-        }
-        let envelope: VaultEnvelope = serde_json::from_value(value.clone())?;
-        let decrypted_bytes = self.decrypt_envelope(&envelope)?;
-        let decrypted_value: serde_json::Value = serde_json::from_slice(&decrypted_bytes)?;
-        Ok(decrypted_value)
+        let nonce = envelope.decode_nonce()?;
+        let ciphertext = envelope.decode_ciphertext()?;
+        decrypt_authenticated(&key, &nonce, &ciphertext, &envelope.authenticated_data()?)
     }
 
     /// Decrypt a `VaultEnvelope` and return the decrypted bytes as a UTF-8 string
@@ -502,23 +581,6 @@ impl VaultState {
         let bytes = self.decrypt_envelope(envelope)?;
         String::from_utf8(bytes)
             .map_err(|e| Error::Vault(format!("Decrypted data is not UTF-8: {e}")))
-    }
-
-    /// Helper to decrypt a `Value` that may represent a `VaultEnvelope` into a UTF-8 string.
-    ///
-    /// Returns `Ok(None)` if the `Value` does not represent a vault envelope.
-    ///
-    /// # Errors
-    /// Returns `Error::ConfigLocked` if locked, `Error::InvalidVaultEnvelope` if invalid envelope structure,
-    /// `Error::InvalidPassword` if decryption fails, or `Error::Vault` if UTF-8 decoding fails.
-    pub fn decrypt_vault_value_to_str(&self, value: &serde_json::Value) -> Result<Option<String>> {
-        if !crate::vault::is_vault_value(value) {
-            return Ok(None);
-        }
-        let envelope: VaultEnvelope = serde_json::from_value(value.clone())
-            .map_err(|e| Error::InvalidVaultEnvelope(format!("Invalid vault envelope: {e}")))?;
-        let decrypted_str = self.decrypt_envelope_to_str(&envelope)?;
-        Ok(Some(decrypted_str))
     }
 
     /// Verify whether a password matches the vault without altering lock state or active key.
@@ -534,12 +596,13 @@ impl VaultState {
         envelope: Option<&VaultEnvelope>,
     ) -> Result<bool> {
         if let Some(env) = envelope {
+            env.validate()?;
             let salt = env.decode_salt()?;
             let params = env.kdf_params();
-            let key = derive_key(candidate_password, &salt, &params)?;
+            let key = zeroize::Zeroizing::new(derive_key(candidate_password, &salt, &params)?);
             let nonce = env.decode_nonce()?;
             let ciphertext = env.decode_ciphertext()?;
-            match decrypt(&key, &nonce, &ciphertext) {
+            match decrypt_authenticated(&key, &nonce, &ciphertext, &env.authenticated_data()?) {
                 Ok(_) => Ok(true),
                 Err(Error::InvalidPassword) => Ok(false),
                 Err(e) => Err(e),
@@ -549,8 +612,12 @@ impl VaultState {
             match &*guard {
                 VaultStatus::Unlocked { key, salt } => {
                     let active_params = self.kdf_params();
-                    let derived = derive_key(candidate_password, salt, &active_params)?;
-                    Ok(constant_time_eq(&derived, &key.0))
+                    let derived = zeroize::Zeroizing::new(derive_key(
+                        candidate_password,
+                        salt,
+                        &active_params,
+                    )?);
+                    Ok(constant_time_eq(derived.as_ref(), &key.0))
                 }
                 VaultStatus::Locked { .. } => Err(Error::ConfigLocked),
             }
@@ -563,15 +630,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_vault_lifecycle() {
-        let state = VaultState::new(None, None, Some(Argon2Params::fast()));
+    fn migration_pins_prevent_auto_and_explicit_key_loss() {
+        let state = VaultState::new(
+            std::path::Path::new("test-root"),
+            None,
+            None,
+            Some(Argon2Params::fast()),
+            None,
+        );
+        state.unlock("password", None).unwrap();
+        let pin = state.begin_migration().unwrap();
+        state.set_lock_timeout(Some(Duration::ZERO));
+        assert!(!state.is_locked());
+        assert!(matches!(state.lock(), Err(Error::ConcurrentModification)));
+        assert!(state.encrypt_payload(b"retained key").is_ok());
+        drop(pin);
         assert!(state.is_locked());
-        assert!(matches!(state.key(), Err(Error::ConfigLocked)));
+    }
+
+    #[test]
+    fn test_vault_lifecycle() {
+        let state = VaultState::new(
+            std::path::Path::new("test-root"),
+            None,
+            None,
+            Some(Argon2Params::fast()),
+            None,
+        );
+        assert!(state.is_locked());
 
         // Unlock with password (new store)
         state.unlock("secret123", None).unwrap();
         assert!(!state.is_locked());
-        assert!(state.key().is_ok());
 
         // Encrypt payload
         let envelope = state.encrypt_payload(b"hello world").unwrap();
@@ -581,7 +671,6 @@ mod tests {
         // Lock
         state.lock().unwrap();
         assert!(state.is_locked());
-        assert!(matches!(state.key(), Err(Error::ConfigLocked)));
 
         // Unlock with wrong password against existing envelope
         let wrong_err = state.unlock("wrong_password", Some(&envelope)).unwrap_err();
@@ -597,9 +686,11 @@ mod tests {
     #[test]
     fn test_lock_timeout() {
         let state = VaultState::new(
+            std::path::Path::new("test-root"),
             None,
             Some(Duration::from_millis(50)),
             Some(Argon2Params::fast()),
+            None,
         );
         state.unlock("pass", None).unwrap();
         assert!(!state.is_locked());
@@ -607,27 +698,5 @@ mod tests {
         // Wait past the timeout
         std::thread::sleep(Duration::from_millis(60));
         assert!(state.is_locked());
-        assert!(matches!(state.key(), Err(Error::ConfigLocked)));
-    }
-
-    #[test]
-    fn test_change_password() {
-        let state = VaultState::new(None, None, Some(Argon2Params::fast()));
-        state.unlock("pass1", None).unwrap();
-
-        // Change password
-        state.change_password("pass1", "pass2").unwrap();
-
-        let env = state.encrypt_payload(b"data").unwrap();
-        state.lock().unwrap();
-
-        // pass1 should fail
-        assert!(matches!(
-            state.unlock("pass1", Some(&env)).unwrap_err(),
-            Error::InvalidPassword
-        ));
-
-        // pass2 should succeed
-        assert_eq!(state.unlock("pass2", Some(&env)).unwrap().unwrap(), b"data");
     }
 }

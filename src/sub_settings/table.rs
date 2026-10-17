@@ -7,6 +7,8 @@ use crate::utils::security::{ensure_secure_dir, set_secure_file_permissions};
 use crate::utils::sync::RwLockExt;
 use log::debug;
 use rusqlite::Connection;
+#[cfg(feature = "vault")]
+use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -88,9 +90,24 @@ impl TableStore {
             .join(format!("{}.{}", self.name, self.extension))
     }
 
-    /// Export rows through a read-only connection, without schema setup or migrations.
-    #[cfg(feature = "backup")]
-    pub(crate) fn backup_entries(&self) -> Result<HashMap<String, Value>> {
+    #[cfg(feature = "vault")]
+    fn decode_value(&self, value: &Value, key: &str) -> Result<Value> {
+        if let Some(vault) = self.get_vault()? {
+            let plaintext = vault.decrypt_managed(
+                value,
+                &self.file_path(),
+                Some(&crate::storage::sqlite_entry_id(&self.table_name, key)),
+            )?;
+            return serde_json::from_str(&plaintext).map_err(Error::from);
+        } else if value.get("__rcman_vault__").is_some() {
+            return Err(Error::VaultNotFound);
+        }
+        Ok(value.clone())
+    }
+
+    /// Read rows without schema setup, writes, or migrations.
+    #[cfg(any(feature = "backup", feature = "vault"))]
+    pub(crate) fn read_entries(&self) -> Result<HashMap<String, Value>> {
         let path = self.file_path();
         if !path.exists() {
             return Ok(HashMap::new());
@@ -111,7 +128,7 @@ impl TableStore {
             return Ok(HashMap::new());
         }
         let mut stmt = conn
-            .prepare(&format!("SELECT key, data FROM {}", self.table_name))
+            .prepare(&format!("SELECT key, data FROM \"{}\"", self.table_name))
             .map_err(|e| Error::Config(format!("sqlite backup query: {e}")))?;
         let rows = stmt
             .query_map([], |row| {
@@ -124,16 +141,26 @@ impl TableStore {
                 row.map_err(|e| Error::Config(format!("sqlite backup row: {e}")))?;
             let value: Value = serde_json::from_str(&content)?;
             #[cfg(feature = "vault")]
-            let value = if crate::vault::is_vault_value(&value) {
-                self.get_vault()?
-                    .ok_or(Error::ConfigLocked)?
-                    .decrypt_value(&value)?
-            } else {
-                value
-            };
+            let value = self.decode_value(&value, &name)?;
             entries.insert(name, value);
         }
         Ok(entries)
+    }
+
+    #[cfg(feature = "vault")]
+    fn validate_destination(&self, connection: &Connection, key: &str) -> Result<()> {
+        let data: Option<String> = connection
+            .query_row(
+                &format!("SELECT data FROM \"{}\" WHERE key = ?1", self.table_name),
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| Error::Config(format!("sqlite validate destination: {error}")))?;
+        if let Some(data) = data {
+            self.decode_value(&serde_json::from_str(&data)?, key)?;
+        }
+        Ok(())
     }
 
     fn connect(&self) -> Result<Connection> {
@@ -154,13 +181,17 @@ impl TableStore {
             ensure_secure_dir(parent)?;
         }
 
-        Connection::open(&path)
-            .map_err(|e| Error::Config(format!("sqlite open {}: {e}", path.display())))
+        let connection = Connection::open(&path)
+            .map_err(|e| Error::Config(format!("sqlite open {}: {e}", path.display())))?;
+        connection
+            .pragma_update(None, "secure_delete", "ON")
+            .map_err(|e| Error::Config(format!("sqlite secure_delete: {e}")))?;
+        Ok(connection)
     }
 
     fn ensure_schema(&self, conn: &Connection) -> Result<()> {
         let sql = format!(
-            "CREATE TABLE IF NOT EXISTS {table} (
+            "CREATE TABLE IF NOT EXISTS \"{table}\" (
                 key  TEXT PRIMARY KEY NOT NULL,
                 data TEXT NOT NULL
             )",
@@ -245,7 +276,7 @@ impl SubSettingsStore for TableStore {
         self.ensure_schema(&conn)?;
 
         let sql = format!(
-            "SELECT data FROM {table} WHERE key = ?1",
+            "SELECT data FROM \"{table}\" WHERE key = ?1",
             table = self.table_name
         );
         let row_data: Option<String> = conn
@@ -279,12 +310,7 @@ impl SubSettingsStore for TableStore {
         let raw_val: Value = serde_json::from_str(&content).map_err(Error::from)?;
 
         #[cfg(feature = "vault")]
-        let mut value = if crate::vault::is_vault_value(&raw_val) {
-            let vault = self.get_vault()?.ok_or(Error::ConfigLocked)?;
-            vault.decrypt_value(&raw_val)?
-        } else {
-            raw_val
-        };
+        let mut value = self.decode_value(&raw_val, key)?;
 
         #[cfg(not(feature = "vault"))]
         let mut value = raw_val;
@@ -331,7 +357,11 @@ impl SubSettingsStore for TableStore {
                 return Err(Error::ConfigLocked);
             }
             let serialized = serde_json::to_string(&value).map_err(Error::from)?;
-            let envelope = vault.encrypt_payload(serialized.as_bytes())?;
+            let envelope = vault.encrypt_managed(
+                serialized.as_bytes(),
+                &self.file_path(),
+                Some(&crate::storage::sqlite_entry_id(&self.table_name, key)),
+            )?;
             serde_json::to_string(&envelope).map_err(Error::from)?
         } else {
             serde_json::to_string(&value).map_err(Error::from)?
@@ -342,9 +372,11 @@ impl SubSettingsStore for TableStore {
 
         let conn = self.connect()?;
         self.ensure_schema(&conn)?;
+        #[cfg(feature = "vault")]
+        self.validate_destination(&conn, key)?;
 
         let sql = format!(
-            "INSERT INTO {table} (key, data) VALUES (?1, ?2)
+            "INSERT INTO \"{table}\" (key, data) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET data = excluded.data",
             table = self.table_name
         );
@@ -390,9 +422,11 @@ impl SubSettingsStore for TableStore {
 
         let conn = self.connect()?;
         self.ensure_schema(&conn)?;
+        #[cfg(feature = "vault")]
+        self.validate_destination(&conn, key)?;
 
         let sql = format!(
-            "DELETE FROM {table} WHERE key = ?1",
+            "DELETE FROM \"{table}\" WHERE key = ?1",
             table = self.table_name
         );
         let rows = conn
@@ -460,7 +494,7 @@ impl SubSettingsStore for TableStore {
         self.ensure_schema(&conn)?;
 
         let sql = format!(
-            "SELECT 1 FROM {table} WHERE key = ?1",
+            "SELECT 1 FROM \"{table}\" WHERE key = ?1",
             table = self.table_name
         );
         let exists: bool = conn
@@ -489,7 +523,7 @@ impl SubSettingsStore for TableStore {
         self.ensure_schema(&conn)?;
 
         let sql = format!(
-            "SELECT key FROM {table} ORDER BY key",
+            "SELECT key FROM \"{table}\" ORDER BY key",
             table = self.table_name
         );
         let mut stmt = conn
@@ -523,7 +557,7 @@ impl SubSettingsStore for TableStore {
         let conn = self.connect()?;
         self.ensure_schema(&conn)?;
 
-        let sql = format!("SELECT key, data FROM {table}", table = self.table_name);
+        let sql = format!("SELECT key, data FROM \"{table}\"", table = self.table_name);
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|e| Error::Config(format!("sqlite prepare get_all: {e}")))?;
@@ -545,16 +579,7 @@ impl SubSettingsStore for TableStore {
             let raw_val: Value = serde_json::from_str(&content).map_err(Error::from)?;
 
             #[cfg(feature = "vault")]
-            let mut value = if crate::vault::is_vault_value(&raw_val) {
-                let vault = self.get_vault()?.ok_or(Error::ConfigLocked)?;
-                if let Some(decrypted_str) = vault.decrypt_vault_value_to_str(&raw_val)? {
-                    serde_json::from_str(&decrypted_str).map_err(Error::from)?
-                } else {
-                    raw_val
-                }
-            } else {
-                raw_val
-            };
+            let mut value = self.decode_value(&raw_val, &key)?;
 
             #[cfg(not(feature = "vault"))]
             let mut value = raw_val;
@@ -569,7 +594,11 @@ impl SubSettingsStore for TableStore {
                             return Err(Error::ConfigLocked);
                         }
                         let serialized = serde_json::to_string(&value).map_err(Error::from)?;
-                        let envelope = vault.encrypt_payload(serialized.as_bytes())?;
+                        let envelope = vault.encrypt_managed(
+                            serialized.as_bytes(),
+                            &self.file_path(),
+                            Some(&crate::storage::sqlite_entry_id(&self.table_name, &key)),
+                        )?;
                         serde_json::to_string(&envelope).map_err(Error::from)?
                     } else {
                         serde_json::to_string(&value).map_err(Error::from)?
@@ -588,7 +617,7 @@ impl SubSettingsStore for TableStore {
         for (key, new_content) in migrations_to_save {
             debug!("Migrated sub-settings table entry during get_all: {key}");
             let upsert_sql = format!(
-                "INSERT INTO {table} (key, data) VALUES (?1, ?2)
+                "INSERT INTO \"{table}\" (key, data) VALUES (?1, ?2)
                  ON CONFLICT(key) DO UPDATE SET data = excluded.data",
                 table = self.table_name
             );
@@ -608,6 +637,47 @@ impl SubSettingsStore for TableStore {
         if let Ok(mut state) = self.state.write_recovered() {
             state.cache = None;
         }
+    }
+
+    #[cfg(feature = "vault")]
+    fn rewrite(&self, entries: HashMap<String, Value>) -> Result<()> {
+        let vault = self.get_vault()?;
+        let _pin = vault
+            .as_ref()
+            .map(|vault| vault.begin_migration())
+            .transpose()?;
+        let mut conn = self.connect()?;
+        self.ensure_schema(&conn)?;
+        let transaction = conn
+            .transaction()
+            .map_err(|error| Error::Vault(format!("Cannot begin SQLite migration: {error}")))?;
+        for (key, value) in entries {
+            let plaintext = serde_json::to_vec(&value)?;
+            let content = if let Some(vault) = &vault {
+                serde_json::to_string(&vault.encrypt_managed(
+                    &plaintext,
+                    &self.file_path(),
+                    Some(&crate::storage::sqlite_entry_id(&self.table_name, &key)),
+                )?)?
+            } else {
+                serde_json::to_string(&value)?
+            };
+            transaction.execute(
+                &format!("INSERT INTO \"{}\" (key, data) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET data = excluded.data", self.table_name),
+                rusqlite::params![key, content],
+            ).map_err(|error| Error::Vault(format!("Cannot rewrite SQLite vault: {error}")))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| Error::Vault(format!("Cannot commit SQLite migration: {error}")))?;
+        if vault.is_some() {
+            conn.execute_batch("VACUUM")
+                .map_err(|error| Error::Vault(format!("Cannot scrub SQLite vault: {error}")))?;
+            crate::storage::checkpoint_encrypted(&conn)?;
+        }
+        self.invalidate_cache();
+        crate::utils::security::set_secure_file_permissions(&self.file_path())?;
+        Ok(())
     }
 
     fn base_path(&self) -> PathBuf {

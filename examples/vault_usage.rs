@@ -49,6 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📝 Step 1: Initialize SettingsManager with .with_vault_preset(Argon2Preset::Fast)");
     let manager = SettingsManager::builder("secure-app", "1.0.0")
         .with_config_dir(config_dir)
+        .with_vault()
         .with_schema::<AppSettings>()
         .with_vault_preset(Argon2Preset::Fast) // Fast preset for quick demo/testing; Standard for production
         .build()?;
@@ -141,7 +142,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reloaded_manager = SettingsManager::builder("secure-app", "1.0.0")
         .with_config_dir(config_dir)
         .with_schema::<AppSettings>()
-        .with_vault()
         .build()?;
 
     reloaded_manager.register_sub_settings(SubSettingsConfig::new("remotes"))?;

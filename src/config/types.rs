@@ -168,17 +168,15 @@ pub struct SettingsConfig<S: StorageBackend = JsonStorage, Schema: SettingsSchem
     #[cfg(feature = "hot-reload")]
     pub hot_reload: Option<HotReloadConfig>,
 
-    /// Whether vault support was requested by the builder.
-    ///
-    /// This flag alone does not encrypt plaintext settings. Use the manager's
-    /// `is_vault_enabled()` method to inspect its runtime encryption state.
+    /// Request vault startup checks for registered stores, including missing metadata.
+    /// Existing vault metadata is always detected; a password opts into encryption.
     #[cfg(feature = "vault")]
-    pub vault_enabled: bool,
+    pub vault_requested: bool,
 
-    /// Initial vault password (for automated startup). Consumed and zeroized by
+    /// Startup password source, resolved once during manager construction. Consumed by
     /// `SettingsManager::new`; the manager's configuration retains `None`.
     #[cfg(feature = "vault")]
-    pub vault_password: Option<String>,
+    pub vault_password: Option<crate::credentials::SecretPasswordSource>,
 
     /// Auto-lock timeout after inactivity
     #[cfg(feature = "vault")]
@@ -214,7 +212,7 @@ impl Default for SettingsConfig {
             #[cfg(feature = "hot-reload")]
             hot_reload: None,
             #[cfg(feature = "vault")]
-            vault_enabled: false,
+            vault_requested: false,
             #[cfg(feature = "vault")]
             vault_password: None,
             #[cfg(feature = "vault")]
@@ -259,8 +257,8 @@ impl SettingsConfig {
 #[cfg(feature = "vault")]
 #[derive(Clone, Default)]
 struct VaultConfig {
-    enabled: bool,
-    password: Option<String>,
+    requested: bool,
+    password: Option<crate::credentials::SecretPasswordSource>,
     lock_timeout: Option<std::time::Duration>,
     kdf_params: Option<crate::vault::Argon2Params>,
 }
@@ -355,8 +353,6 @@ impl<S: StorageBackend, Schema: SettingsSchema> std::fmt::Debug
         #[cfg(feature = "profiles")]
         debug.field("profile_migrator", &self.profile_migrator);
 
-        #[cfg(feature = "vault")]
-        debug.field("vault_enabled", &self.vault.enabled);
         #[cfg(feature = "vault")]
         debug.field("vault_kdf_params", &self.vault.kdf_params);
 
@@ -540,18 +536,19 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         self
     }
 
-    /// Configure vault support without encrypting existing plaintext settings.
+    /// Enable automatic vault startup handling for registered settings.
     ///
-    /// Encrypted files are detected automatically. Call `SettingsManager::enable_vault`
-    /// to encrypt an existing configuration, or provide a startup password.
+    /// Existing metadata starts locked unless a password is supplied. Without
+    /// metadata or a password, plaintext remains usable; orphaned encrypted files
+    /// are rejected. Supply a password to create or unlock the shared vault.
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault(mut self) -> Self {
-        self.vault.enabled = true;
+        self.vault.requested = true;
         self
     }
 
-    /// Supply a password to unlock an existing vault or encrypt settings at startup.
+    /// Unlock an existing vault, or encrypt registered settings on first startup.
     ///
     /// Manager construction consumes and zeroizes its password buffer, including
     /// on failure. The resulting manager's configuration holds `None`; caller-owned
@@ -559,20 +556,17 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault_password(mut self, password: impl Into<String>) -> Self {
-        self.vault.enabled = true;
-        self.vault.password = Some(password.into());
+        self.vault.requested = true;
+        self.vault.password = Some(crate::credentials::SecretPasswordSource::provided(password));
         self
     }
 
     /// Read a vault startup password from a file, environment variable, or supplied value.
     ///
-    /// Resolution happens immediately; missing sources return an error instead of
-    /// silently falling back to an unencrypted configuration. File sources strip
+    /// Resolution happens during manager construction; missing or empty sources
+    /// fail construction instead of silently using plaintext. File sources strip
     /// trailing line endings while preserving spaces in the password. Manager
     /// construction consumes and zeroizes the resolved password buffer.
-    ///
-    /// # Errors
-    /// Returns an error if the source cannot be read or contains an empty password.
     ///
     /// # Examples
     ///
@@ -582,39 +576,28 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// let manager = rcman::SettingsManager::builder("my-app", "1.0")
     ///     .with_vault_password_source(rcman::SecretPasswordSource::file(
     ///         "/run/secrets/settings-password",
-    ///     ))?
+    ///     ))
     ///     .build()?;
     /// assert!(!manager.is_locked());
     /// # Ok(())
     /// # }
     /// ```
     #[cfg(feature = "vault")]
+    #[must_use]
     pub fn with_vault_password_source(
-        self,
+        mut self,
         source: crate::credentials::SecretPasswordSource,
-    ) -> crate::Result<Self> {
-        let password = match source {
-            crate::credentials::SecretPasswordSource::Provided(password) => password,
-            crate::credentials::SecretPasswordSource::File(path) => std::fs::read_to_string(&path)
-                .map(|password| password.trim_end_matches(['\r', '\n']).to_string())
-                .map_err(|source| crate::Error::FileRead { path, source })?,
-            source @ crate::credentials::SecretPasswordSource::Environment(_) => {
-                source.resolve()?
-            }
-        };
-        if password.is_empty() {
-            return Err(crate::Error::Config(
-                "Vault password source is empty".into(),
-            ));
-        }
-        Ok(self.with_vault_password(password))
+    ) -> Self {
+        self.vault.requested = true;
+        self.vault.password = Some(source);
+        self
     }
 
     /// Set an auto-lock inactivity timeout for the vault
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault_lock_timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.vault.enabled = true;
+        self.vault.requested = true;
         self.vault.lock_timeout = Some(timeout);
         self
     }
@@ -623,7 +606,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault_kdf_params(mut self, params: crate::vault::Argon2Params) -> Self {
-        self.vault.enabled = true;
+        self.vault.requested = true;
         self.vault.kdf_params = Some(params);
         self
     }
@@ -1038,14 +1021,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
                 }
             }
 
-            if let CredentialConfig::WithFallback {
-                ref mut fallback_path,
-                ..
-            } = credential_config
-                && fallback_path.is_none()
-            {
-                *fallback_path = Some(config_dir.join("secrets.enc"));
-            }
+            Self::set_default_credential_path(&mut credential_config, &config_dir);
         }
 
         SettingsConfig {
@@ -1069,13 +1045,21 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
             #[cfg(feature = "hot-reload")]
             hot_reload: self.hot_reload,
             #[cfg(feature = "vault")]
-            vault_enabled: self.vault.enabled,
+            vault_requested: self.vault.requested,
             #[cfg(feature = "vault")]
             vault_password: self.vault.password,
             #[cfg(feature = "vault")]
             vault_lock_timeout: self.vault.lock_timeout,
             #[cfg(feature = "vault")]
             vault_kdf_params: self.vault.kdf_params,
+        }
+    }
+    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    fn set_default_credential_path(config: &mut CredentialConfig, config_dir: &std::path::Path) {
+        if let CredentialConfig::WithFallback { fallback_path, .. } = config
+            && fallback_path.is_none()
+        {
+            *fallback_path = Some(config_dir.join("secrets.enc"));
         }
     }
 }

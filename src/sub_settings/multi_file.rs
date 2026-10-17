@@ -81,11 +81,12 @@ impl<S: StorageBackend> MultiFileStore<S> {
         let value: Value = self.storage.read(path)?;
 
         #[cfg(feature = "vault")]
-        if crate::vault::is_vault_value(&value) {
-            let vault = self.get_vault()?.ok_or(Error::ConfigLocked)?;
-            if let Some(decrypted_str) = vault.decrypt_vault_value_to_str(&value)? {
-                return self.storage.deserialize(&decrypted_str);
-            }
+        if let Some(vault) = self.get_vault()? {
+            let plaintext =
+                vault.decrypt_managed(&value, path, self.storage.vault_entry_id().as_deref())?;
+            return self.storage.deserialize(&plaintext);
+        } else if value.get("__rcman_vault__").is_some() {
+            return Err(Error::VaultNotFound);
         }
 
         Ok(value)
@@ -100,7 +101,11 @@ impl<S: StorageBackend> MultiFileStore<S> {
                 return Err(Error::ConfigLocked);
             }
             let serialized = self.storage.serialize(data)?;
-            let envelope = vault.encrypt_payload(serialized.as_bytes())?;
+            let envelope = vault.encrypt_managed(
+                serialized.as_bytes(),
+                path,
+                self.storage.vault_entry_id().as_deref(),
+            )?;
             return self.storage.write(path, &envelope);
         }
 
@@ -289,6 +294,10 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         }
 
         let path = self.file_path(key);
+        #[cfg(feature = "vault")]
+        if path.exists() {
+            self.read_value(&path)?;
+        }
         #[cfg(feature = "backup")]
         crate::backup::transaction::capture_file(&path)?;
 
@@ -324,6 +333,10 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         }
 
         let path = self.file_path(key);
+        #[cfg(feature = "vault")]
+        if path.exists() {
+            self.read_value(&path)?;
+        }
 
         if path.exists() {
             #[cfg(feature = "backup")]
@@ -444,6 +457,15 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
         }
 
         Ok(result)
+    }
+
+    #[cfg(feature = "vault")]
+    fn rewrite(&self, entries: HashMap<String, Value>) -> Result<()> {
+        for (key, value) in entries {
+            self.write_value(&self.file_path(&key), &value)?;
+        }
+        self.invalidate_cache();
+        Ok(())
     }
 
     fn invalidate_cache(&self) {
