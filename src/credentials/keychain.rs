@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 
-fn map_read_error(message: String, error: KeyringError) -> Error {
+fn map_read_error(message: String, error: &KeyringError) -> Error {
     match error {
         KeyringError::NoStorageAccess(_)
         | KeyringError::NoDefaultStore
@@ -136,7 +136,7 @@ impl KeychainBackend {
         ensure_native_store_initialized();
         Entry::new(&self.service_name, key).map_err(|error| {
             let message = format!("Failed to create keychain entry for {key}: {error}");
-            map_read_error(message, error)
+            map_read_error(message, &error)
         })
     }
 
@@ -181,7 +181,7 @@ impl CredentialBackend for KeychainBackend {
             Err(e) => {
                 warn!("Failed to retrieve credential {key} from keychain: {e}");
                 let message = format!("Failed to retrieve credential {key}: {e}");
-                Err(map_read_error(message, e))
+                Err(map_read_error(message, &e))
             }
         }
     }
@@ -234,13 +234,13 @@ mod tests {
     #[test]
     fn keychain_access_failures_are_distinct_from_store_corruption() {
         assert!(matches!(
-            map_read_error("no default store".into(), KeyringError::NoDefaultStore),
+            map_read_error("no default store".into(), &KeyringError::NoDefaultStore),
             Error::CredentialBackendUnavailable(_)
         ));
         assert!(matches!(
             map_read_error(
                 "bad store format".into(),
-                KeyringError::BadStoreFormat("invalid data".into())
+                &KeyringError::BadStoreFormat("invalid data".into())
             ),
             Error::Credential(_)
         ));

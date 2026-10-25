@@ -590,6 +590,12 @@ impl CredentialManager {
     }
 
     /// Check whether a credential exists while preserving backend errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a backend reports an internal failure, every
+    /// persistent backend is unavailable with no usable in-memory fallback, or
+    /// backup or in-memory state access fails.
     pub fn try_exists(&self, key: &str) -> Result<bool> {
         self.try_exists_with_profile(key, None)
     }
