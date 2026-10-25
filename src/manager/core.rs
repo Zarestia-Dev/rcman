@@ -259,6 +259,23 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 log::debug!(
                     "Credential management enabled with keychain and encrypted file fallback"
                 );
+                let resolved;
+                let mut password = password;
+                if let crate::credentials::SecretPasswordSource::Environment(var) = password {
+                    match config.env_source.var(var) {
+                        Ok(value) if !value.is_empty() => {
+                            resolved = crate::credentials::SecretPasswordSource::Provided(value);
+                            password = &resolved;
+                        }
+                        _ => {
+                            log::warn!(
+                                "Environment variable '{var}' is not set; encrypted file fallback is disabled. \
+                                 Secrets use the keychain, or volatile memory if it is unavailable."
+                            );
+                            return Ok(Some(CredentialManager::new(&config.app_name)));
+                        }
+                    }
+                }
                 let path = fallback_path
                     .clone()
                     .unwrap_or_else(|| config.config_dir.join("secrets.enc"));

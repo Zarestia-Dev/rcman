@@ -1,5 +1,6 @@
-//! Compensating writes for manager operations. No silent volatile fallback:
-//! inability to snapshot or persist a credential aborts the operation.
+//! Compensating writes for manager operations. Removals and failures of a
+//! reachable backend abort the operation. When no persistent backend is
+//! reachable, additions are held in volatile memory with a warning.
 
 use super::{CredentialBackend, CredentialManager, MemoryEntry};
 use crate::{Error, Result};
@@ -164,6 +165,13 @@ impl CredentialManager {
         F: FnOnce() -> Result<()>,
     {
         let (backends, mut snapshots) = self.snapshot_backends(&updates, changes)?;
+        let volatile = backends.is_empty();
+        if volatile {
+            log::warn!(
+                "No persistent credential backend is available; {} credential(s) are held in volatile memory and will NOT persist across restarts",
+                changes.len()
+            );
+        }
 
         // Invalidate before mutation, including errors and partial rollback.
         self.invalidate_tracked_secrets_cache()?;
@@ -200,6 +208,9 @@ impl CredentialManager {
         }
         for (key, value) in updates {
             match value {
+                Some(value) if volatile => {
+                    self.memory.store(&key, MemoryEntry::VolatileWrite(value))?;
+                }
                 Some(value) => self.memory.store(&key, MemoryEntry::Cached(value))?,
                 None => self.memory.remove(&key)?,
             }
@@ -272,8 +283,9 @@ impl CredentialManager {
                     snapshots_by_backend.push(snapshot);
                 }
                 Err(error) => {
-                    if self.fallback.is_none()
-                        || changes.iter().any(|(_, value)| value.is_none())
+                    // Removals need a confirmed persistent delete unless the primary
+                    // is the only backend, where nothing can persist anyway.
+                    if (self.fallback.is_some() && changes.iter().any(|(_, value)| value.is_none()))
                         || !Arc::ptr_eq(&backend, &self.primary)
                         || !matches!(&error, Error::CredentialBackendUnavailable(_))
                     {
@@ -283,9 +295,7 @@ impl CredentialManager {
             }
         }
         if available.is_empty() {
-            return Err(Error::Credential(
-                "No persistent credential backend available".into(),
-            ));
+            return Ok((Vec::new(), Vec::new()));
         }
         let mut snapshots = Vec::new();
         for index in 0..updates.len() {
@@ -443,6 +453,43 @@ mod tests {
             .commit_settings(&[("key".into(), None)], None, || Ok(()))
             .unwrap();
         assert_eq!(manager.get("key").unwrap(), None);
+    }
+
+    #[test]
+    fn unavailable_only_backend_holds_managed_commits_in_memory() {
+        let primary = Arc::new(UnavailableBackend {
+            unavailable: AtomicBool::new(true),
+            memory: MemoryBackend::new(),
+        });
+        let manager = CredentialManager::with_backend("volatile-only", primary.clone());
+        manager
+            .commit_settings(&[("key".into(), Some("secret".into()))], None, || Ok(()))
+            .unwrap();
+        assert_eq!(manager.get("key").unwrap().as_deref(), Some("secret"));
+        assert!(manager.is_volatile_active());
+        assert_eq!(primary.memory.get("volatile-only:key").unwrap(), None);
+        manager
+            .commit_settings(&[("key".into(), None)], None, || Ok(()))
+            .unwrap();
+        assert_eq!(manager.get("key").unwrap(), None);
+    }
+
+    #[test]
+    fn failed_finish_leaves_no_volatile_value() {
+        let primary = Arc::new(UnavailableBackend {
+            unavailable: AtomicBool::new(true),
+            memory: MemoryBackend::new(),
+        });
+        let manager = CredentialManager::with_backend("volatile-rollback", primary);
+        assert!(
+            manager
+                .commit_settings(&[("key".into(), Some("secret".into()))], None, || Err(
+                    Error::Config("file failure".into())
+                ))
+                .is_err()
+        );
+        assert_eq!(manager.get("key").unwrap(), None);
+        assert!(!manager.is_volatile_active());
     }
 
     #[test]

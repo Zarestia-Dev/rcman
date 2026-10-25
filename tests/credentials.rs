@@ -555,6 +555,52 @@ fn test_startup_outage_does_not_cache_or_write_empty_tracking() {
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
 #[test]
+fn test_managed_secret_save_falls_back_to_memory_when_keychain_unavailable() {
+    use rcman::{CredentialBackend, CredentialConfig};
+    use std::sync::Arc;
+
+    struct UnavailableBackend;
+
+    impl CredentialBackend for UnavailableBackend {
+        fn store(&self, _key: &str, _value: &str) -> rcman::Result<()> {
+            Err(rcman::Error::CredentialBackendUnavailable("down".into()))
+        }
+        fn get(&self, _key: &str) -> rcman::Result<Option<String>> {
+            Err(rcman::Error::CredentialBackendUnavailable("down".into()))
+        }
+        fn remove(&self, _key: &str) -> rcman::Result<()> {
+            Err(rcman::Error::CredentialBackendUnavailable("down".into()))
+        }
+        fn list_keys(&self) -> rcman::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        fn backend_name(&self) -> &'static str {
+            "unavailable"
+        }
+    }
+
+    let temp_dir = TempDir::new().unwrap();
+    let config = SettingsConfig::builder("managed-volatile", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
+        .with_credential_config(CredentialConfig::Custom(Arc::new(UnavailableBackend)))
+        .build();
+    let manager = SettingsManager::new(config).unwrap();
+
+    manager
+        .save_setting("api", "key", &json!("memory-only-secret"))
+        .unwrap();
+
+    let credentials = manager.credentials().unwrap();
+    assert!(credentials.is_volatile_active());
+    assert_eq!(
+        credentials.get("api.key").unwrap().as_deref(),
+        Some("memory-only-secret")
+    );
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
 fn test_credential_status_reports_degraded_primary_without_io_probe() {
     use rcman::CredentialBackend;
     use std::sync::Arc;

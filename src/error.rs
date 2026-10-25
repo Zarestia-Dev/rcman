@@ -7,7 +7,10 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Main error type for rcman library
+///
+/// New variants may be added in minor releases; match with a wildcard arm.
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     // -------------------------------------------------------------------------
     // I/O Errors
@@ -137,6 +140,13 @@ pub enum Error {
     #[error("Credential error: {0}")]
     Credential(String),
 
+    /// A credential password environment variable is not set.
+    ///
+    /// Distinct from [`Error::Credential`], which reports unreadable or corrupt
+    /// stored data, so callers can degrade instead of aborting startup.
+    #[error("Credential password source is not set: {0}")]
+    CredentialSourceMissing(String),
+
     /// A credential backend could not be accessed, so no result about this key is available.
     #[error("Credential backend unavailable: {0}")]
     CredentialBackendUnavailable(String),
@@ -256,6 +266,12 @@ impl Error {
             self,
             Error::PathNotFound(_) | Error::SettingNotFound(_) | Error::SubSettingsEntryNotFound(_)
         )
+    }
+
+    /// Check if a credential password source (env var) was not provided
+    #[must_use]
+    pub fn is_credential_source_missing(&self) -> bool {
+        matches!(self, Error::CredentialSourceMissing(_))
     }
 
     /// Check if this is a backup-related error

@@ -294,7 +294,7 @@ pub use config::{
     SettingMetadata, SettingOption, SettingType, SettingsConfig, SettingsConfigBuilder,
     SettingsSchema, TextConstraints, meta, opt,
 };
-/// Core configuration types and traits for settings management.
+/// Insertion-ordered map used for setting metadata; keeps schema order deterministic.
 pub use indexmap::IndexMap;
 
 #[cfg(feature = "hot-reload")]

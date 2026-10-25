@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.6] - 2026-10-25
+
+### Changed
+
+- Mark `Error` as `#[non_exhaustive]` so variants can be added without breaking matches.
+
+### Fixed
+
+- Do not fail startup when the credential password environment variable (e.g. `MY_APP_SECRET`) is unset or empty; use the keychain without the encrypted file fallback and log a warning.
+- Resolve the password environment variable through the configured `EnvSource`.
+- Report a missing password environment variable as the new `Error::CredentialSourceMissing`, separate from `Error::Credential` (corrupt or unreadable data).
+- Managed settings saves hold new secrets in volatile memory when no persistent credential backend is reachable, instead of failing with `No persistent credential backend available`. Removals with a configured persistent fallback and errors from reachable backends are still returned.
+
 ## [0.2.5] - 2026-10-25
 
 ### Fixed

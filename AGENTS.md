@@ -55,6 +55,12 @@ This file provides guidance to AI coding agents (e.g. Antigravity, Claude Code, 
    - **DO NOT** provide `#[cfg(not(feature = "..."))]` dummy/stub methods (e.g., methods returning `false`, `None`, empty lists, or no-op/dummy errors) to allow un-gated code to compile. Consumers must explicitly enable the relevant feature to access its API surface.
    - Internal implementation code must use targeted `#[cfg(feature = "...")]` compilation checks rather than defining dummy variables or `unreachable!()` fallback branches.
 
+7. **Credential Degradation Invariants (CRITICAL)**
+   - Missing credential configuration must never abort startup. An unset or empty password env var (e.g. `MY_APP_SECRET`) in Docker/headless means "no encrypted file fallback": use the keychain, then volatile memory, and log a warning. Only an existing but unreadable/corrupt fallback file, or an explicitly configured password file that cannot be read, is a startup error.
+   - Every write path (`CredentialManager::store*` and managed `save_setting`/`save_all`) follows the same order: keychain → persistent fallback → volatile memory. Never add a path that errors where another degrades. Removals with a configured persistent fallback are the one exception, because a confirmed delete is required.
+   - Distinguish "unavailable/not provided" (`CredentialBackendUnavailable`, `CredentialSourceMissing`) from "broken data" (`Credential`). Degrade on the former, surface the latter.
+   - Any change to credential init, fallback or commit logic must keep `tests/missing_secret_env.rs` and the managed-save outage tests in `tests/credentials.rs` passing, and must add a test for the headless (no keyring, no password) scenario it touches.
+
 ---
 
 ## CI & Automated Workflows ([.github/workflows/ci.yml](.github/workflows/ci.yml))

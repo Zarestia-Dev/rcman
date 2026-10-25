@@ -210,8 +210,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Rollback failures are reported as `Error::TransactionFailed`. This is not
     /// crash-atomic across the filesystem and OS credential store. Direct access
     /// to the backends or other manager instances requires caller coordination.
-    /// Credential writes require a readable, writable primary backend; no silent
-    /// fallback to volatile storage is performed by managed saves.
+    /// Credential writes use the first reachable persistent backend. When none is
+    /// reachable, new values are held in volatile memory (see
+    /// `CredentialManager::is_volatile_active`) and a warning is logged; removals
+    /// and errors from a reachable backend are still returned.
     ///
     /// Performs pre-validation, updates stored settings, routes secret settings to keychain,
     /// removes default values to keep storage minimal, and dispatches change events.

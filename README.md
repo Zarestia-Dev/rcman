@@ -614,7 +614,7 @@ Settings marked with `.secret()` are automatically stored in the most secure bac
 // 2. Configure the manager with your choice of credentials provider!
 // Automatic environment variable resolution (Keychain + Encrypted File fallback)
 let manager = SettingsManager::builder("my-app", "1.0.0")
-    .with_env_credentials() // Resolves MY_APP_SECRET and MY_APP_SECRET_PATH
+    .with_env_credentials() // Resolves MY_APP_SECRET and MY_APP_SECRET_PATH (optional: if unset, keyring only, then memory)
     .build()?;
 
 // Or read the master password from a specific file
@@ -644,7 +644,7 @@ A profile-scoped `__rcman_secrets__` index tracks credential names for migration
 
 #### Three-Tier Security Hierarchy
 
-Direct credential writes can fall back to volatile memory when persistent backends fail. Managed settings writes require persistent storage, and deletion errors are returned to the caller:
+Credential writes fall back to volatile memory when no persistent backend is reachable (for example Docker without a keyring or password). Managed settings writes use the first reachable persistent backend; if none is reachable, new secrets are held in memory with a warning and are lost on restart. Errors from a reachable backend, and removals when a persistent fallback is configured, are returned to the caller:
 
 | Tier             | Backend             | Persistence | Use Case                                                      |
 | :--------------- | :------------------ | :---------- | :------------------------------------------------------------ |

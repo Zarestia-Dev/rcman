@@ -3,7 +3,7 @@ members = [".", "rcman-derive"]
 
 [package]
 name = "rcman"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 authors = ["Hakan İSMAİL <hakanismail53@gmail.com>"]
 description = "Framework-agnostic settings management with schema, backup/restore, secrets and derive macro support"
@@ -49,7 +49,7 @@ time = { version = "0.3", features = ["serde", "serde-well-known", "formatting",
 regex = "1.12"
 dirs = "6.0"
 lru = "0.16"
-rcman-derive = { path = "rcman-derive", version = "0.2.5", optional = true }
+rcman-derive = { path = "rcman-derive", version = "0.2.6", optional = true }
 zip = { version = "8.2", default-features = false, features = ["deflate", "time", "aes-crypto"], optional = true }
 sha2 = { version = "0.11", optional = true }
 tempfile = { version = "3.26", optional = true }

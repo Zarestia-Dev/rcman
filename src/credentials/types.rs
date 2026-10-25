@@ -101,7 +101,9 @@ impl SecretPasswordSource {
     pub(crate) fn resolve_untrimmed(self) -> crate::Result<String> {
         match self {
             Self::Environment(var) => std::env::var(&var).map_err(|_| {
-                crate::Error::Credential(format!("Environment variable '{var}' not found"))
+                crate::Error::CredentialSourceMissing(format!(
+                    "environment variable '{var}' not found"
+                ))
             }),
             Self::File(path) => std::fs::read_to_string(&path)
                 .map_err(|source| crate::Error::FileRead { path, source }),
