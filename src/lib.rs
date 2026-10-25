@@ -384,7 +384,8 @@ pub use profiles::{
 
 /// Credential storage backend trait and types.
 pub use credentials::{
-    CredentialBackend, MemoryBackend, SecretBackupPolicy, SecretPasswordSource, SecretStorage,
+    CredentialBackend, CredentialStatus, MemoryBackend, SecretBackupPolicy, SecretPasswordSource,
+    SecretStorage,
 };
 
 /// Keychain backend (requires `keychain` feature).

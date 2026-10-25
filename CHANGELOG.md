@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.5] - 2026-10-25
+
+### Fixed
+
+- Return an empty credential read when the primary keychain is unavailable and no fallback value exists, while preserving volatile/cache reads and real backend errors.
+- Propagate encrypted credential fallback initialization and filesystem errors instead of silently disabling the configured fallback.
+- Keep primary credential corruption and lock errors visible during existence checks and managed commits; only classified backend outages may use cached reads or persistent fallback writes.
+
 ## [0.2.4] - 2026-10-17
 
 ### Fixed

@@ -44,6 +44,11 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+fn is_credential_backend_unavailable(error: &crate::error::Error) -> bool {
+    matches!(error, crate::error::Error::CredentialBackendUnavailable(_))
+}
+
 /// Trait for credential storage backends
 pub trait CredentialBackend: Send + Sync {
     /// Store a credential
@@ -57,7 +62,9 @@ pub trait CredentialBackend: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error if the backend fails to retrieve the key.
+    /// Returns an error if the backend fails to retrieve the key. Use
+    /// [`crate::Error::CredentialBackendUnavailable`] when access to the backend
+    /// is unavailable; reserve other errors for failures such as invalid data.
     fn get(&self, key: &str) -> Result<Option<String>>;
 
     /// Remove a credential
@@ -85,6 +92,23 @@ pub trait CredentialBackend: Send + Sync {
 
     /// Backend name for logging/debugging
     fn backend_name(&self) -> &'static str;
+}
+
+/// Operational state of the credential backends.
+///
+/// `primary_available` reflects the last observed primary backend operation,
+/// not a live probe. A `false` value means the primary backend should be
+/// considered degraded until a later operation succeeds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CredentialStatus {
+    /// Name of the configured primary backend.
+    pub primary_backend: &'static str,
+    /// Name of the configured persistent fallback, if any.
+    pub fallback_backend: Option<&'static str>,
+    /// Whether the primary backend has not recently reported an outage.
+    pub primary_available: bool,
+    /// Whether a write currently exists only in volatile memory.
+    pub volatile_writes: bool,
 }
 
 /// Credential manager with configurable backend and fallback
@@ -168,19 +192,24 @@ impl CredentialManager {
     }
 
     /// Create with automatic fallback to encrypted file using a password source
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the password source cannot be resolved or if the
+    /// encrypted fallback file is invalid or cannot be read.
     #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
     pub fn with_fallback(
         service_name: impl Into<String>,
         fallback_path: std::path::PathBuf,
         password_source: &SecretPasswordSource,
-    ) -> Self {
+    ) -> Result<Self> {
         let service = service_name.into();
 
-        let fallback = EncryptedFileBackend::with_source(fallback_path, password_source).ok();
+        let fallback = EncryptedFileBackend::with_source(fallback_path, password_source)?;
 
-        Self {
+        Ok(Self {
             primary: Arc::new(KeychainBackend::new(service.clone())),
-            fallback: fallback.map(|f| Arc::new(f) as Arc<dyn CredentialBackend>),
+            fallback: Some(Arc::new(fallback)),
             is_primary_failed: Arc::new(AtomicBool::new(false)),
             commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: service,
@@ -192,7 +221,7 @@ impl CredentialManager {
             )),
             #[cfg(feature = "profiles")]
             tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
-        }
+        })
     }
 
     /// Create with only memory backend (for testing)
@@ -266,6 +295,24 @@ impl CredentialManager {
     #[must_use]
     pub fn is_volatile_active(&self) -> bool {
         self.memory.has_volatile_writes().unwrap_or(false)
+    }
+
+    /// Return the current operational status of the credential backends.
+    ///
+    /// The status does not perform network, keychain, or filesystem I/O. The
+    /// primary availability flag is updated by credential operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::LockPoisoned`] if the in-memory credential
+    /// state cannot be inspected.
+    pub fn status(&self) -> Result<CredentialStatus> {
+        Ok(CredentialStatus {
+            primary_backend: self.primary.backend_name(),
+            fallback_backend: self.fallback.as_ref().map(|backend| backend.backend_name()),
+            primary_available: !self.is_primary_failed(),
+            volatile_writes: self.memory.has_volatile_writes()?,
+        })
     }
 
     /// Store a credential
@@ -367,7 +414,8 @@ impl CredentialManager {
     ///
     /// # Errors
     ///
-    /// Returns an error if the primary backend fails to retrieve the key or if the fallback backend fails to retrieve the key.
+    /// Returns an error for backend read failures other than classified access
+    /// outages, or if reading the in-memory cache fails.
     pub fn get(&self, key: &str) -> Result<Option<String>> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
@@ -382,54 +430,85 @@ impl CredentialManager {
     ///
     /// # Errors
     ///
-    /// Returns an error if the primary backend fails to retrieve the key or if the fallback backend fails to retrieve the key.
+    /// Returns an error if a backend reports an internal read failure, or if reading
+    /// the in-memory cache fails. An unavailable primary backend with no cached or
+    /// fallback value is treated as an unknown credential and returns `Ok(None)`.
     pub fn get_with_profile(&self, key: &str, profile: Option<&str>) -> Result<Option<String>> {
+        self.get_with_profile_status(key, profile)
+            .map(|(value, _)| value)
+    }
+
+    pub(crate) fn get_with_profile_status(
+        &self,
+        key: &str,
+        profile: Option<&str>,
+    ) -> Result<(Option<String>, bool)> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let full_key = self.make_key_with_profile(key, profile);
         #[cfg(feature = "backup")]
         self.memory.capture(&full_key, &self.service_name)?;
 
-        let mut backend_error = None;
-        let mut read_failed = false;
-        let mut fallback_read = false;
+        let mut fallback_error = None;
         if let Some(fallback) = &self.fallback {
             match fallback.get(&full_key) {
                 Ok(Some(value)) => {
                     self.memory
                         .store(&full_key, MemoryEntry::Cached(value.clone()))?;
-                    return Ok(Some(value));
+                    return Ok((Some(value), false));
                 }
-                Ok(None) => fallback_read = true,
-                Err(error) => {
-                    read_failed = true;
-                    backend_error = Some(error);
-                }
+                Ok(None) => {}
+                Err(error) => fallback_error = Some(error),
             }
         }
-        match self.primary.get(&full_key) {
+        let primary_unavailable = match self.primary.get(&full_key) {
             Ok(Some(value)) => {
                 self.is_primary_failed.store(false, Ordering::Relaxed);
                 self.memory
                     .store(&full_key, MemoryEntry::Cached(value.clone()))?;
-                return Ok(Some(value));
+                return Ok((Some(value), false));
             }
             Ok(None) => {
                 self.is_primary_failed.store(false, Ordering::Relaxed);
+                false
             }
             Err(error) => {
-                read_failed = true;
                 self.is_primary_failed.store(true, Ordering::Relaxed);
-                if !fallback_read {
-                    backend_error = Some(error);
+                if !is_credential_backend_unavailable(&error) {
+                    return Err(error);
                 }
+                log::debug!(
+                    "Credential read from primary backend '{}' is unavailable: {error}",
+                    self.primary.backend_name()
+                );
+                true
             }
+        };
+
+        if let Some(error) = fallback_error.take() {
+            if !is_credential_backend_unavailable(&error) {
+                return Err(error);
+            }
+            fallback_error = Some(error);
         }
 
+        let read_failed = primary_unavailable
+            || fallback_error
+                .as_ref()
+                .is_some_and(is_credential_backend_unavailable);
+
         if let Some(value) = self.memory.read_fallback(&full_key, read_failed)? {
-            return Ok(Some(value));
+            return Ok((Some(value), read_failed));
         }
-        backend_error.map_or(Ok(None), Err)
+
+        if let Some(error) = fallback_error {
+            return Err(error);
+        }
+
+        // An unavailable primary does not prove that the credential is absent.
+        // With no fallback value, return an empty read while keeping
+        // `is_primary_failed()` set so callers can distinguish the outage.
+        Ok((None, read_failed))
     }
 
     /// Remove a credential
@@ -491,19 +570,37 @@ impl CredentialManager {
     }
 
     /// Check if a credential exists
+    ///
+    /// Returns `false` when a backend cannot be checked. Use
+    /// [`Self::try_exists`] when the caller needs to distinguish that case from
+    /// confirmed absence.
     #[must_use]
     pub fn exists(&self, key: &str) -> bool {
         self.exists_with_profile(key, None)
     }
 
     /// Check if a credential exists with optional profile context
+    ///
+    /// Returns `false` when a backend cannot be checked. Use
+    /// [`Self::try_exists_with_profile`] when the caller needs to distinguish
+    /// that case from confirmed absence.
     #[must_use]
     pub fn exists_with_profile(&self, key: &str, profile: Option<&str>) -> bool {
         self.try_exists_with_profile(key, profile).unwrap_or(false)
     }
 
-    /// Distinguish confirmed absence from access errors before pruning tracking.
-    pub(crate) fn try_exists_with_profile(&self, key: &str, profile: Option<&str>) -> Result<bool> {
+    /// Check whether a credential exists while preserving backend errors.
+    pub fn try_exists(&self, key: &str) -> Result<bool> {
+        self.try_exists_with_profile(key, None)
+    }
+
+    /// Check whether a credential exists in the selected profile while preserving errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a backend reports an internal failure, all configured
+    /// backends are unavailable, or an in-memory lock is poisoned.
+    pub fn try_exists_with_profile(&self, key: &str, profile: Option<&str>) -> Result<bool> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         let full_key = self.make_key_with_profile(key, profile);
@@ -513,6 +610,9 @@ impl CredentialManager {
                 Ok(true) => return Ok(true),
                 Ok(false) => {}
                 Err(error) => {
+                    if !is_credential_backend_unavailable(&error) {
+                        return Err(error);
+                    }
                     failure.get_or_insert(error);
                 }
             }
@@ -649,6 +749,14 @@ impl CredentialManager {
         &self,
         profile: Option<&str>,
     ) -> Result<std::collections::HashSet<String>> {
+        self.get_tracked_secrets_with_status(profile)
+            .map(|(secrets, _)| secrets)
+    }
+
+    fn get_tracked_secrets_with_status(
+        &self,
+        profile: Option<&str>,
+    ) -> Result<(std::collections::HashSet<String>, bool)> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
         #[cfg(feature = "profiles")]
@@ -660,12 +768,14 @@ impl CredentialManager {
                 .read()
                 .map_err(|_| crate::error::Error::LockPoisoned)?;
             if let Some(cache) = cache_guard.get(&profile_key) {
-                return Ok(cache.clone());
+                return Ok((cache.clone(), false));
             }
         }
 
         // Perform I/O outside of the write lock to prevent blocking concurrent readers/writers
-        let secrets = match self.get_with_profile("__rcman_secrets__", profile)? {
+        let (tracked_value, backend_unavailable) =
+            self.get_with_profile_status("__rcman_secrets__", profile)?;
+        let secrets = match tracked_value {
             Some(value_str) => {
                 let list: Vec<String> = serde_json::from_str(&value_str).map_err(|e| {
                     crate::error::Error::Credential(format!(
@@ -677,12 +787,14 @@ impl CredentialManager {
             None => std::collections::HashSet::new(),
         };
 
-        let mut cache_guard = self
-            .tracked_secrets_cache
-            .write()
-            .map_err(|_| crate::error::Error::LockPoisoned)?;
-        cache_guard.insert(profile_key, secrets.clone());
-        Ok(secrets)
+        if !backend_unavailable {
+            let mut cache_guard = self
+                .tracked_secrets_cache
+                .write()
+                .map_err(|_| crate::error::Error::LockPoisoned)?;
+            cache_guard.insert(profile_key, secrets.clone());
+        }
+        Ok((secrets, backend_unavailable))
     }
 
     /// Save tracked secrets to the credential store and update the in-memory cache.
@@ -729,10 +841,18 @@ impl CredentialManager {
     /// Returns an error if reading the credential store or parsing fails.
     #[cfg(feature = "profiles")]
     pub fn get_tracked_profiles(&self) -> Result<std::collections::HashSet<String>> {
+        self.get_tracked_profiles_with_status()
+            .map(|(profiles, _)| profiles)
+    }
+
+    #[cfg(feature = "profiles")]
+    fn get_tracked_profiles_with_status(
+        &self,
+    ) -> Result<(std::collections::HashSet<String>, bool)> {
         if self.profile_context.is_some() {
             let mut root = self.clone();
             root.profile_context = None;
-            return root.get_tracked_profiles();
+            return root.get_tracked_profiles_with_status();
         }
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
@@ -742,12 +862,14 @@ impl CredentialManager {
                 .read()
                 .map_err(|_| crate::error::Error::LockPoisoned)?;
             if let Some(ref cache) = *cache_guard {
-                return Ok(cache.clone());
+                return Ok((cache.clone(), false));
             }
         }
 
         // Perform I/O outside of the write lock
-        let profiles: std::collections::HashSet<String> = match self.get("__rcman_profiles__")? {
+        let (tracked_value, backend_unavailable) =
+            self.get_with_profile_status("__rcman_profiles__", None)?;
+        let profiles: std::collections::HashSet<String> = match tracked_value {
             Some(value_str) => {
                 let list: Vec<String> = serde_json::from_str(&value_str).map_err(|e| {
                     crate::error::Error::Credential(format!(
@@ -759,12 +881,14 @@ impl CredentialManager {
             None => std::collections::HashSet::new(),
         };
 
-        let mut cache_guard = self
-            .tracked_profiles_cache
-            .write()
-            .map_err(|_| crate::error::Error::LockPoisoned)?;
-        *cache_guard = Some(profiles.clone());
-        Ok(profiles)
+        if !backend_unavailable {
+            let mut cache_guard = self
+                .tracked_profiles_cache
+                .write()
+                .map_err(|_| crate::error::Error::LockPoisoned)?;
+            *cache_guard = Some(profiles.clone());
+        }
+        Ok((profiles, backend_unavailable))
     }
 
     /// Register a profile name in the tracked profiles list and update the in-memory cache.
@@ -781,7 +905,12 @@ impl CredentialManager {
         }
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
-        let mut profiles = self.get_tracked_profiles()?;
+        let (mut profiles, backend_unavailable) = self.get_tracked_profiles_with_status()?;
+        if backend_unavailable {
+            return Err(crate::error::Error::CredentialBackendUnavailable(
+                "Cannot update tracked profiles while the credential backend is unavailable".into(),
+            ));
+        }
         if profiles.insert(profile.to_string()) {
             let list: Vec<&String> = profiles.iter().collect();
             let value_str = serde_json::to_string(&list).map_err(|e| {
@@ -808,7 +937,12 @@ impl CredentialManager {
     pub fn add_tracked_secret(&self, key: &str, profile: Option<&str>) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
-        let mut tracked = self.get_tracked_secrets(profile)?;
+        let (mut tracked, backend_unavailable) = self.get_tracked_secrets_with_status(profile)?;
+        if backend_unavailable {
+            return Err(crate::error::Error::CredentialBackendUnavailable(
+                "Cannot update tracked secrets while the credential backend is unavailable".into(),
+            ));
+        }
         if tracked.insert(key.to_string()) {
             self.save_tracked_secrets(&tracked, profile)?;
         }
@@ -823,7 +957,12 @@ impl CredentialManager {
     pub fn remove_tracked_secret(&self, key: &str, profile: Option<&str>) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter_credentials(&self.service_name)?;
-        let mut tracked = self.get_tracked_secrets(profile)?;
+        let (mut tracked, backend_unavailable) = self.get_tracked_secrets_with_status(profile)?;
+        if backend_unavailable {
+            return Err(crate::error::Error::CredentialBackendUnavailable(
+                "Cannot update tracked secrets while the credential backend is unavailable".into(),
+            ));
+        }
         if tracked.remove(key) {
             self.save_tracked_secrets(&tracked, profile)?;
         }
@@ -886,6 +1025,209 @@ impl CredentialManager {
 mod tests {
     use super::*;
 
+    fn manager_with_backends(
+        primary: Arc<dyn CredentialBackend>,
+        fallback: Option<Arc<dyn CredentialBackend>>,
+    ) -> CredentialManager {
+        CredentialManager {
+            primary,
+            fallback,
+            is_primary_failed: Arc::new(AtomicBool::new(false)),
+            commit_lock: Arc::new(std::sync::Mutex::new(())),
+            service_name: "test-app".to_string(),
+            #[cfg(feature = "profiles")]
+            profile_context: None,
+            memory: Arc::new(CredentialMemory::default()),
+            tracked_secrets_cache: Arc::new(std::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            #[cfg(feature = "profiles")]
+            tracked_profiles_cache: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    struct UnavailableBackend;
+
+    impl CredentialBackend for UnavailableBackend {
+        fn store(&self, _key: &str, _value: &str) -> Result<()> {
+            Err(crate::Error::CredentialBackendUnavailable(
+                "test backend unavailable".into(),
+            ))
+        }
+
+        fn get(&self, _key: &str) -> Result<Option<String>> {
+            Err(crate::Error::CredentialBackendUnavailable(
+                "test backend unavailable".into(),
+            ))
+        }
+
+        fn remove(&self, _key: &str) -> Result<()> {
+            Err(crate::Error::CredentialBackendUnavailable(
+                "test backend unavailable".into(),
+            ))
+        }
+
+        fn list_keys(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "unavailable"
+        }
+    }
+
+    struct InternalErrorBackend;
+
+    impl CredentialBackend for InternalErrorBackend {
+        fn store(&self, _key: &str, _value: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get(&self, _key: &str) -> Result<Option<String>> {
+            Err(crate::Error::LockPoisoned)
+        }
+
+        fn remove(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_keys(&self) -> Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "internal_error"
+        }
+    }
+
+    #[test]
+    fn unavailable_primary_without_memory_returns_none() {
+        let manager = manager_with_backends(Arc::new(UnavailableBackend), None);
+
+        assert_eq!(manager.get_with_profile("token", None).unwrap(), None);
+        assert!(matches!(
+            manager.try_exists("token"),
+            Err(crate::Error::CredentialBackendUnavailable(_))
+        ));
+        assert!(!manager.exists("token"));
+        assert!(manager.get_tracked_secrets(None).unwrap().is_empty());
+        assert!(manager.tracked_secrets_cache.read().unwrap().is_empty());
+        assert!(manager.add_tracked_secret("token", None).is_err());
+        #[cfg(feature = "profiles")]
+        {
+            assert!(manager.get_tracked_profiles().unwrap().is_empty());
+            assert!(manager.tracked_profiles_cache.read().unwrap().is_none());
+            assert!(manager.add_tracked_profile("work").is_err());
+        }
+        assert!(manager.is_primary_failed());
+        assert!(!manager.is_volatile_active());
+    }
+
+    #[test]
+    fn unavailable_primary_returns_volatile_write() {
+        let manager = manager_with_backends(Arc::new(UnavailableBackend), None);
+        manager
+            .memory
+            .store(
+                "test-app:token",
+                MemoryEntry::VolatileWrite("volatile".into()),
+            )
+            .unwrap();
+
+        assert_eq!(
+            manager.get_with_profile("token", None).unwrap().as_deref(),
+            Some("volatile")
+        );
+        assert!(manager.is_primary_failed());
+        assert!(manager.is_volatile_active());
+    }
+
+    #[test]
+    fn unavailable_primary_returns_cached_persistent_value() {
+        let manager = manager_with_backends(Arc::new(UnavailableBackend), None);
+        manager
+            .memory
+            .store("test-app:token", MemoryEntry::Cached("cached".into()))
+            .unwrap();
+
+        assert_eq!(
+            manager.get_with_profile("token", None).unwrap().as_deref(),
+            Some("cached")
+        );
+        assert!(manager.is_primary_failed());
+        assert!(!manager.is_volatile_active());
+    }
+
+    #[cfg(feature = "encrypted-file")]
+    #[test]
+    fn unavailable_primary_reads_encrypted_fallback_value() {
+        let directory = tempfile::tempdir().unwrap();
+        let fallback = crate::credentials::EncryptedFileBackend::with_password(
+            directory.path().join("credentials.enc.json"),
+            "test-password",
+        )
+        .unwrap();
+        fallback.store("test-app:token", "encrypted").unwrap();
+        let manager = manager_with_backends(Arc::new(UnavailableBackend), Some(Arc::new(fallback)));
+
+        assert_eq!(
+            manager.get_with_profile("token", None).unwrap().as_deref(),
+            Some("encrypted")
+        );
+        assert!(!manager.is_volatile_active());
+    }
+
+    #[test]
+    fn confirmed_primary_miss_discards_stale_cached_value() {
+        let primary = Arc::new(MemoryBackend::new());
+        let manager = manager_with_backends(primary, None);
+        manager
+            .memory
+            .store("test-app:token", MemoryEntry::Cached("stale".into()))
+            .unwrap();
+
+        assert_eq!(manager.get_with_profile("token", None).unwrap(), None);
+        assert_eq!(
+            manager
+                .memory
+                .read_fallback("test-app:token", true)
+                .unwrap(),
+            None
+        );
+        assert!(!manager.is_primary_failed());
+    }
+
+    #[test]
+    fn internal_primary_and_fallback_errors_are_not_hidden_by_memory() {
+        let primary = manager_with_backends(Arc::new(InternalErrorBackend), None);
+        assert!(matches!(
+            primary.get_with_profile("token", None),
+            Err(crate::Error::LockPoisoned)
+        ));
+        primary
+            .memory
+            .store(
+                "test-app:token",
+                MemoryEntry::VolatileWrite("volatile".into()),
+            )
+            .unwrap();
+        assert!(matches!(
+            primary.try_exists_with_profile("token", None),
+            Err(crate::Error::LockPoisoned)
+        ));
+
+        let manager =
+            manager_with_backends(Arc::new(UnavailableBackend), Some(Arc::new(FailingBackend)));
+        manager
+            .memory
+            .store("test-app:token", MemoryEntry::Cached("stale".into()))
+            .unwrap();
+        assert!(matches!(
+            manager.get_with_profile("token", None),
+            Err(crate::Error::Credential(_))
+        ));
+    }
+
     struct FailingBackend;
 
     impl CredentialBackend for FailingBackend {
@@ -943,7 +1285,7 @@ mod tests {
     #[test]
     fn test_fallback_used_when_primary_backend_fails() {
         let manager = CredentialManager {
-            primary: std::sync::Arc::new(FailingBackend),
+            primary: std::sync::Arc::new(UnavailableBackend),
             fallback: Some(std::sync::Arc::new(MemoryBackend::new())),
             is_primary_failed: Arc::new(AtomicBool::new(false)),
             commit_lock: Arc::new(std::sync::Mutex::new(())),
@@ -1103,8 +1445,8 @@ mod tests {
     #[test]
     fn test_ultimate_memory_fallback() {
         let manager = CredentialManager {
-            primary: Arc::new(FailingBackend),
-            fallback: Some(Arc::new(FailingBackend)),
+            primary: Arc::new(UnavailableBackend),
+            fallback: Some(Arc::new(UnavailableBackend)),
             is_primary_failed: Arc::new(AtomicBool::new(false)),
             commit_lock: Arc::new(std::sync::Mutex::new(())),
             service_name: "test-app".to_string(),
@@ -1132,7 +1474,7 @@ mod tests {
         // An unavailable persistent backend cannot confirm that the key is absent.
         assert!(matches!(
             manager.get("api_key"),
-            Err(crate::Error::Credential(_))
+            Err(crate::Error::CredentialBackendUnavailable(_))
         ));
     }
 
@@ -1283,7 +1625,9 @@ mod consistency_tests {
         }
         fn get(&self, key: &str) -> Result<Option<String>> {
             if self.read_fails.load(Ordering::Relaxed) {
-                return Err(crate::Error::Credential("read unavailable".into()));
+                return Err(crate::Error::CredentialBackendUnavailable(
+                    "read unavailable".into(),
+                ));
             }
             self.memory.get(key)
         }

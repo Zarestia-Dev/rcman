@@ -275,6 +275,7 @@ impl CredentialManager {
                     if self.fallback.is_none()
                         || changes.iter().any(|(_, value)| value.is_none())
                         || !Arc::ptr_eq(&backend, &self.primary)
+                        || !matches!(&error, Error::CredentialBackendUnavailable(_))
                     {
                         return Err(error);
                     }
@@ -375,7 +376,7 @@ mod tests {
         }
         fn get(&self, key: &str) -> Result<Option<String>> {
             if self.unavailable.load(Ordering::SeqCst) {
-                return Err(Error::Credential("offline".into()));
+                return Err(Error::CredentialBackendUnavailable("offline".into()));
             }
             self.memory.get(key)
         }
@@ -390,6 +391,28 @@ mod tests {
         }
         fn backend_name(&self) -> &'static str {
             "unavailable"
+        }
+    }
+
+    struct CorruptReadBackend {
+        memory: MemoryBackend,
+    }
+
+    impl CredentialBackend for CorruptReadBackend {
+        fn store(&self, key: &str, value: &str) -> Result<()> {
+            self.memory.store(key, value)
+        }
+        fn get(&self, _key: &str) -> Result<Option<String>> {
+            Err(Error::Credential("invalid stored credential data".into()))
+        }
+        fn remove(&self, key: &str) -> Result<()> {
+            self.memory.remove(key)
+        }
+        fn list_keys(&self) -> Result<Vec<String>> {
+            self.memory.list_keys()
+        }
+        fn backend_name(&self) -> &'static str {
+            "corrupt_read"
         }
     }
 
@@ -439,6 +462,29 @@ mod tests {
         );
         assert_eq!(manager.get("key").unwrap(), None);
         assert!(manager.get_tracked_secrets(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn managed_commit_does_not_treat_primary_data_errors_as_outages() {
+        let fallback = Arc::new(MemoryBackend::new());
+        fallback.store("corrupt:__rcman_secrets__", "[]").unwrap();
+        let mut manager = CredentialManager::with_backend(
+            "corrupt",
+            Arc::new(CorruptReadBackend {
+                memory: MemoryBackend::new(),
+            }),
+        );
+        manager.fallback = Some(fallback.clone());
+        let mut finish_called = false;
+
+        let result = manager.commit_settings(&[("key".into(), Some("value".into()))], None, || {
+            finish_called = true;
+            Ok(())
+        });
+
+        assert!(matches!(result, Err(Error::Credential(_))));
+        assert!(!finish_called);
+        assert_eq!(fallback.get("corrupt:key").unwrap(), None);
     }
 
     #[cfg(feature = "profiles")]

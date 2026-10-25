@@ -15,6 +15,15 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 
+fn map_read_error(message: String, error: KeyringError) -> Error {
+    match error {
+        KeyringError::NoStorageAccess(_)
+        | KeyringError::NoDefaultStore
+        | KeyringError::PlatformFailure(_) => Error::CredentialBackendUnavailable(message),
+        _ => Error::Credential(message),
+    }
+}
+
 /// Ensures the platform-native keyring store is initialized.
 ///
 /// On Android, initialization waits until `ndk_context::android_context()` is initialized by the host application (e.g., Tauri v2) to prevent panic or lock poisoning.
@@ -123,6 +132,14 @@ impl KeychainBackend {
         })
     }
 
+    fn get_entry_for_read(&self, key: &str) -> Result<Entry> {
+        ensure_native_store_initialized();
+        Entry::new(&self.service_name, key).map_err(|error| {
+            let message = format!("Failed to create keychain entry for {key}: {error}");
+            map_read_error(message, error)
+        })
+    }
+
     fn track_key(&self, key: &str) {
         if let Ok(mut keys) = self.known_keys.write() {
             keys.insert(key.to_string());
@@ -154,7 +171,7 @@ impl CredentialBackend for KeychainBackend {
         #[cfg(target_os = "linux")]
         let _guard = self.lock.lock().map_err(|_| Error::LockPoisoned)?;
 
-        match self.get_entry(key)?.get_password() {
+        match self.get_entry_for_read(key)?.get_password() {
             Ok(password) => {
                 self.track_key(key);
                 debug!("Credential retrieved from keychain: {key}");
@@ -163,9 +180,8 @@ impl CredentialBackend for KeychainBackend {
             Err(KeyringError::NoEntry) => Ok(None),
             Err(e) => {
                 warn!("Failed to retrieve credential {key} from keychain: {e}");
-                Err(Error::Credential(format!(
-                    "Failed to retrieve credential {key}: {e}"
-                )))
+                let message = format!("Failed to retrieve credential {key}: {e}");
+                Err(map_read_error(message, e))
             }
         }
     }
@@ -208,5 +224,25 @@ impl CredentialBackend for KeychainBackend {
 
     fn backend_name(&self) -> &'static str {
         "keychain"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keychain_access_failures_are_distinct_from_store_corruption() {
+        assert!(matches!(
+            map_read_error("no default store".into(), KeyringError::NoDefaultStore),
+            Error::CredentialBackendUnavailable(_)
+        ));
+        assert!(matches!(
+            map_read_error(
+                "bad store format".into(),
+                KeyringError::BadStoreFormat("invalid data".into())
+            ),
+            Error::Credential(_)
+        ));
     }
 }

@@ -137,6 +137,10 @@ pub enum Error {
     #[error("Credential error: {0}")]
     Credential(String),
 
+    /// A credential backend could not be accessed, so no result about this key is available.
+    #[error("Credential backend unavailable: {0}")]
+    CredentialBackendUnavailable(String),
+
     // -------------------------------------------------------------------------
     // Profile Errors (profiles feature)
     // -------------------------------------------------------------------------

@@ -39,6 +39,13 @@ struct EncryptedStore {
     entries: HashMap<String, EncryptedEntry>,
 }
 
+fn path_exists(path: &Path) -> Result<bool> {
+    path.try_exists().map_err(|source| Error::FileRead {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
 /// Encrypted file backend using AES-256-GCM
 pub struct EncryptedFileBackend {
     path: PathBuf,
@@ -89,19 +96,16 @@ impl EncryptedFileBackend {
     ///
     /// Returns an error if the store cannot be loaded or if decryption fails.
     pub fn warm_cache(&self) -> Result<()> {
-        let _guard = self
-            .write_lock
-            .lock()
-            .map_err(|_| Error::Credential("Encrypted file write lock poisoned".into()))?;
+        let _guard = self.write_lock.lock().map_err(|_| Error::LockPoisoned)?;
 
         let store = self.load_store()?;
-        let mut cache = self.cache.write().map_err(|_| Error::LockPoisoned)?;
-
+        let mut warmed = HashMap::with_capacity(store.entries.len());
         for (key, entry) in &store.entries {
             let value = self.decrypt(entry)?;
-            cache.insert(key.clone(), value);
+            warmed.insert(key.clone(), value);
         }
 
+        *self.cache.write().map_err(|_| Error::LockPoisoned)? = warmed;
         Ok(())
     }
 
@@ -153,7 +157,7 @@ impl EncryptedFileBackend {
     ///
     /// Returns an error if the file cannot be read or parsed.
     pub fn read_salt(path: &Path) -> Result<Option<[u8; 16]>> {
-        if !path.exists() {
+        if !path_exists(path)? {
             return Ok(None);
         }
 
@@ -239,7 +243,7 @@ impl EncryptedFileBackend {
     }
 
     fn load_store(&self) -> Result<EncryptedStore> {
-        if !self.path.exists() {
+        if !path_exists(&self.path)? {
             return Ok(EncryptedStore::default());
         }
 
@@ -362,10 +366,7 @@ impl EncryptedFileBackend {
 
 impl CredentialBackend for EncryptedFileBackend {
     fn store(&self, key: &str, value: &str) -> Result<()> {
-        let _guard = self
-            .write_lock
-            .lock()
-            .map_err(|_| Error::Credential("Encrypted file write lock poisoned".into()))?;
+        let _guard = self.write_lock.lock().map_err(|_| Error::LockPoisoned)?;
 
         let mut store = self.load_store()?;
         let encrypted = self.encrypt(value)?;
@@ -387,10 +388,7 @@ impl CredentialBackend for EncryptedFileBackend {
     }
 
     fn remove(&self, key: &str) -> Result<()> {
-        let _guard = self
-            .write_lock
-            .lock()
-            .map_err(|_| Error::Credential("Encrypted file write lock poisoned".into()))?;
+        let _guard = self.write_lock.lock().map_err(|_| Error::LockPoisoned)?;
 
         let mut store = self.load_store()?;
         store.entries.remove(key);
@@ -484,6 +482,24 @@ mod tests {
         // Wrong password should fail to decrypt during initialization
         let backend3 = EncryptedFileBackend::with_password(path, "wrong_password");
         assert!(backend3.is_err());
+    }
+
+    #[test]
+    fn warm_cache_replaces_values_removed_by_another_backend_instance() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("credentials.enc.json");
+        let first = EncryptedFileBackend::with_password(path.clone(), "password").unwrap();
+        first.store("old", "old-value").unwrap();
+
+        let second = EncryptedFileBackend::with_password(path, "password").unwrap();
+        second.remove("old").unwrap();
+        second.store("new", "new-value").unwrap();
+        assert_eq!(first.get("old").unwrap().as_deref(), Some("old-value"));
+
+        first.warm_cache().unwrap();
+
+        assert_eq!(first.get("old").unwrap(), None);
+        assert_eq!(first.get("new").unwrap().as_deref(), Some("new-value"));
     }
 
     #[test]

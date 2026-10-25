@@ -163,7 +163,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Self::check_profile_initialization(&config, &storage, &vault)?;
 
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        let credentials = Self::initialize_credentials(&config);
+        let credentials = Self::initialize_credentials(&config)?;
 
         let settings_write_lock = Arc::new(RwLock::new(()));
         let settings_cache = Arc::new(SettingsCache::new());
@@ -242,12 +242,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         Ok(manager)
     }
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-    fn initialize_credentials(config: &SettingsConfig<S, Schema>) -> Option<CredentialManager> {
+    fn initialize_credentials(
+        config: &SettingsConfig<S, Schema>,
+    ) -> Result<Option<CredentialManager>> {
         match &config.credential_config {
-            CredentialConfig::Disabled => None,
+            CredentialConfig::Disabled => Ok(None),
             CredentialConfig::Default => {
                 log::debug!("Credential management enabled with default backend");
-                Some(CredentialManager::new(&config.app_name))
+                Ok(Some(CredentialManager::new(&config.app_name)))
             }
             #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
             CredentialConfig::WithFallback {
@@ -260,18 +262,18 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 let path = fallback_path
                     .clone()
                     .unwrap_or_else(|| config.config_dir.join("secrets.enc"));
-                Some(CredentialManager::with_fallback(
+                Ok(Some(CredentialManager::with_fallback(
                     &config.app_name,
                     path,
                     password,
-                ))
+                )?))
             }
             CredentialConfig::Custom(backend) => {
                 log::debug!("Credential management enabled with custom backend");
-                Some(CredentialManager::with_backend(
+                Ok(Some(CredentialManager::with_backend(
                     &config.app_name,
                     backend.clone(),
-                ))
+                )))
             }
         }
     }

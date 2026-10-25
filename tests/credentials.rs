@@ -487,6 +487,120 @@ fn test_encrypted_fallback_with_file_password() {
     assert_eq!(val, json!("secret-value"));
 }
 
+#[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_invalid_encrypted_fallback_prevents_manager_startup() {
+    use rcman::SecretPasswordSource;
+
+    let temp_dir = TempDir::new().unwrap();
+    let fallback_path = temp_dir.path().join("secrets.enc.json");
+    std::fs::write(&fallback_path, "invalid encrypted data").unwrap();
+    let config = SettingsConfig::builder("invalid-fallback", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
+        .with_encrypted_fallback(&fallback_path, SecretPasswordSource::provided("password"))
+        .build();
+
+    assert!(matches!(
+        SettingsManager::new(config),
+        Err(rcman::Error::Credential(_))
+    ));
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_startup_outage_does_not_cache_or_write_empty_tracking() {
+    use rcman::{CredentialBackend, CredentialConfig};
+    use std::sync::Arc;
+
+    struct UnavailableBackend;
+
+    impl CredentialBackend for UnavailableBackend {
+        fn store(&self, _key: &str, _value: &str) -> rcman::Result<()> {
+            Err(rcman::Error::Credential("write unavailable".into()))
+        }
+
+        fn get(&self, _key: &str) -> rcman::Result<Option<String>> {
+            Err(rcman::Error::CredentialBackendUnavailable(
+                "backend unavailable".into(),
+            ))
+        }
+
+        fn remove(&self, _key: &str) -> rcman::Result<()> {
+            Err(rcman::Error::Credential("remove unavailable".into()))
+        }
+
+        fn list_keys(&self) -> rcman::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "unavailable"
+        }
+    }
+
+    let temp_dir = TempDir::new().unwrap();
+    let config = SettingsConfig::builder("startup-outage", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_schema::<TestSettings>()
+        .with_credential_config(CredentialConfig::Custom(Arc::new(UnavailableBackend)))
+        .build();
+
+    let manager = SettingsManager::new(config).unwrap();
+    let credentials = manager.credentials().unwrap();
+    assert!(credentials.is_primary_failed());
+    assert!(credentials.get_tracked_secrets(None).unwrap().is_empty());
+    assert!(!credentials.is_volatile_active());
+}
+
+#[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+#[test]
+fn test_credential_status_reports_degraded_primary_without_io_probe() {
+    use rcman::CredentialBackend;
+    use std::sync::Arc;
+
+    struct UnavailableBackend;
+
+    impl CredentialBackend for UnavailableBackend {
+        fn store(&self, _key: &str, _value: &str) -> rcman::Result<()> {
+            Err(rcman::Error::CredentialBackendUnavailable(
+                "backend unavailable".into(),
+            ))
+        }
+
+        fn get(&self, _key: &str) -> rcman::Result<Option<String>> {
+            Err(rcman::Error::CredentialBackendUnavailable(
+                "backend unavailable".into(),
+            ))
+        }
+
+        fn remove(&self, _key: &str) -> rcman::Result<()> {
+            Ok(())
+        }
+
+        fn list_keys(&self) -> rcman::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn backend_name(&self) -> &'static str {
+            "unavailable"
+        }
+    }
+
+    let credentials =
+        rcman::CredentialManager::with_backend("status-api", Arc::new(UnavailableBackend));
+    let initial = credentials.status().unwrap();
+    assert_eq!(initial.primary_backend, "unavailable");
+    assert_eq!(initial.fallback_backend, None);
+    assert!(initial.primary_available);
+    assert!(!initial.volatile_writes);
+
+    assert_eq!(credentials.get("missing").unwrap(), None);
+    let degraded = credentials.status().unwrap();
+    assert!(!degraded.primary_available);
+    assert!(!degraded.volatile_writes);
+}
+
 #[test]
 fn test_secret_password_source_helpers() {
     let env_src = rcman::SecretPasswordSource::env("RCMAN_TEST_PASS");
@@ -1024,7 +1138,7 @@ fn test_runtime_keychain_disconnect_resilience_and_zero_stale() {
 
         fn get(&self, key: &str) -> rcman::Result<Option<String>> {
             if self.is_disconnected.load(Ordering::Relaxed) {
-                return Err(rcman::Error::Credential(
+                return Err(rcman::Error::CredentialBackendUnavailable(
                     "OS Keychain daemon disconnected".into(),
                 ));
             }

@@ -59,23 +59,25 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ) -> Result<std::collections::HashSet<String>> {
         let creds = self.require_credentials()?;
         // Check if __rcman_secrets__ exists in credential store
-        if creds
-            .get_with_profile("__rcman_secrets__", profile)?
-            .is_none()
-        {
-            // Set the is_upgraded flag to indicate we did a fallback scan
-            self.is_upgraded
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-
+        let (tracked_value, mut backend_unavailable) =
+            creds.get_with_profile_status("__rcman_secrets__", profile)?;
+        if tracked_value.is_none() {
             // Backward-compatible one-time fallback scan:
             // Scan all keys in the schema metadata to check what is in credentials
             let mut initial_tracked = std::collections::HashSet::new();
             for full_key in self.schema_metadata.keys() {
-                if creds.get_with_profile(full_key, profile)?.is_some() {
+                let (value, unavailable) = creds.get_with_profile_status(full_key, profile)?;
+                backend_unavailable |= unavailable;
+                if value.is_some() {
                     initial_tracked.insert(full_key.clone());
                 }
             }
-            creds.save_tracked_secrets(&initial_tracked, profile)?;
+            if !backend_unavailable {
+                // Record the migration only after reads confirmed that the index is absent.
+                self.is_upgraded
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                creds.save_tracked_secrets(&initial_tracked, profile)?;
+            }
             return Ok(initial_tracked);
         }
 
