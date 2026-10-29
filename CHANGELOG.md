@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Enabling profiles on sub-settings whose flat data is already vault-encrypted no longer fails startup with `Disable the vault before changing the profile storage layout`. With the vault unlocked, the data is re-encrypted into the `default` profile. While it is locked, startup succeeds, the flat data stays untouched, and `unlock` completes the migration, and profile `create`, `switch`, `delete`, `rename` and `duplicate` return `ConfigLocked` until then. Custom profile migrators and SQLite tables still require disabling the vault.
 - Reject restoring a profile whose name differs from an existing one only by case, with the same error and for the same reason.
 - Reject `create`, `duplicate` and `rename` when the new profile name differs from an existing one only by case. On Windows and macOS such profiles shared one directory, so deleting one removed the other's data. The error reports the existing profile's name.
 

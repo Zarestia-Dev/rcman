@@ -204,6 +204,9 @@ pub struct ProfileManager<S: StorageBackend = crate::storage::JsonStorage> {
 
     #[cfg(feature = "vault")]
     vault: crate::vault::SharedVault,
+    // Set while a locked vault defers moving flat data into the default profile.
+    #[cfg(feature = "vault")]
+    layout_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<S: StorageBackend> ProfileManager<S> {
@@ -232,6 +235,8 @@ impl<S: StorageBackend> ProfileManager<S> {
             on_store_change: None,
             #[cfg(feature = "vault")]
             vault: Arc::new(RwLock::new(None)),
+            #[cfg(feature = "vault")]
+            layout_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -265,6 +270,28 @@ impl<S: StorageBackend> ProfileManager<S> {
     pub(crate) fn with_vault(mut self, vault: crate::vault::SharedVault) -> Self {
         self.vault = vault;
         self
+    }
+
+    #[cfg(feature = "vault")]
+    pub(crate) fn with_layout_pending(
+        mut self,
+        pending: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.layout_pending = pending;
+        self
+    }
+
+    /// Profiles cannot change before flat data has moved into `default`: a manifest
+    /// written now would hide that data once the migration runs.
+    fn ensure_layout_migrated(&self) -> Result<()> {
+        #[cfg(feature = "vault")]
+        if self
+            .layout_pending
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(Error::ConfigLocked);
+        }
+        Ok(())
     }
 
     #[cfg(feature = "vault")]
@@ -644,6 +671,7 @@ impl<S: StorageBackend> ProfileManager<S> {
         )?;
         validate_profile_name(name)?;
         let operation_guard = self.operation_lock.write_recovered()?;
+        self.ensure_layout_migrated()?;
         self.ensure_manifest()?;
 
         // Check if already exists
@@ -691,6 +719,7 @@ impl<S: StorageBackend> ProfileManager<S> {
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
         let operation_guard = self.operation_lock.write_recovered()?;
+        self.ensure_layout_migrated()?;
         self.ensure_manifest()?;
 
         let from = {
@@ -750,6 +779,7 @@ impl<S: StorageBackend> ProfileManager<S> {
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
         let operation_guard = self.operation_lock.write_recovered()?;
+        self.ensure_layout_migrated()?;
         self.ensure_manifest()?;
 
         {
@@ -844,6 +874,7 @@ impl<S: StorageBackend> ProfileManager<S> {
         )?;
         validate_profile_name(to)?;
         let operation_guard = self.operation_lock.write_recovered()?;
+        self.ensure_layout_migrated()?;
         self.ensure_manifest()?;
 
         {
@@ -928,6 +959,7 @@ impl<S: StorageBackend> ProfileManager<S> {
         )?;
         validate_profile_name(target)?;
         let operation_guard = self.operation_lock.write_recovered()?;
+        self.ensure_layout_migrated()?;
         self.ensure_manifest()?;
 
         {
@@ -1013,6 +1045,7 @@ impl<S: StorageBackend> ProfileManager<S> {
         )?;
 
         let operation_guard = self.operation_lock.write_recovered()?;
+        self.ensure_layout_migrated()?;
         #[cfg(feature = "vault")]
         if self.vault.read_recovered()?.is_some() {
             return Err(Error::Vault(

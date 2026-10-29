@@ -32,7 +32,9 @@
 //! also bind their table and row key. Profile
 //! duplication and renaming re-encrypt managed data for the destination identity.
 //! Moving the entire configuration directory preserves relative identities;
-//! changing the profile storage layout requires disabling the vault first.
+//! enabling profiles on existing flat sub-settings re-encrypts them into the
+//! default profile (deferred until unlock while the vault is locked), and other
+//! layout changes require disabling the vault first.
 //! Managed filenames must be valid UTF-8. Older copies at the same logical identity
 //! can still be replayed. Replacing all metadata and data clones a valid vault;
 //! the vault does not maintain a trusted external counter.

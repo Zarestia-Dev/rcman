@@ -1035,8 +1035,12 @@ SQLite contexts also include an `entry` identifying the table and row. Inactivit
 timeout is stored only in root metadata. `config().vault_requested` records the
 startup option; `is_vault_enabled()` reports whether encryption is active.
 Profile duplication and renaming re-encrypt data for the destination identity.
-Disable the vault before changing between flat and profiled storage layouts;
-moving the entire configuration directory preserves relative identities. Managed
+Enabling profiles on existing flat sub-settings (single-file or multi-file, default
+migrator) re-encrypts them into the `default` profile; while the vault is locked the
+flat data is left untouched and the migration completes on unlock. Other layout
+changes (custom migrators, SQLite tables, main-settings profiles, `rollback_to_flat`)
+require disabling the vault first. Moving the entire configuration directory
+preserves relative identities. Managed
 filenames must be valid UTF-8. Replaying an older envelope at the same identity
 is outside the vault's guarantees. Replacing all metadata and data produces a
 valid cloned vault; detecting that requires identity pinned outside this directory.

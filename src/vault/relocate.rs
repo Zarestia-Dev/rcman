@@ -32,6 +32,98 @@ pub(crate) fn copy_profile<S: StorageBackend>(
     Ok(())
 }
 
+/// Moves flat data into the default profile of an unlocked vault.
+///
+/// Ciphertext is bound to its file path, so a plain rename would make it
+/// unreadable; every file is decrypted at its old path and encrypted at the new
+/// one. Flat data is removed only after every file is copied, and the manifest is
+/// written last. A restart at any point therefore sees either the complete flat
+/// layout (retried) or the complete profiled one.
+pub(crate) fn migrate_to_default_profile<S: StorageBackend>(
+    storage: &S,
+    vault: &VaultState,
+    root_dir: &Path,
+    target_name: &str,
+    single_file_mode: bool,
+) -> Result<()> {
+    let extension = storage.extension();
+    let manifest_path = root_dir.join(format!(".profiles.{extension}"));
+    let profile_dir = root_dir
+        .join(crate::profiles::PROFILES_DIR)
+        .join(crate::profiles::DEFAULT_PROFILE);
+
+    let mut sources = Vec::new();
+    if single_file_mode {
+        let flat = root_dir.with_extension(extension);
+        if flat.is_file() {
+            sources.push((flat, profile_dir.join(format!("{target_name}.{extension}"))));
+        }
+    } else {
+        for entry in crate::error::read_dir(root_dir)? {
+            let entry = entry.map_err(|source| Error::DirectoryRead {
+                path: root_dir.to_path_buf(),
+                source,
+            })?;
+            let name = entry.file_name();
+            if name == crate::profiles::PROFILES_DIR
+                || name == format!(".profiles.{extension}").as_str()
+                || name == super::metadata::FILE_NAME
+            {
+                continue;
+            }
+            sources.push((entry.path(), profile_dir.join(name)));
+        }
+    }
+
+    let _pin = vault.begin_migration()?;
+    let created = !profile_dir.exists();
+    let copied = (|| {
+        crate::utils::security::ensure_secure_dir(&profile_dir)?;
+        for (from, to) in &sources {
+            let kind = std::fs::symlink_metadata(from)
+                .map_err(|source| Error::FileRead {
+                    path: from.clone(),
+                    source,
+                })?
+                .file_type();
+            if kind.is_symlink() {
+                return Err(Error::Vault(
+                    "Cannot relocate vault data containing symbolic links".into(),
+                ));
+            }
+            if kind.is_dir() {
+                copy_directory(storage, vault, from, to)?;
+            } else {
+                relocate_file(storage, vault, from, to)?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = copied {
+        // The flat data is untouched, so a partial copy is only clutter.
+        if created {
+            let _ = std::fs::remove_dir_all(&profile_dir);
+        }
+        return Err(error);
+    }
+
+    for (from, _) in &sources {
+        let removed = if from.is_dir() {
+            std::fs::remove_dir_all(from)
+        } else {
+            std::fs::remove_file(from)
+        };
+        removed.map_err(|source| Error::FileWrite {
+            path: from.clone(),
+            source,
+        })?;
+    }
+    if !manifest_path.exists() {
+        storage.write(&manifest_path, &crate::profiles::ProfileManifest::default())?;
+    }
+    Ok(())
+}
+
 fn copy_directory<S: StorageBackend>(
     storage: &S,
     vault: &VaultState,
@@ -62,36 +154,45 @@ fn copy_directory<S: StorageBackend>(
             copy_directory(storage, vault, &from, &to)?;
             continue;
         }
-        #[cfg(feature = "sqlite")]
-        if is_sqlite_sidecar(&from)? {
-            continue;
-        }
-        #[cfg(feature = "sqlite")]
-        if copy_sqlite(vault, &from, &to)? {
-            continue;
-        }
-        if let Ok(value) = storage.read::<Value>(&from)
-            && value.get("__rcman_vault__").is_some()
-        {
-            let plaintext =
-                vault.decrypt_managed(&value, &from, storage.vault_entry_id().as_deref())?;
-            storage.write(
-                &to,
-                &vault.encrypt_managed(
-                    plaintext.as_bytes(),
-                    &to,
-                    storage.vault_entry_id().as_deref(),
-                )?,
-            )?;
-        } else {
-            std::fs::copy(&from, &to).map_err(|source| Error::FileWrite {
-                path: to.clone(),
-                source,
-            })?;
-        }
-        crate::utils::security::set_secure_file_permissions(&to)?;
+        relocate_file(storage, vault, &from, &to)?;
     }
     Ok(())
+}
+
+/// Rebinds one managed file to the identity of `to`. Unmanaged files are copied as is.
+fn relocate_file<S: StorageBackend>(
+    storage: &S,
+    vault: &VaultState,
+    from: &Path,
+    to: &Path,
+) -> Result<()> {
+    #[cfg(feature = "sqlite")]
+    if is_sqlite_sidecar(from)? {
+        return Ok(());
+    }
+    #[cfg(feature = "sqlite")]
+    if copy_sqlite(vault, from, to)? {
+        return Ok(());
+    }
+    if let Ok(value) = storage.read::<Value>(from)
+        && value.get("__rcman_vault__").is_some()
+    {
+        let plaintext = vault.decrypt_managed(&value, from, storage.vault_entry_id().as_deref())?;
+        storage.write(
+            to,
+            &vault.encrypt_managed(
+                plaintext.as_bytes(),
+                to,
+                storage.vault_entry_id().as_deref(),
+            )?,
+        )?;
+    } else {
+        std::fs::copy(from, to).map_err(|source| Error::FileWrite {
+            path: to.to_path_buf(),
+            source,
+        })?;
+    }
+    crate::utils::security::set_secure_file_permissions(to)
 }
 
 #[cfg(feature = "sqlite")]

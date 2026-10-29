@@ -387,6 +387,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let initialized = (|| -> Result<()> {
             let _pin = vault.begin_migration()?;
             self.invalidate_cache();
+            #[cfg(feature = "profiles")]
+            for sub in self.sub_settings.read_recovered()?.values() {
+                sub.finish_layout_migration(&self.config.config_dir)?;
+            }
             self.validate_registered_vault()?;
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             self.migrate_vault_secrets()?;

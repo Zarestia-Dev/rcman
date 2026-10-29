@@ -283,6 +283,10 @@ pub struct SubSettings<S: StorageBackend = crate::storage::JsonStorage> {
 
     #[cfg(feature = "vault")]
     pub(crate) vault: crate::vault::SharedVault,
+
+    /// Flat data is waiting for the vault to unlock before moving into `default`.
+    #[cfg(all(feature = "vault", feature = "profiles"))]
+    layout_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Action type for change callbacks
@@ -375,24 +379,24 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         };
 
         let operation_lock = Arc::new(RwLock::new(()));
+        #[cfg(all(feature = "vault", feature = "profiles"))]
+        let layout_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
         // Determine initial base_dir (active profile or root)
         #[cfg(feature = "profiles")]
         let (base_dir, profile_manager) = if config.profiles_enabled {
-            let is_single_file = config.mode.is_file_or_table();
             #[cfg(feature = "vault")]
-            Self::check_profile_migration(config_dir, &root_dir, &config, &storage, &vault)?;
-            crate::profiles::migrate(
-                &root_dir,
-                &config.name,
-                is_single_file,
-                &storage,
-                &config.profile_migrator,
-            )
-            .map_err(|e| Error::ProfileMigrationFailed(e.to_string()))?;
+            layout_pending.store(
+                Self::migrate_layout(config_dir, &root_dir, &config, &storage, &vault)?,
+                std::sync::atomic::Ordering::Release,
+            );
+            #[cfg(not(feature = "vault"))]
+            Self::migrate_layout(&root_dir, &config, &storage)?;
 
             let pm = crate::profiles::ProfileManager::new(&root_dir, &config.name, storage.clone());
             #[cfg(feature = "vault")]
-            let pm = pm.with_vault(Arc::clone(&vault));
+            let pm = pm
+                .with_vault(Arc::clone(&vault))
+                .with_layout_pending(Arc::clone(&layout_pending));
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
             let pm = pm.with_credentials(
                 credential_manager.clone(),
@@ -438,6 +442,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             root_dir,
             #[cfg(feature = "vault")]
             vault,
+            #[cfg(all(feature = "vault", feature = "profiles"))]
+            layout_pending,
         })
     }
 
@@ -523,43 +529,114 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         false
     }
 
-    #[cfg(all(feature = "vault", feature = "profiles"))]
-    fn check_profile_migration(
-        config_dir: &std::path::Path,
+    /// Moves flat data into the default profile when profiles are first enabled.
+    ///
+    /// Vault ciphertext is bound to its path, so encrypted data is re-encrypted
+    /// instead of moved. That needs the key: while the vault is locked the flat data
+    /// is left in place and [`Self::finish_layout_migration`] completes the move on unlock.
+    /// Returns whether the move is still pending.
+    #[cfg(feature = "profiles")]
+    fn migrate_layout(
+        #[cfg(feature = "vault")] config_dir: &std::path::Path,
         root: &std::path::Path,
         config: &SubSettingsConfig,
         storage: &S,
-        vault: &crate::vault::SharedVault,
-    ) -> Result<()> {
+        #[cfg(feature = "vault")] vault: &crate::vault::SharedVault,
+    ) -> Result<bool> {
         let single_file = config.mode.is_file_or_table();
-        let manifest = root.join(format!(".profiles.{}", storage.extension()));
-        let legacy_exists = if single_file {
-            root.with_extension(storage.extension()).exists()
-        } else if root.exists() && !manifest.exists() {
-            std::fs::read_dir(root)
-                .map_err(|source| Error::DirectoryRead {
-                    path: root.to_path_buf(),
-                    source,
-                })?
-                .next()
-                .transpose()
-                .map_err(|source| Error::DirectoryRead {
-                    path: root.to_path_buf(),
-                    source,
-                })?
-                .is_some()
-        } else {
-            false
-        };
-        if legacy_exists {
-            if vault.read_recovered()?.is_some() {
-                return Err(Error::Vault(
-                    "Disable the vault before changing the profile storage layout".into(),
-                ));
-            }
+        #[cfg(feature = "vault")]
+        if Self::has_flat_data(root, config, storage)? {
             let flat_dir = if single_file { config_dir } else { root };
+            let state = vault.read_recovered()?.clone();
+            if let Some(state) = state {
+                // Only the built-in migration knows how to re-encrypt what it moves.
+                if !matches!(
+                    config.profile_migrator,
+                    crate::profiles::ProfileMigrator::Auto
+                ) || !matches!(
+                    config.mode,
+                    SubSettingsMode::SingleFile | SubSettingsMode::MultiFile
+                ) {
+                    return Err(Error::Vault(
+                        "Disable the vault before changing the profile storage layout".into(),
+                    ));
+                }
+                if state.is_locked() {
+                    return Ok(true);
+                }
+                Self::read_entries_at(config, flat_dir, storage.clone(), Arc::clone(vault))?;
+                crate::vault::relocate::migrate_to_default_profile(
+                    storage,
+                    &state,
+                    root,
+                    &config.name,
+                    single_file,
+                )
+                .map_err(|e| Error::ProfileMigrationFailed(e.to_string()))?;
+                return Ok(false);
+            }
             Self::read_entries_at(config, flat_dir, storage.clone(), Arc::clone(vault))?;
         }
+        crate::profiles::migrate(
+            root,
+            &config.name,
+            single_file,
+            storage,
+            &config.profile_migrator,
+        )
+        .map_err(|e| Error::ProfileMigrationFailed(e.to_string()))?;
+        Ok(false)
+    }
+
+    /// Whether data from before profiles were enabled is still in its flat location.
+    #[cfg(all(feature = "vault", feature = "profiles"))]
+    fn has_flat_data(
+        root: &std::path::Path,
+        config: &SubSettingsConfig,
+        storage: &S,
+    ) -> Result<bool> {
+        if config.mode.is_file_or_table() {
+            return Ok(root.with_extension(storage.extension()).exists());
+        }
+        if !root.exists()
+            || root
+                .join(format!(".profiles.{}", storage.extension()))
+                .exists()
+        {
+            return Ok(false);
+        }
+        Ok(std::fs::read_dir(root)
+            .map_err(|source| Error::DirectoryRead {
+                path: root.to_path_buf(),
+                source,
+            })?
+            .next()
+            .transpose()
+            .map_err(|source| Error::DirectoryRead {
+                path: root.to_path_buf(),
+                source,
+            })?
+            .is_some())
+    }
+
+    /// Completes a layout migration that was deferred because the vault was locked.
+    #[cfg(all(feature = "vault", feature = "profiles"))]
+    pub(crate) fn finish_layout_migration(&self, config_dir: &std::path::Path) -> Result<()> {
+        if self.profile_manager.is_none() {
+            return Ok(());
+        }
+        let guard = self.operation_lock.write_recovered()?;
+        let pending = Self::migrate_layout(
+            config_dir,
+            &self.root_dir,
+            &self.config,
+            &self.storage,
+            &self.vault,
+        )?;
+        self.layout_pending
+            .store(pending, std::sync::atomic::Ordering::Release);
+        drop(guard);
+        self.invalidate_cache();
         Ok(())
     }
 
