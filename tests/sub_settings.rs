@@ -273,6 +273,55 @@ fn test_set_field_creates_missing_entry() {
 }
 
 #[test]
+fn test_set_field_if_exists_updates_existing_entry_only() {
+    let fixture = TestFixture::with_sub_settings();
+    let remotes = fixture.manager.sub_settings("remotes").unwrap();
+
+    remotes
+        .set("present", &json!({"type": "s3", "host": "old-host"}))
+        .unwrap();
+
+    assert!(
+        remotes
+            .set_field_if_exists("present", "host", &json!("new-host"))
+            .unwrap()
+    );
+    let loaded = remotes.get_value("present").unwrap();
+    assert_eq!(loaded["host"], json!("new-host"));
+    assert_eq!(loaded["type"], json!("s3"));
+
+    assert!(
+        !remotes
+            .set_field_if_exists("absent", "host", &json!("127.0.0.1"))
+            .unwrap()
+    );
+    assert!(!remotes.exists("absent").unwrap());
+
+    remotes.delete("present").unwrap();
+    assert!(
+        !remotes
+            .set_field_if_exists("present", "host", &json!("again"))
+            .unwrap()
+    );
+    assert!(!remotes.exists("present").unwrap());
+}
+
+#[test]
+fn test_set_field_if_exists_propagates_store_errors() {
+    let fixture = TestFixture::with_sub_settings();
+    let remotes = fixture.manager.sub_settings("remotes").unwrap();
+
+    let remotes_dir = fixture.config_dir().join("remotes");
+    std::fs::create_dir_all(&remotes_dir).unwrap();
+    std::fs::write(remotes_dir.join("broken.json"), "{invalid json").unwrap();
+
+    let err = remotes
+        .set_field_if_exists("broken", "host", &json!("new-host"))
+        .unwrap_err();
+    assert!(!err.is_not_found());
+}
+
+#[test]
 fn test_set_field_propagates_store_errors() {
     let fixture = TestFixture::with_sub_settings();
     let remotes = fixture.manager.sub_settings("remotes").unwrap();

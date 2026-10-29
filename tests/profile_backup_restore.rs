@@ -118,6 +118,68 @@ fn test_profile_backup_restore_full() {
     assert_eq!(item2_work["val"], 3);
 }
 
+#[test]
+fn restore_refuses_a_profile_that_differs_from_an_existing_one_only_by_case() {
+    let build = |dir: &std::path::Path| {
+        let config = SettingsConfigBuilder::new("test-app", "1.0.0")
+            .with_config_dir(dir)
+            .with_profiles()
+            .build();
+        let manager = SettingsManager::new(config).unwrap();
+        manager
+            .register_sub_settings(SubSettingsConfig::new("items").with_profiles())
+            .unwrap();
+        manager
+    };
+    let source_dir = tempdir().unwrap();
+    let source = build(&source_dir.path().join("config"));
+    source.create_profile("Work").unwrap();
+    source.switch_profile("Work").unwrap();
+    source
+        .sub_settings("items")
+        .unwrap()
+        .set("item", &json!({"val": 1}))
+        .unwrap();
+    let backup = source
+        .backup()
+        .create(&BackupOptions {
+            output_dir: source_dir.path().join("backups"),
+            include_settings: true,
+            include_sub_settings: vec!["items".into()],
+            include_profiles: vec![],
+            ..Default::default()
+        })
+        .unwrap();
+
+    let target_dir = tempdir().unwrap();
+    let target = build(&target_dir.path().join("config"));
+    target.create_profile("work").unwrap();
+    let error = target
+        .backup()
+        .restore(&RestoreOptions {
+            backup_path: backup,
+            restore_sub_settings: vec![("items".to_string(), vec![])].into_iter().collect(),
+            ..Default::default()
+        })
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, rcman::Error::ProfileAlreadyExists(existing) if existing == "work"),
+        "{error:?}"
+    );
+    // The existing profile and its manifest are untouched.
+    assert_eq!(
+        target
+            .sub_settings("items")
+            .unwrap()
+            .profiles()
+            .unwrap()
+            .list()
+            .unwrap(),
+        ["default", "work"].map(String::from)
+    );
+}
+
 #[cfg(all(feature = "encrypted-file", not(feature = "keychain")))]
 #[derive(Default, Serialize, Deserialize)]
 struct ProfileSecretSettings;

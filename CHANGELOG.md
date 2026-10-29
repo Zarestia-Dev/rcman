@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `SubSettings::set_field_if_exists()` updates one field of an entry that already exists and returns `false` for a missing one, checking and writing under a single lock. Unlike `exists()` followed by `set_field()`, an entry deleted in between is not recreated holding only that field.
+
+### Fixed
+
+- Reject restoring a profile whose name differs from an existing one only by case, with the same error and for the same reason.
+- Reject `create`, `duplicate` and `rename` when the new profile name differs from an existing one only by case. On Windows and macOS such profiles shared one directory, so deleting one removed the other's data. The error reports the existing profile's name.
+
 ## [0.2.6] - 2026-10-25
 
 ### Changed

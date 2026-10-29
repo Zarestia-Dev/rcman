@@ -753,12 +753,46 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         field_path: &str,
         value: &T,
     ) -> Result<()> {
+        self.write_field(name, field_path, value, true).map(|_| ())
+    }
+
+    /// Update a single field, but only in an entry that already exists.
+    ///
+    /// Behaves like [`set_field`](Self::set_field), except that a missing entry is
+    /// left missing. The existence check and the write happen under one lock, so an
+    /// entry deleted by another thread is never recreated holding only this field.
+    ///
+    /// Returns `true` when the field was written and `false` when the entry does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry cannot be read, serialization fails,
+    /// schema validation fails, or store write fails.
+    pub fn set_field_if_exists<T: Serialize + Sync>(
+        &self,
+        name: &str,
+        field_path: &str,
+        value: &T,
+    ) -> Result<bool> {
+        self.write_field(name, field_path, value, false)
+    }
+
+    fn write_field<T: Serialize + Sync>(
+        &self,
+        name: &str,
+        field_path: &str,
+        value: &T,
+        create_missing: bool,
+    ) -> Result<bool> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         let guard = self.operation_lock.write_recovered()?;
         let mut entry = match self.get_value_inner(name) {
             Ok(value) => value,
-            Err(Error::SubSettingsEntryNotFound(_)) => Value::Object(serde_json::Map::new()),
+            Err(Error::SubSettingsEntryNotFound(_)) if create_missing => {
+                Value::Object(serde_json::Map::new())
+            }
+            Err(Error::SubSettingsEntryNotFound(_)) => return Ok(false),
             Err(err) => return Err(err),
         };
 
@@ -772,7 +806,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         let action = self.set_inner(name, entry)?;
         drop(guard);
         self.notify_change(name, action);
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn validate_against_schema(&self, entry_name: &str, value: &Value) -> Result<()> {

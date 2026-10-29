@@ -52,6 +52,27 @@ impl ProfileManifest {
         self.profiles.iter().any(|p| p == name)
     }
 
+    /// Find an existing profile, other than `except`, whose name equals `name`
+    /// ignoring case.
+    ///
+    /// Profiles are directories. Windows and macOS filesystems treat `Work` and
+    /// `work` as one directory, so two such profiles would share and delete each
+    /// other's data. The same rule applies on every platform so a configuration
+    /// directory stays valid when it is moved between systems.
+    pub(crate) fn conflicting_profile(&self, name: &str, except: Option<&str>) -> Option<&str> {
+        let fold = |name: &str| {
+            name.chars()
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        };
+        let folded = fold(name);
+        self.profiles
+            .iter()
+            .map(String::as_str)
+            .filter(|profile| Some(*profile) != except)
+            .find(|profile| fold(profile) == folded)
+    }
+
     /// Add a profile to the manifest
     pub fn add_profile(&mut self, name: String) {
         if !self.has_profile(&name) {
@@ -628,12 +649,12 @@ impl<S: StorageBackend> ProfileManager<S> {
         // Check if already exists
         {
             let guard = self.manifest.read_recovered()?;
-            if guard
+            if let Some(existing) = guard
                 .as_ref()
                 .ok_or(Error::NotInitialized)?
-                .has_profile(name)
+                .conflicting_profile(name, None)
             {
-                return Err(Error::ProfileAlreadyExists(name.to_string()));
+                return Err(Error::ProfileAlreadyExists(existing.to_string()));
             }
         }
 
@@ -836,6 +857,10 @@ impl<S: StorageBackend> ProfileManager<S> {
             if manifest.has_profile(to) {
                 return Err(Error::ProfileAlreadyExists(to.to_string()));
             }
+
+            if let Some(existing) = manifest.conflicting_profile(to, Some(from)) {
+                return Err(Error::ProfileAlreadyExists(existing.to_string()));
+            }
         }
 
         // Rename directory
@@ -913,8 +938,8 @@ impl<S: StorageBackend> ProfileManager<S> {
                 return Err(Error::ProfileNotFound(source.to_string()));
             }
 
-            if manifest.has_profile(target) {
-                return Err(Error::ProfileAlreadyExists(target.to_string()));
+            if let Some(existing) = manifest.conflicting_profile(target, None) {
+                return Err(Error::ProfileAlreadyExists(existing.to_string()));
             }
         }
 
@@ -1306,6 +1331,57 @@ mod tests {
         manager.create("work").unwrap();
         let result = manager.create("work");
         assert!(matches!(result, Err(Error::ProfileAlreadyExists(_))));
+    }
+
+    #[test]
+    fn profiles_differing_only_by_case_cannot_share_a_directory() {
+        let (dir, manager) = create_test_manager();
+        manager.create("Work").unwrap();
+        std::fs::write(manager.profile_path("Work").join("test.json"), "{}").unwrap();
+
+        for name in ["work", "WORK", "default"] {
+            match manager.create(name) {
+                Err(Error::ProfileAlreadyExists(existing)) => {
+                    assert_eq!(existing.to_lowercase(), name.to_lowercase());
+                }
+                other => panic!("create({name}) returned {other:?}"),
+            }
+        }
+        assert!(matches!(
+            manager.create("Default"),
+            Err(Error::ProfileAlreadyExists(existing)) if existing == "default"
+        ));
+        assert!(matches!(
+            manager.duplicate("Work", "WORK2").and_then(|()| manager.duplicate("Work", "work2")),
+            Err(Error::ProfileAlreadyExists(existing)) if existing == "WORK2"
+        ));
+        assert!(matches!(
+            manager.rename("WORK2", "wORK"),
+            Err(Error::ProfileAlreadyExists(existing)) if existing == "Work"
+        ));
+
+        assert_eq!(
+            manager.list().unwrap(),
+            ["default", "Work", "WORK2"].map(String::from)
+        );
+        assert!(
+            dir.path()
+                .join("profiles")
+                .join("Work")
+                .join("test.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn case_folding_covers_non_ascii_names() {
+        let (_dir, manager) = create_test_manager();
+        manager.create("Ärger").unwrap();
+        assert!(matches!(
+            manager.create("ärger"),
+            Err(Error::ProfileAlreadyExists(_))
+        ));
+        manager.create("Ärger 2").unwrap();
     }
 
     #[test]

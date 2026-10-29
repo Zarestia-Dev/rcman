@@ -446,6 +446,12 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             } else {
                 &name
             };
+            // Profiles that differ only by case share one directory on Windows and macOS.
+            if let Some(existing) = merged.conflicting_profile(target_name, None)
+                && existing != target_name
+            {
+                return Err(Error::ProfileAlreadyExists(existing.to_string()));
+            }
             merged.add_profile(target_name.clone());
         }
         Ok(merged)
