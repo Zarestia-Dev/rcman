@@ -81,7 +81,8 @@ mod types;
 
 pub use operations::BackupManager;
 pub use restore::{
-    RestorePendingItem, RestorePendingReason, RestoreResult, RestoreSkipReason, RestoreSkippedItem,
+    DeferredImport, RestorePendingItem, RestorePendingReason, RestoreResult, RestoreSkipReason,
+    RestoreSkippedItem,
 };
 
 pub use types::{

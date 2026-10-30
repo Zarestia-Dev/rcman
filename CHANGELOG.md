@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- `BackupOptions::external()` and `RestoreOptions::external()` supply an `ExternalConfig` for a single operation, without registering a provider on the manager. A supplied export config is always included; on restore it takes precedence over a registered config with the same id.
+- `ImportTarget::Deferred` (`ExternalConfig::import_deferred()`) returns the restored content in `RestoreResult::deferred` for the caller to apply, for example through an asynchronous API, instead of writing it. Nothing is written during a dry run.
+- `BackupOptions::includes_secrets()` reports whether the policy and password allow secrets in the export.
+- `SubSettingsManifestEntry::items()` and `profile_names()` list a manifest entry's items and profiles in a stable order.
+
+### Changed
+
+- Sensitive external configs (`ExternalConfig::sensitive()`) are no longer exported unless the secret policy allows secrets: `Exclude` skips them, and `EncryptedOnly` skips them without a password. Previously the flag was only informational.
+- `ImportTarget` has a new `Deferred` variant; exhaustive matches need an arm for it.
+
 ## [0.2.7] - 2026-10-29
 
 ### Added

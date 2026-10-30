@@ -84,20 +84,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
 
         // Resolve providers once, before entering managed isolation. Provider
         // callbacks may call back into the application.
-        let external_configs: std::collections::HashMap<_, _> = analysis
-            .manifest
-            .contents
-            .external_configs
-            .iter()
-            .filter(|name| {
-                options.restore_external_configs.is_empty()
-                    || options.restore_external_configs.contains(name)
-            })
-            .filter_map(|name| {
-                self.resolve_external_config(name)
-                    .map(|config| (name.clone(), config))
-            })
-            .collect();
+        let external_configs = self.resolve_selected_external_configs(options, &analysis);
         let operation = super::transaction::exclusive(
             &self.manager.config().config_dir,
             #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -159,6 +146,32 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> super::BackupManager<'
         );
 
         Ok(result)
+    }
+
+    fn resolve_selected_external_configs(
+        &self,
+        options: &RestoreOptions,
+        analysis: &BackupAnalysis,
+    ) -> std::collections::HashMap<String, super::ExternalConfig> {
+        analysis
+            .manifest
+            .contents
+            .external_configs
+            .iter()
+            .filter(|name| {
+                options.restore_external_configs.is_empty()
+                    || options.restore_external_configs.contains(name)
+            })
+            .filter_map(|name| {
+                options
+                    .external_configs
+                    .iter()
+                    .find(|config| &config.id == name)
+                    .cloned()
+                    .or_else(|| self.resolve_external_config(name))
+                    .map(|config| (name.clone(), config))
+            })
+            .collect()
     }
 
     fn extract_backup(
@@ -1179,6 +1192,18 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                         RestoreSkipReason::ReadOnlyImportTarget,
                     );
                 }
+                super::types::ImportTarget::Deferred => {
+                    if self.options.flags.control.dry_run {
+                        result.restored.push(config_name.to_string());
+                        debug!("{} Would defer external {config_name}", self.mode_str);
+                    } else {
+                        result.deferred.push(DeferredImport {
+                            id: config_name.to_string(),
+                            data,
+                        });
+                        debug!("Deferred external {config_name} to the caller");
+                    }
+                }
                 super::types::ImportTarget::File(dest_path) => {
                     if dest_path.exists() && !self.options.flags.control.overwrite_existing {
                         result.add_skipped(
@@ -1200,38 +1225,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                         result.restored.push(config_name.to_string());
                         debug!("{} Would pipe to command: {program}", self.mode_str);
                     } else {
-                        use std::io::Write;
-                        use std::process::{Command, Stdio};
-
-                        let mut child = Command::new(program)
-                            .args(args)
-                            .stdin(Stdio::piped())
-                            .spawn()
-                            .map_err(|e| {
-                                Error::BackupFailed(format!(
-                                    "Failed to spawn command '{program}': {e}"
-                                ))
-                            })?;
-
-                        if let Some(mut stdin) = child.stdin.take() {
-                            stdin.write_all(&data).map_err(|e| {
-                                Error::BackupFailed(format!(
-                                    "Failed to write to command stdin: {e}"
-                                ))
-                            })?;
-                        }
-
-                        let status = child.wait().map_err(|e| {
-                            Error::BackupFailed(format!("Command '{program}' failed: {e}"))
-                        })?;
-
-                        if !status.success() {
-                            return Err(Error::BackupFailed(format!(
-                                "Command '{program}' exited with code {:?}",
-                                status.code()
-                            )));
-                        }
-
+                        Self::pipe_to_command(program, args, &data)?;
                         result.restored.push(config_name.to_string());
                         debug!("Restored external {config_name} via command");
                     }
@@ -1256,6 +1250,37 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 RestorePendingReason::UnknownExternalConfig,
             );
             warn!("Unknown external config ID: {config_name}, requires manual restore");
+        }
+        Ok(())
+    }
+
+    fn pipe_to_command(program: &str, args: &[String], data: &[u8]) -> Result<()> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                Error::BackupFailed(format!("Failed to spawn command '{program}': {e}"))
+            })?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(data).map_err(|e| {
+                Error::BackupFailed(format!("Failed to write to command stdin: {e}"))
+            })?;
+        }
+
+        let status = child
+            .wait()
+            .map_err(|e| Error::BackupFailed(format!("Command '{program}' failed: {e}")))?;
+
+        if !status.success() {
+            return Err(Error::BackupFailed(format!(
+                "Command '{program}' exited with code {:?}",
+                status.code()
+            )));
         }
         Ok(())
     }
@@ -1418,6 +1443,15 @@ pub struct RestorePendingItem {
     pub reason: RestorePendingReason,
 }
 
+/// External content handed back to the caller by an [`ImportTarget::Deferred`] target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredImport {
+    /// External config id.
+    pub id: String,
+    /// Content read from the backup.
+    pub data: Vec<u8>,
+}
+
 #[derive(Debug, Default)]
 pub struct RestoreResult {
     /// Items that were restored
@@ -1431,6 +1465,10 @@ pub struct RestoreResult {
 
     /// External configs that need manual handling
     pub external_pending: Vec<String>,
+
+    /// Content of [`ImportTarget::Deferred`] configs for the caller to apply.
+    /// Empty for a dry run.
+    pub deferred: Vec<DeferredImport>,
 
     /// Detailed pending records with reason for manual handling visibility.
     pub pending_details: Vec<RestorePendingItem>,

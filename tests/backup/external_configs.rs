@@ -550,3 +550,149 @@ fn test_get_external_config_from_backup_by_id() {
 
     assert_eq!(data, b"sample external content");
 }
+
+fn manager_in(dir: &std::path::Path) -> SettingsManager<rcman::JsonStorage, common::TestSettings> {
+    SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(dir)
+        .with_schema::<common::TestSettings>()
+        .with_sub_settings(SubSettingsConfig::new("remotes"))
+        .build()
+        .unwrap()
+}
+
+fn external_ids(
+    manager: &SettingsManager<rcman::JsonStorage, common::TestSettings>,
+    path: &std::path::Path,
+) -> Vec<String> {
+    manager
+        .backup()
+        .analyze(path)
+        .unwrap()
+        .manifest
+        .contents
+        .external_configs
+}
+
+#[test]
+fn test_sensitive_external_configs_need_a_secret_policy_that_allows_secrets() {
+    let temp = TempDir::new().unwrap();
+    let secrets = temp.path().join("secrets.conf");
+    let plain = temp.path().join("plain.conf");
+    fs::write(&secrets, "token=abc123\n").unwrap();
+    fs::write(&plain, "mode=plain\n").unwrap();
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp.path().join("source"))
+        .with_schema::<common::TestSettings>()
+        .with_external_config(ExternalConfig::new("secrets", &secrets).sensitive())
+        .with_external_config(ExternalConfig::new("plain", &plain))
+        .build()
+        .unwrap();
+    let export = |options: BackupOptions| {
+        let path = manager
+            .backup()
+            .create(&options.output_dir(temp.path().join("backups")))
+            .unwrap();
+        let mut ids = manager
+            .backup()
+            .analyze(&path)
+            .unwrap()
+            .manifest
+            .contents
+            .external_configs;
+        ids.sort();
+        ids
+    };
+
+    // The default policy redacts secrets, so a sensitive config cannot be exported either.
+    assert_eq!(export(BackupOptions::new()), ["plain"]);
+    // EncryptedOnly needs the archive to be encrypted.
+    let encrypted_only =
+        || BackupOptions::new().secret_policy(rcman::SecretBackupPolicy::EncryptedOnly);
+    assert_eq!(export(encrypted_only()), ["plain"]);
+    assert_eq!(
+        export(encrypted_only().password("pass-1234")),
+        ["plain", "secrets"]
+    );
+    assert_eq!(
+        export(BackupOptions::new().secret_policy(rcman::SecretBackupPolicy::Include)),
+        ["plain", "secrets"]
+    );
+}
+
+#[test]
+fn test_per_call_external_configs_export_and_restore_without_registration() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("call.conf");
+    fs::write(&source, "from=call\n").unwrap();
+    let target = temp.path().join("restored").join("call.conf");
+
+    let source_manager = manager_in(&temp.path().join("source"));
+    let path = source_manager
+        .backup()
+        .create(
+            &BackupOptions::new()
+                .output_dir(temp.path().join("backups"))
+                // An allow-list that does not name it must not drop a supplied config.
+                .include_external("unrelated")
+                .external(ExternalConfig::new("call", &source)),
+        )
+        .unwrap();
+    assert_eq!(external_ids(&source_manager, &path), ["call"]);
+
+    let restore_manager = manager_in(&temp.path().join("restore"));
+    let result = restore_manager
+        .backup()
+        .restore(
+            &RestoreOptions::from_path(&path)
+                .overwrite(true)
+                .external(ExternalConfig::new("call", &target)),
+        )
+        .unwrap();
+    assert!(result.restored.iter().any(|id| id == "call"));
+    assert_eq!(fs::read_to_string(&target).unwrap(), "from=call\n");
+
+    // Nothing was registered: a plain restore reports the id as unknown.
+    let plain = restore_manager
+        .backup()
+        .restore(&RestoreOptions::from_path(&path).overwrite(true))
+        .unwrap();
+    assert_eq!(plain.external_pending, ["call"]);
+}
+
+#[test]
+fn test_deferred_external_configs_are_returned_instead_of_written() {
+    let temp = TempDir::new().unwrap();
+    let manager = manager_in(&temp.path().join("source"));
+    let path = manager
+        .backup()
+        .create(
+            &BackupOptions::new()
+                .output_dir(temp.path().join("backups"))
+                .external(ExternalConfig::from_content(
+                    "remote:drive",
+                    "drive.json",
+                    br#"{"type":"drive"}"#.to_vec(),
+                )),
+        )
+        .unwrap();
+
+    let deferred =
+        || ExternalConfig::from_content("remote:drive", "drive.json", Vec::new()).import_deferred();
+    let options = RestoreOptions::from_path(&path)
+        .overwrite(true)
+        .external(deferred());
+
+    let preview = manager
+        .backup()
+        .restore(&options.clone().dry_run(true))
+        .unwrap();
+    assert!(preview.deferred.is_empty());
+    assert!(!preview.has_conflicts());
+
+    let result = manager.backup().restore(&options).unwrap();
+    assert_eq!(result.deferred.len(), 1);
+    assert_eq!(result.deferred[0].id, "remote:drive");
+    assert_eq!(result.deferred[0].data, br#"{"type":"drive"}"#);
+    assert!(result.skipped_details.is_empty());
+    assert!(result.external_pending.is_empty());
+}

@@ -99,6 +99,9 @@ pub struct BackupOptions {
 
     /// Policy for handling secret values (passwords, tokens)
     pub secret_policy: crate::SecretBackupPolicy,
+
+    /// External configs supplied for this export only, always included.
+    pub external_configs: Vec<ExternalConfig>,
 }
 
 /// Callback function for progress reporting (`current_bytes`, `total_bytes`)
@@ -134,6 +137,7 @@ impl Default for BackupOptions {
             #[cfg(feature = "profiles")]
             include_profiles: Vec::new(),
             secret_policy: crate::SecretBackupPolicy::default(),
+            external_configs: Vec::new(),
         }
     }
 }
@@ -167,6 +171,26 @@ impl BackupOptions {
     #[must_use]
     pub fn secret_policy(mut self, policy: crate::SecretBackupPolicy) -> Self {
         self.secret_policy = policy;
+        self
+    }
+
+    /// Whether this export may contain secrets: the policy allows it, and an
+    /// `EncryptedOnly` policy also has a password. Sensitive external configs
+    /// ([`ExternalConfig::sensitive`]) are left out when this is `false`.
+    #[must_use]
+    pub fn includes_secrets(&self) -> bool {
+        match self.secret_policy {
+            crate::SecretBackupPolicy::Exclude => false,
+            crate::SecretBackupPolicy::Include => true,
+            crate::SecretBackupPolicy::EncryptedOnly => self.password.is_some(),
+        }
+    }
+
+    /// Include an external config for this export only, without registering it
+    /// on the manager. It is exported regardless of [`include_external`](Self::include_external).
+    #[must_use]
+    pub fn external(mut self, config: ExternalConfig) -> Self {
+        self.external_configs.push(config);
         self
     }
 
@@ -320,6 +344,10 @@ pub struct RestoreOptions {
     /// External config IDs to restore (empty = all from backup)
     pub restore_external_configs: Vec<String>,
 
+    /// External configs supplied for this restore only. They take precedence
+    /// over registered configs with the same id.
+    pub external_configs: Vec<ExternalConfig>,
+
     /// Restore specific profile from backup (if profiles enabled)
     #[cfg(feature = "profiles")]
     pub restore_profile: Option<String>,
@@ -387,6 +415,14 @@ impl RestoreOptions {
     #[must_use]
     pub fn restore_external(mut self, id: impl Into<String>) -> Self {
         self.restore_external_configs.push(id.into());
+        self
+    }
+
+    /// Supply an external config for this restore only, without registering it on
+    /// the manager. It takes precedence over a registered config with the same id.
+    #[must_use]
+    pub fn external(mut self, config: ExternalConfig) -> Self {
+        self.external_configs.push(config);
         self
     }
 
@@ -460,6 +496,9 @@ pub enum ImportTarget {
     Handler(ImportHandler),
     /// Read-only export (cannot be restored, e.g., system diagnostics)
     ReadOnly,
+    /// Hand the content back in [`RestoreResult::deferred`] for the caller to apply,
+    /// e.g. through an asynchronous API. Nothing is written during the restore.
+    Deferred,
 }
 
 impl std::fmt::Debug for ImportTarget {
@@ -473,6 +512,7 @@ impl std::fmt::Debug for ImportTarget {
                 .finish(),
             ImportTarget::Handler(_) => f.debug_tuple("Handler").field(&"<fn>").finish(),
             ImportTarget::ReadOnly => write!(f, "ReadOnly"),
+            ImportTarget::Deferred => write!(f, "Deferred"),
         }
     }
 }
@@ -657,6 +697,13 @@ impl ExternalConfig {
     #[must_use]
     pub fn import_read_only(mut self) -> Self {
         self.import_target = ImportTarget::ReadOnly;
+        self
+    }
+
+    /// Return the restored content in [`RestoreResult::deferred`] instead of writing it
+    #[must_use]
+    pub fn import_deferred(mut self) -> Self {
+        self.import_target = ImportTarget::Deferred;
         self
     }
 
@@ -869,6 +916,47 @@ pub struct BackupContents {
     pub file_count: u32,
 }
 
+impl SubSettingsManifestEntry {
+    /// Every stored item as `(profile, item)`, sorted so the order is stable.
+    /// The profile is `None` for entries that are not profiled.
+    #[must_use]
+    pub fn items(&self) -> Vec<(Option<&str>, &str)> {
+        let mut items: Vec<(Option<&str>, &str)> = match self {
+            Self::SingleFile(item) => vec![(None, item.as_str())],
+            Self::MultiFile(items) => items.iter().map(|item| (None, item.as_str())).collect(),
+            #[cfg(feature = "profiles")]
+            Self::Profiled { profiles } => profiles
+                .iter()
+                .flat_map(|(profile, entry)| {
+                    let names: Vec<&str> = match entry {
+                        ProfileEntry::Single(item) => vec![item.as_str()],
+                        ProfileEntry::Multiple(items) => items.iter().map(String::as_str).collect(),
+                    };
+                    names
+                        .into_iter()
+                        .map(move |item| (Some(profile.as_str()), item))
+                })
+                .collect(),
+        };
+        items.sort_unstable();
+        items
+    }
+
+    /// Profile names of a profiled entry, sorted. `None` when it is not profiled.
+    #[cfg(feature = "profiles")]
+    #[must_use]
+    pub fn profile_names(&self) -> Option<Vec<&str>> {
+        match self {
+            Self::Profiled { profiles } => {
+                let mut names: Vec<&str> = profiles.keys().map(String::as_str).collect();
+                names.sort_unstable();
+                Some(names)
+            }
+            _ => None,
+        }
+    }
+}
+
 impl BackupContents {
     /// Convert to `HashMap` for restore processing
     #[must_use]
@@ -920,4 +1008,55 @@ pub struct BackupAnalysis {
 
     /// User note (convenience copy from manifest)
     pub user_note: Option<String>,
+}
+
+#[cfg(test)]
+mod manifest_entry_tests {
+    use super::*;
+
+    #[test]
+    fn items_are_listed_sorted_without_profiles_for_flat_entries() {
+        assert_eq!(
+            SubSettingsManifestEntry::SingleFile("backend".into()).items(),
+            [(None, "backend")]
+        );
+        assert_eq!(
+            SubSettingsManifestEntry::MultiFile(vec!["s3".into(), "gdrive".into()]).items(),
+            [(None, "gdrive"), (None, "s3")]
+        );
+        assert!(
+            SubSettingsManifestEntry::MultiFile(Vec::new())
+                .items()
+                .is_empty()
+        );
+    }
+
+    #[cfg(feature = "profiles")]
+    #[test]
+    fn profiled_items_carry_their_profile_and_profiles_are_sorted() {
+        let entry = SubSettingsManifestEntry::Profiled {
+            profiles: [
+                ("work".to_string(), ProfileEntry::Single("a".into())),
+                (
+                    "default".to_string(),
+                    ProfileEntry::Multiple(vec!["z".into(), "b".into()]),
+                ),
+            ]
+            .into(),
+        };
+        assert_eq!(
+            entry.items(),
+            [
+                (Some("default"), "b"),
+                (Some("default"), "z"),
+                (Some("work"), "a")
+            ]
+        );
+        assert_eq!(entry.profile_names().unwrap(), ["default", "work"]);
+        assert!(
+            SubSettingsManifestEntry::SingleFile("x".into())
+                .profile_names()
+                .is_none()
+        );
+    }
 }

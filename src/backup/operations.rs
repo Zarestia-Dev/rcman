@@ -333,11 +333,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                         .remove(name)
                         .ok_or_else(|| Error::SubSettingsEntryNotFound(name.clone()))?;
                     let metadata = sub.schema_metadata().unwrap_or_default();
-                    let include_secrets = match options.secret_policy {
-                        crate::SecretBackupPolicy::Exclude => false,
-                        crate::SecretBackupPolicy::Include => true,
-                        crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
-                    };
+                    let include_secrets = options.includes_secrets();
                     self.inject_or_remove_secrets(
                         &mut value,
                         &format!("sub.{settings_type}.{name}"),
@@ -413,11 +409,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             let full_dest = export_dir.join(&dest);
 
             let credential_profile = Self::profile_from_backup_dest(&dest);
-            let should_include_secrets = match options.secret_policy {
-                crate::SecretBackupPolicy::Exclude => false,
-                crate::SecretBackupPolicy::Include => true,
-                crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
-            };
+            let should_include_secrets = options.includes_secrets();
             let ctx = SecretContext {
                 prefix: "",
                 metadata: &metadata,
@@ -503,11 +495,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         credential_profile: Option<&str>,
     ) -> Result<Option<u64>> {
         let export_dir = Path::new("");
-        let should_include_secrets = match options.secret_policy {
-            crate::SecretBackupPolicy::Exclude => false,
-            crate::SecretBackupPolicy::Include => true,
-            crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
-        };
+        let should_include_secrets = options.includes_secrets();
 
         // A missing profile file contains no overrides; never borrow the active profile.
         let mut value = serde_json::json!({});
@@ -670,11 +658,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                 }
                 let mut root_value = serde_json::Value::Object(raw_entries.into_iter().collect());
 
-                let should_include_secrets = match options.secret_policy {
-                    crate::SecretBackupPolicy::Exclude => false,
-                    crate::SecretBackupPolicy::Include => true,
-                    crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
-                };
+                let should_include_secrets = options.includes_secrets();
 
                 if let Some(obj) = root_value.as_object_mut() {
                     for (entry_name, entry_value) in obj.iter_mut() {
@@ -721,11 +705,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     let ext = sub.extension();
                     let dest = sub_export_dir.join(format!("{name}.{ext}"));
 
-                    let should_include_secrets = match options.secret_policy {
-                        crate::SecretBackupPolicy::Exclude => false,
-                        crate::SecretBackupPolicy::Include => true,
-                        crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
-                    };
+                    let should_include_secrets = options.includes_secrets();
 
                     // Build credential key prefix: "sub.remotes.Google Drive"
                     let credential_keyprefix = format!("sub.{sub_type}.{name}");
@@ -815,11 +795,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             let entries = sub.read_entries(&profile_path)?;
             let mut items_in_profile = Vec::new();
             let metadata = sub.schema_metadata().unwrap_or_default();
-            let include_secrets = match options.secret_policy {
-                crate::SecretBackupPolicy::Exclude => false,
-                crate::SecretBackupPolicy::Include => true,
-                crate::SecretBackupPolicy::EncryptedOnly => options.password.is_some(),
-            };
+            let include_secrets = options.includes_secrets();
             let mut processed = serde_json::Map::new();
             for (name, mut value) in entries {
                 if options
@@ -890,7 +866,8 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
     ) -> Result<ExternalGatherResult> {
         let export_dir = Path::new("");
         let providers = self.manager.external_providers.read_recovered()?.clone();
-        let mut all_configs = Vec::new();
+        // Per-call configs come first so they win over registered ones with the same id.
+        let mut all_configs = options.external_configs.clone();
         all_configs.extend(self.manager.config().external_configs.clone());
         for provider in &*providers {
             all_configs.extend(provider.get_configs());
@@ -906,8 +883,20 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         for config in all_configs {
             let include_all_for_full = matches!(options.export_type, ExportType::Full)
                 && options.include_external_configs.is_empty();
+            let supplied = options.external_configs.iter().any(|c| c.id == config.id);
 
-            if !include_all_for_full && !options.include_external_configs.contains(&config.id) {
+            if !supplied
+                && !include_all_for_full
+                && !options.include_external_configs.contains(&config.id)
+            {
+                continue;
+            }
+
+            if config.is_sensitive && !options.includes_secrets() {
+                debug!(
+                    "Skipping sensitive external config without secret export: {}",
+                    config.id
+                );
                 continue;
             }
 
