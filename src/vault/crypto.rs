@@ -124,28 +124,6 @@ pub(crate) fn decrypt_authenticated(
         .map_err(|_| Error::InvalidPassword)
 }
 
-/// Securely zero out a byte buffer in memory using volatile writes and a compiler fence
-pub fn zeroize_bytes(bytes: &mut [u8]) {
-    for b in bytes.iter_mut() {
-        // Safety: Pointer is valid as it comes from a mutable reference to an existing slice element.
-        unsafe { std::ptr::write_volatile(b, 0) };
-    }
-    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
-}
-
-/// Compare two byte slices in constant time to mitigate timing attacks
-#[must_use]
-pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,23 +171,5 @@ mod tests {
         let ciphertext = encrypt(&key, &nonce, message).unwrap();
         let err = decrypt(&wrong_key, &nonce, &ciphertext).unwrap_err();
         assert!(matches!(err, Error::InvalidPassword));
-    }
-
-    #[test]
-    fn test_zeroize_bytes() {
-        let mut key = [0xFFu8; 32];
-        zeroize_bytes(&mut key);
-        assert_eq!(key, [0u8; 32]);
-    }
-
-    #[test]
-    fn test_constant_time_eq() {
-        let a = [1u8, 2, 3, 4];
-        let b = [1u8, 2, 3, 4];
-        let c = [1u8, 2, 3, 5];
-        let d = [1u8, 2, 3];
-        assert!(constant_time_eq(&a, &b));
-        assert!(!constant_time_eq(&a, &c));
-        assert!(!constant_time_eq(&a, &d));
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! Helper struct to encapsulate logic for overriding settings via env vars.
 
-use crate::config::EnvSource;
+use crate::config::{EnvSource, SettingType};
 use serde_json::Value;
 
 /// Handles environment variable lookups and parsing
@@ -27,25 +27,29 @@ impl EnvironmentHandler {
         })
     }
 
-    /// Check if a setting value is overridden by an environment variable
-    pub fn get_env_override(&self, key: &str) -> Option<Value> {
+    /// Parse the environment variable overriding `key`, if one is set.
+    ///
+    /// Text settings take the variable verbatim, so `PORT_LABEL=8080` stays the
+    /// string `"8080"`. Other types accept JSON, then `true`/`false`, then numbers.
+    pub fn get_env_override(&self, key: &str, setting_type: &SettingType) -> Option<Value> {
         let env_var_name = self.get_env_var_name(key)?;
-        self.source.var(&env_var_name).ok().map(|env_value| {
-            // Try to parse as JSON first, fallback to string/bool/number heuristics
-            serde_json::from_str(&env_value).unwrap_or_else(|_| {
-                if env_value.eq_ignore_ascii_case("true") {
-                    Value::Bool(true)
-                } else if env_value.eq_ignore_ascii_case("false") {
-                    Value::Bool(false)
-                } else if let Ok(n) = env_value.parse::<i64>() {
-                    Value::Number(n.into())
-                } else if let Ok(n) = env_value.parse::<f64>() {
-                    serde_json::Number::from_f64(n)
-                        .map_or_else(|| Value::String(env_value.clone()), Value::Number)
-                } else {
-                    Value::String(env_value)
-                }
-            })
-        })
+        let env_value = self.source.var(&env_var_name).ok()?;
+        if *setting_type == SettingType::Text {
+            return Some(Value::String(env_value));
+        }
+        Some(serde_json::from_str(&env_value).unwrap_or_else(|_| {
+            if env_value.eq_ignore_ascii_case("true") {
+                Value::Bool(true)
+            } else if env_value.eq_ignore_ascii_case("false") {
+                Value::Bool(false)
+            } else if let Ok(n) = env_value.parse::<i64>() {
+                Value::Number(n.into())
+            } else if let Ok(n) = env_value.parse::<f64>() {
+                serde_json::Number::from_f64(n)
+                    .map_or_else(|| Value::String(env_value.clone()), Value::Number)
+            } else {
+                Value::String(env_value)
+            }
+        }))
     }
 }

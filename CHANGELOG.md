@@ -12,11 +12,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ImportTarget::Deferred` (`ExternalConfig::import_deferred()`) returns the restored content in `RestoreResult::deferred` for the caller to apply, for example through an asynchronous API, instead of writing it. Nothing is written during a dry run.
 - `BackupOptions::includes_secrets()` reports whether the policy and password allow secrets in the export.
 - `SubSettingsManifestEntry::items()` and `profile_names()` list a manifest entry's items and profiles in a stable order.
+- `SubSettings::update()` reads, changes and writes one entry under a single lock; returning `None` deletes it. Unlike `set_field()`, keys that contain dots stay literal, and concurrent updates cannot overwrite each other.
 
 ### Changed
 
+- Environment variable overrides are validated like saved values (type, range, pattern, options, reserved values). An invalid override is ignored with a warning instead of making `get_all()` fail or bypassing a constraint. Text settings take the variable verbatim, so `12345` stays a string.
+- A panic while the manager's internal gate is held (for example in a migrator) no longer makes every later call fail with `LockPoisoned`; the gate guards no in-memory state.
+- With the `backup` feature, sub-settings reads take one operation guard instead of up to three.
+- Temporary files are created with mode `0600` and the parent directory is synced after the rename.
+- The vault key's `Debug` output is redacted; its memory is cleared by the `zeroize` crate instead of hand-written unsafe code, and verification compares keys with `subtle`.
+
 - Sensitive external configs (`ExternalConfig::sensitive()`) are no longer exported unless the secret policy allows secrets: `Exclude` skips them, and `EncryptedOnly` skips them without a password. Previously the flag was only informational.
 - `ImportTarget` has a new `Deferred` variant; exhaustive matches need an arm for it.
+
+### Fixed
+
+- Keys nested more than two levels deep (`net.proxy.host`) were compared against a literal top-level key, so saving an unchanged value was reported as a change and rewritten. They are now read by path, like they are written.
 
 ## [0.2.7] - 2026-10-29
 

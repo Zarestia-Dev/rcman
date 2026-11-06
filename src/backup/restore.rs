@@ -961,9 +961,8 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         let target_profile_name = if self.options.restore_profile.is_some() {
             self.options
                 .restore_profile_as
-                .as_ref()
-                .unwrap_or(&profile_name.to_string())
                 .clone()
+                .unwrap_or_else(|| profile_name.to_string())
         } else {
             profile_name.to_string()
         };

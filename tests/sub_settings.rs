@@ -586,6 +586,91 @@ fn test_delete_missing_entry_does_not_trigger_callback() {
 }
 
 // =============================================================================
+// Atomic update
+// =============================================================================
+
+#[test]
+fn test_update_creates_modifies_and_deletes_entry() {
+    let fixture = TestFixture::with_sub_settings();
+    let backends = fixture.manager.sub_settings("backends").unwrap();
+
+    let changes = Arc::new(Mutex::new(Vec::new()));
+    let recorder = changes.clone();
+    backends
+        .set_on_change(move |name, action| recorder.lock().unwrap().push((name.to_owned(), action)))
+        .unwrap();
+
+    backends
+        .update("local", |current| {
+            assert!(current.is_none());
+            Some(json!({"HTTP.ListenAddr": ":1"}))
+        })
+        .unwrap();
+    backends
+        .update("local", |current| {
+            let mut value = current.expect("entry exists");
+            value["Retries"] = json!(3);
+            Some(value)
+        })
+        .unwrap();
+    // Keys containing dots stay literal, unlike set_field's path syntax.
+    assert_eq!(
+        backends.get_value("local").unwrap(),
+        json!({"HTTP.ListenAddr": ":1", "Retries": 3})
+    );
+
+    backends.update("local", |_| None).unwrap();
+    assert!(!backends.exists("local").unwrap());
+    // Deleting a missing entry through update is a quiet no-op.
+    backends.update("local", |_| None).unwrap();
+
+    assert_eq!(
+        *changes.lock().unwrap(),
+        vec![
+            ("local".to_owned(), SubSettingsAction::Created),
+            ("local".to_owned(), SubSettingsAction::Updated),
+            ("local".to_owned(), SubSettingsAction::Deleted),
+        ]
+    );
+}
+
+#[test]
+fn test_update_does_not_lose_concurrent_changes() {
+    let fixture = TestFixture::with_sub_settings();
+    let backends = fixture.manager.sub_settings("backends").unwrap();
+
+    let workers: Vec<_> = (0..8)
+        .map(|worker| {
+            let backends = Arc::clone(&backends);
+            std::thread::spawn(move || {
+                for step in 0..10 {
+                    backends
+                        .update("shared", |current| {
+                            let mut value = current.unwrap_or_else(|| json!({}));
+                            value[format!("w{worker}s{step}")] = json!(true);
+                            Some(value)
+                        })
+                        .unwrap();
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+
+    assert_eq!(
+        backends
+            .get_value("shared")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .len(),
+        80
+    );
+}
+
+// =============================================================================
 // Sub-Settings Not Registered
 // =============================================================================
 
@@ -665,6 +750,23 @@ fn test_sub_settings_schema_rejects_invalid_entry() {
             .to_string()
             .contains("Invalid setting value")
     );
+}
+
+#[test]
+fn test_update_validates_against_schema_and_keeps_the_stored_entry() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = SettingsManager::builder("test-app", "1.0.0")
+        .with_config_dir(temp_dir.path())
+        .with_sub_settings(SubSettingsConfig::new("remotes").with_schema::<RemoteEntrySchema>())
+        .build()
+        .unwrap();
+    let remotes = manager.sub_settings("remotes").unwrap();
+    remotes.set("prod", &json!({"type": "s3"})).unwrap();
+
+    let result = remotes.update("prod", |_| Some(json!({"type": "unsupported"})));
+
+    assert!(result.is_err());
+    assert_eq!(remotes.get_value("prod").unwrap()["type"], "s3");
 }
 
 #[test]

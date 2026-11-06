@@ -24,6 +24,7 @@
 use super::types::ProgressCallback;
 use crate::error::{Error, Result};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -280,13 +281,13 @@ pub fn calculate_file_hash(path: &Path) -> Result<(String, u64)> {
     }
 
     let raw_hash = hasher.finalize();
-    let hash = raw_hash
-        .iter()
-        .fold(String::with_capacity(raw_hash.len() * 2), |mut s, &b| {
-            s.push(std::char::from_digit(u32::from(b >> 4), 16).unwrap());
-            s.push(std::char::from_digit(u32::from(b & 0x0F), 16).unwrap());
-            s
-        });
+    let hash = raw_hash.iter().fold(
+        String::with_capacity(raw_hash.len() * 2),
+        |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        },
+    );
     Ok((hash, total_size))
 }
 

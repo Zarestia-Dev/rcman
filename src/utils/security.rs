@@ -18,6 +18,47 @@ pub fn ensure_secure_dir(path: &Path) -> Result<()> {
     set_secure_dir_permissions(path)
 }
 
+/// Create a new file that only the current user can read from the first moment it exists.
+///
+/// On Unix the file is created with mode `0600`, so there is no window in which it
+/// carries the umask-derived default. The call fails if the path already exists,
+/// which also stops a pre-planted symlink from being followed. On other platforms
+/// the caller applies [`set_secure_file_permissions`] afterwards.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error.
+pub fn create_private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+/// Flush the directory entry of `path` so a completed rename survives power loss.
+///
+/// Best effort: directory fsync is meaningless on Windows and unsupported on some
+/// filesystems, so failures are only logged.
+pub fn sync_parent_dir(path: &Path) {
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        if let Err(error) = std::fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+            log::debug!("Could not sync directory {}: {error}", parent.display());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 // =============================================================================
 // Unix
 // =============================================================================
@@ -279,6 +320,31 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn private_file_is_created_private_and_never_replaces_an_existing_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("secret.tmp");
+
+        let file = create_private_file(&path).unwrap();
+        drop(file);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let error = create_private_file(&path).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    }
+
+    #[test]
+    fn syncing_a_missing_or_bare_path_never_panics() {
+        sync_parent_dir(Path::new("settings.json"));
+        sync_parent_dir(Path::new("/definitely/not/here/settings.json"));
+    }
 
     #[test]
     fn test_secure_file_permissions() {

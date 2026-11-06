@@ -225,14 +225,14 @@ fn process_enum_variant(v: &syn::Variant) -> Result<EnumVariantInfo, syn::Error>
         ));
     };
 
-    if fields_unnamed.unnamed.len() != 1 {
+    let mut fields = fields_unnamed.unnamed.iter();
+    let (Some(field), None) = (fields.next(), fields.next()) else {
         return Err(syn::Error::new_spanned(
             v,
             "SettingsSchema enum derive requires exactly one inner type per variant",
         ));
-    }
-
-    let inner_type = &fields_unnamed.unnamed.first().unwrap().ty;
+    };
+    let inner_type = &field.ty;
     let tag_value = v_attrs
         .rename
         .unwrap_or_else(|| to_snake_case(&variant_ident.to_string()));
@@ -1712,7 +1712,12 @@ fn is_nested_struct(ty: &Type) -> bool {
         && get_last_path_segment_ident(ty).is_some()
     {
         // Must not have type arguments (like Option<T> or Vec<T>) to be auto-detected as a nested struct
-        if path_ty.path.segments.last().unwrap().arguments.is_empty() {
+        if path_ty
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.arguments.is_empty())
+        {
             // Use classify_type: Unknown + simple ident = likely custom struct
             return matches!(classify_type(ty), TypeInfo::Unknown);
         }

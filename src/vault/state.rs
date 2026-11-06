@@ -2,22 +2,22 @@
 
 use crate::error::{Error, Result};
 use crate::vault::crypto::{
-    constant_time_eq, decrypt_authenticated, derive_key, encrypt_authenticated, generate_nonce,
-    generate_salt, zeroize_bytes,
+    decrypt_authenticated, derive_key, encrypt_authenticated, generate_nonce, generate_salt,
 };
 use crate::vault::envelope::{Argon2Params, VaultEnvelope};
 use base64::Engine as _;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use subtle::ConstantTimeEq;
 
-/// Secure wrapper around a 32-byte cryptographic key that zeroizes memory on drop
-#[derive(Debug)]
-pub(crate) struct VaultKey(pub(crate) [u8; 32]);
+/// A 32-byte cryptographic key that is zeroized when dropped.
+pub(crate) struct VaultKey(pub(crate) zeroize::Zeroizing<[u8; 32]>);
 
-impl Drop for VaultKey {
-    fn drop(&mut self) {
-        zeroize_bytes(&mut self.0);
+// Never print key material, even through a `{:?}` of the surrounding state.
+impl std::fmt::Debug for VaultKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VaultKey(<redacted>)")
     }
 }
 
@@ -492,7 +492,7 @@ impl VaultState {
 
         let mut guard = self.status.write().map_err(|_| Error::LockPoisoned)?;
         *guard = VaultStatus::Unlocked {
-            key: VaultKey(*key_bytes),
+            key: VaultKey(key_bytes),
             salt,
         };
         self.touch();
@@ -565,7 +565,7 @@ impl VaultState {
             let VaultStatus::Unlocked { key, .. } = &*status else {
                 return Err(Error::ConfigLocked);
             };
-            zeroize::Zeroizing::new(key.0)
+            zeroize::Zeroizing::new(*key.0)
         };
         let nonce = envelope.decode_nonce()?;
         let ciphertext = envelope.decode_ciphertext()?;
@@ -617,7 +617,7 @@ impl VaultState {
                         salt,
                         &active_params,
                     )?);
-                    Ok(constant_time_eq(derived.as_ref(), &key.0))
+                    Ok(bool::from(derived.as_slice().ct_eq(key.0.as_slice())))
                 }
                 VaultStatus::Locked { .. } => Err(Error::ConfigLocked),
             }
@@ -628,6 +628,14 @@ impl VaultState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_debug_output_never_contains_key_material() {
+        let key = VaultKey(zeroize::Zeroizing::new([0xAB; 32]));
+        let printed = format!("{:?}", VaultStatus::Unlocked { key, salt: [0; 16] });
+        assert!(!printed.contains("171"), "{printed}");
+        assert!(printed.contains("redacted"));
+    }
 
     #[test]
     fn migration_pins_prevent_auto_and_explicit_key_loss() {

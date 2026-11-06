@@ -40,32 +40,14 @@ impl SettingsCache {
         }
     }
 
-    pub fn get_value(
-        &self,
-        category: &str,
-        setting_name: &str,
-        key: &str,
-    ) -> Result<Option<Value>> {
+    /// Look up a dotted key in the stored settings, then in the schema defaults.
+    pub fn get_value(&self, key: &str) -> Result<Option<Value>> {
         let guard = self.state.read_recovered()?;
-        if let Some((_, cached)) = guard.as_ref() {
-            // Check stored
-            let stored = if category.is_empty() {
-                cached.stored.get(setting_name)
-            } else {
-                cached
-                    .stored
-                    .get(category)
-                    .and_then(|cat| cat.get(setting_name))
-            };
-            if let Some(value) = stored {
-                return Ok(Some(value.clone()));
-            }
-            // Check defaults
-            if let Some(value) = cached.defaults.get(key) {
-                return Ok(Some(value.clone()));
-            }
-        }
-        Ok(None)
+        Ok(guard.as_ref().and_then(|(_, cached)| {
+            crate::utils::value::get_path(&cached.stored, key)
+                .or_else(|| cached.defaults.get(key))
+                .cloned()
+        }))
     }
 
     /// Compute or retrieve the merged settings value.

@@ -65,7 +65,8 @@ pub struct SettingsManager<
     /// Unified settings cache
     pub(super) settings_cache: Arc<SettingsCache>,
 
-    /// Isolates managed reads from in-progress settings and credential commits.
+    /// Gate that isolates managed reads from in-progress settings and credential
+    /// commits. Use [`Self::read_gate`] and [`Self::write_gate`].
     pub(super) settings_write_lock: Arc<RwLock<()>>,
 
     /// Environment variable handler
@@ -293,6 +294,22 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 )))
             }
         }
+    }
+
+    /// Take the gate for reading settings. The gate protects files and credentials,
+    /// not memory it owns, so a panic while holding it leaves nothing inconsistent
+    /// and a poisoned gate is reused instead of failing every later call.
+    pub(super) fn read_gate(&self) -> std::sync::RwLockReadGuard<'_, ()> {
+        self.settings_write_lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Take the gate for committing settings. See [`Self::read_gate`].
+    pub(super) fn write_gate(&self) -> std::sync::RwLockWriteGuard<'_, ()> {
+        self.settings_write_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Get the configuration

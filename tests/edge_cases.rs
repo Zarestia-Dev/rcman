@@ -422,77 +422,82 @@ fn test_save_to_readonly_directory() {
 #[test]
 fn test_env_override_basic() {
     let fixture = TestFixture::with_env_prefix("RCMAN_TEST_BASIC");
+    fixture.env_source.set("RCMAN_TEST_BASIC_UI_THEME", "light");
 
-    // Set environment variable before loading
-    fixture
-        .env_source
-        .set("RCMAN_TEST_BASIC_UI__THEME", "light");
-
-    let settings = fixture.manager.get_all().unwrap();
-
-    // Should get env value, not default
-    // Note: env override behavior depends on implementation
-    let _ = settings.ui.theme;
+    assert_eq!(fixture.manager.get_all().unwrap().ui.theme, "light");
+    let metadata = fixture.manager.metadata().unwrap();
+    assert!(
+        metadata["ui.theme"]
+            .get_meta_bool("env_override")
+            .unwrap_or(false)
+    );
 }
 
 #[test]
-// No ignore needed - using unique env prefix
 fn test_env_override_precedence_over_saved() {
     let fixture = TestFixture::with_env_prefix("RCMAN_TEST_PRECEDENCE");
-    let _ = fixture.manager.get_all().unwrap();
-
-    // Save a value
     fixture
         .manager
         .save_setting("ui", "theme", &json!("dark"))
         .unwrap();
-
-    // Set env override
-    // Set env override
     fixture
         .env_source
-        .set("RCMAN_TEST_PRECEDENCE_UI__THEME", "light");
+        .set("RCMAN_TEST_PRECEDENCE_UI_THEME", "light");
 
-    // Load again - check actual behavior
-    let metadata = fixture.manager.metadata().unwrap();
-    let theme = metadata.get("ui.theme").unwrap();
-
-    // Document: env override may or may not be implemented
-    let _ = theme.value;
+    assert_eq!(fixture.manager.get_value("ui.theme").unwrap(), "light");
+    // The override is transient: the saved value is untouched.
+    fixture.env_source.remove("RCMAN_TEST_PRECEDENCE_UI_THEME");
+    assert_eq!(fixture.manager.get_value("ui.theme").unwrap(), "dark");
 }
 
 #[test]
-fn test_env_override_invalid_value() {
-    let fixture = TestFixture::new();
-
-    // Set invalid value in env
+fn test_env_override_invalid_value_is_ignored() {
+    let fixture = TestFixture::with_env_prefix("RCMAN_TEST_INVALID");
+    fixture
+        .manager
+        .save_setting("ui", "theme", &json!("light"))
+        .unwrap();
     fixture
         .env_source
-        .set("RCMAN_TEST_UI__THEME", "invalid_theme");
+        .set("RCMAN_TEST_INVALID_UI_THEME", "invalid_theme");
 
-    // Should fail validation
-    let result = fixture.manager.get_all();
-
-    // Depending on implementation, this might fail during load or use default
-    // Either behavior is acceptable - document what happens
-    // For now, we just verify it doesn't panic
-    let _ = result;
+    // Not one of the select options: the saved value stays in effect and the
+    // rest of the settings remain readable.
+    assert_eq!(fixture.manager.get_all().unwrap().ui.theme, "light");
+    assert_eq!(fixture.manager.get_value("ui.theme").unwrap(), "light");
 }
 
 #[test]
-fn test_env_override_type_mismatch() {
-    let fixture = TestFixture::new();
+fn test_env_override_type_mismatch_and_out_of_range_are_ignored() {
+    let fixture = TestFixture::with_env_prefix("RCMAN_TEST_RANGE");
 
-    // Set string where number is expected
-    // Set string where number is expected
     fixture
         .env_source
-        .set("RCMAN_TEST_UI__FONT_SIZE", "not_a_number");
+        .set("RCMAN_TEST_RANGE_UI_FONT_SIZE", "not_a_number");
+    assert_eq!(fixture.manager.get_all().unwrap().ui.font_size, 14.0);
 
-    let result = fixture.manager.get_all();
+    // The schema allows 8..=32.
+    fixture
+        .env_source
+        .set("RCMAN_TEST_RANGE_UI_FONT_SIZE", "500");
+    assert_eq!(fixture.manager.get_all().unwrap().ui.font_size, 14.0);
 
-    // Should handle gracefully (either fail or ignore)
-    let _ = result;
+    fixture
+        .env_source
+        .set("RCMAN_TEST_RANGE_UI_FONT_SIZE", "20");
+    assert_eq!(fixture.manager.get_all().unwrap().ui.font_size, 20.0);
+}
+
+#[test]
+fn test_env_override_keeps_text_settings_verbatim() {
+    let fixture = TestFixture::with_env_prefix("RCMAN_TEST_TEXT");
+    // Numeric- and boolean-looking text must not be reinterpreted as JSON.
+    for raw in ["12345", "true", "null", "[1]"] {
+        fixture
+            .env_source
+            .set("RCMAN_TEST_TEXT_PATHS_LOG_FILE", raw);
+        assert_eq!(fixture.manager.get_value("paths.log_file").unwrap(), raw);
+    }
 }
 
 // =============================================================================

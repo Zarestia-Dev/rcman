@@ -31,7 +31,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     fn require_credentials(&self) -> Result<&crate::credentials::CredentialManager> {
         self.credentials
             .as_ref()
-            .ok_or(Error::Credential("Credentials not enabled".to_string()))
+            .ok_or_else(|| Error::Credential("Credentials not enabled".to_string()))
     }
 
     /// Get the current settings file path.
@@ -140,10 +140,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .get(&full_key)
             .ok_or_else(|| Error::SettingNotFound(full_key.clone()))?;
         self.validate_value(&full_key, metadata, value)?;
-        let guard = self
-            .settings_write_lock
-            .write()
-            .map_err(|_| Error::LockPoisoned)?;
+        let guard = self.write_gate();
         self.ensure_cache_populated_inner()?;
         let old_value = self.persisted_value(&full_key, metadata)?;
         if old_value == *value {
@@ -229,10 +226,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let value = serde_json::to_value(schema).map_err(|e| Error::Parse(e.to_string()))?;
         self.validate_schema_values(&value)?;
-        let guard = self
-            .settings_write_lock
-            .write()
-            .map_err(|_| Error::LockPoisoned)?;
+        let guard = self.write_gate();
         self.ensure_cache_populated_inner()?;
         let notifications = self.commit_values(&value, None, false)?;
         drop(guard);
@@ -399,20 +393,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // Keep arbitrary user code outside locks. Compare the persisted snapshot
         // at commit so reentrant/concurrent writes cannot silently be overwritten.
         let (snapshot, snapshot_path) = {
-            let _guard = self
-                .settings_write_lock
-                .write()
-                .map_err(|_| Error::LockPoisoned)?;
+            let _guard = self.write_gate();
             (self.read_all_data(false)?, self.settings_path()?)
         };
         let mut current: Schema = serde_json::from_value(snapshot.clone())?;
         f(&mut current);
         let value = serde_json::to_value(&current)?;
         self.validate_schema_values(&value)?;
-        let guard = self
-            .settings_write_lock
-            .write()
-            .map_err(|_| Error::LockPoisoned)?;
+        let guard = self.write_gate();
         if self.settings_path()? != snapshot_path || self.read_all_data(false)? != snapshot {
             return Err(Error::ConcurrentModification);
         }
@@ -429,8 +417,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Returns an error if the setting key is not found in the schema,
     /// or if saving the default value fails.
     pub fn reset_setting(&self, category: &str, key: &str) -> Result<Value> {
-        #[cfg(feature = "backup")]
-        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let metadata_key = format!("{category}.{key}");
         let default_value = self
             .schema_metadata
@@ -460,10 +446,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             return Err(Error::ConfigLocked);
         }
 
-        let guard = self
-            .settings_write_lock
-            .write()
-            .map_err(|_| Error::LockPoisoned)?;
+        let guard = self.write_gate();
         self.ensure_cache_populated_inner()?;
         let mut defaults = json!({});
         for (key, metadata) in self.schema_metadata.iter() {
@@ -594,7 +577,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     pub fn ensure_cache_populated(&self) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
-        let _guard = self.settings_write_lock.read_recovered()?;
+        let _guard = self.read_gate();
         self.ensure_cache_populated_inner()
     }
 
@@ -611,7 +594,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     /// Migrate settings between the settings file and credential store if their secret schema status has changed.
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     pub(crate) fn migrate_secret_keys(&self) -> Result<()> {
-        let _guard = self.settings_write_lock.write_recovered()?;
+        let _guard = self.write_gate();
         let profile = self.active_profile_name()?;
         self.migrate_secret_keys_locked(&self.settings_path()?, profile.as_deref())
     }
@@ -626,7 +609,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         path: &std::path::Path,
         profile: Option<&str>,
     ) -> Result<()> {
-        let _write_guard = self.settings_write_lock.write_recovered()?;
+        let _write_guard = self.write_gate();
         self.migrate_secret_keys_locked(path, profile)
     }
 

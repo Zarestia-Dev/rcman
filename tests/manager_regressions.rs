@@ -623,3 +623,76 @@ fn hot_reload_follows_active_profile() {
     }
     runtime.stop();
 }
+
+#[derive(Default, Serialize, Deserialize)]
+struct Proxy {
+    net: Net,
+}
+#[derive(Default, Serialize, Deserialize)]
+struct Net {
+    proxy: ProxyHost,
+}
+#[derive(Default, Serialize, Deserialize)]
+struct ProxyHost {
+    host: String,
+}
+impl SettingsSchema for Proxy {
+    fn get_metadata() -> rcman::IndexMap<String, SettingMetadata> {
+        rcman::settings! { "net.proxy.host" => SettingMetadata::text("") }
+    }
+}
+
+#[test]
+fn nested_keys_deeper_than_two_levels_are_compared_against_what_is_stored() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = SettingsManager::builder("deep-keys", "1")
+        .with_config_dir(directory.path())
+        .with_schema::<Proxy>()
+        .build()
+        .unwrap();
+    let changes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&changes);
+    manager.events().on_change(move |_, _, _| {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+
+    manager
+        .save_setting("net", "proxy.host", &json!("example.com"))
+        .unwrap();
+    // Saving the stored value again is not a change.
+    manager
+        .save_setting("net", "proxy.host", &json!("example.com"))
+        .unwrap();
+
+    assert_eq!(changes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        manager.get_all_data().unwrap()["net"]["proxy"]["host"],
+        "example.com"
+    );
+}
+
+#[test]
+fn a_panicking_migrator_does_not_disable_the_manager() {
+    let directory = tempfile::tempdir().unwrap();
+    let first_call = Arc::new(AtomicBool::new(true));
+    let armed = Arc::clone(&first_call);
+    let manager = SettingsManager::builder("poisoned-gate", "1")
+        .with_config_dir(directory.path())
+        .with_schema::<Model>()
+        .with_migrator(move |value| {
+            assert!(!armed.swap(false, Ordering::SeqCst), "migrator bug");
+            value
+        })
+        .build()
+        .unwrap();
+
+    // The migrator runs while a save holds the write gate and panics once.
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        manager.save_setting("ui", "dark", &json!(true))
+    }));
+    assert!(panicked.is_err());
+
+    manager.save_setting("ui", "dark", &json!(true)).unwrap();
+    assert_eq!(manager.get_value("ui.dark").unwrap(), json!(true));
+    assert!(manager.reset_all().is_ok());
+}

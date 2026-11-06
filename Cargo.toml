@@ -34,7 +34,7 @@ keychain = [
     "dep:ndk-context",
 ]
 encrypted-file = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2"]
-vault = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2", "dep:zeroize"]
+vault = ["dep:aes-gcm", "dep:rand", "dep:base64", "dep:argon2", "dep:zeroize", "dep:subtle"]
 derive = ["dep:rcman-derive"]
 profiles = []
 hot-reload = ["dep:notify"]
@@ -54,6 +54,7 @@ zip = { version = "8.2", default-features = false, features = ["deflate", "time"
 sha2 = { version = "0.11", optional = true }
 tempfile = { version = "3.26", optional = true }
 zeroize = { version = "1", optional = true }
+subtle = { version = "2.6", optional = true }
 aes-gcm = { version = "0.10", optional = true }
 rand = { version = "0.10", optional = true }
 base64 = { version = "0.22", optional = true }

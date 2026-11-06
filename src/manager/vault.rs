@@ -306,10 +306,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         if vault.is_locked() {
             return Err(Error::ConfigLocked);
         }
-        let _write_guard = self
-            .settings_write_lock
-            .write()
-            .map_err(|_| Error::LockPoisoned)?;
+        let _write_guard = self.write_gate();
         let timeout_ms = timeout
             .map(|duration| u64::try_from(duration.as_millis()))
             .transpose()

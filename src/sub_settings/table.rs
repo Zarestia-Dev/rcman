@@ -2,6 +2,7 @@ use crate::CacheStrategy;
 use crate::error::{Error, Result};
 use crate::storage::is_valid_sqlite_identifier;
 use crate::sub_settings::SubSettingsConfig;
+use crate::sub_settings::entry_cache::EntryCache;
 use crate::sub_settings::store::SubSettingsStore;
 use crate::utils::security::{ensure_secure_dir, set_secure_file_permissions};
 use crate::utils::sync::RwLockExt;
@@ -11,19 +12,13 @@ use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 type SubSettingsMigrator = Arc<dyn Fn(Value) -> Value + Send + Sync>;
 
-enum CacheType {
-    Full(HashMap<String, Value>),
-    Lru(lru::LruCache<String, Value>),
-}
-
 struct TableStoreState {
-    cache: Option<CacheType>,
+    cache: Option<EntryCache>,
 }
 
 /// SQLite table storage backend for sub-settings.
@@ -202,19 +197,6 @@ impl TableStore {
         Ok(())
     }
 
-    fn create_cache(&self) -> CacheType {
-        match self.cache_strategy {
-            CacheStrategy::Full => CacheType::Full(HashMap::new()),
-            CacheStrategy::Lru(size) => {
-                let cap = NonZeroUsize::new(size).unwrap_or(NonZeroUsize::new(100).unwrap());
-                CacheType::Lru(lru::LruCache::new(cap))
-            }
-            CacheStrategy::None => {
-                unreachable!("Cache should not be initialized if strategy is None")
-            }
-        }
-    }
-
     fn ensure_cache_populated(&self) -> Result<()> {
         if matches!(self.cache_strategy, CacheStrategy::None) {
             return Ok(());
@@ -229,7 +211,7 @@ impl TableStore {
             return Ok(());
         }
 
-        state.cache = Some(self.create_cache());
+        state.cache = EntryCache::new(self.cache_strategy);
         Ok(())
     }
 }
@@ -244,23 +226,11 @@ impl SubSettingsStore for TableStore {
         if !matches!(self.cache_strategy, CacheStrategy::None) {
             self.ensure_cache_populated()?;
             let mut state = self.state.write_recovered()?;
-            if let Some(cache) = &mut state.cache {
-                match cache {
-                    CacheType::Full(c) => {
-                        if let Some(val) = c.get(key)
-                            && !val.is_null()
-                        {
-                            return Ok(val.clone());
-                        }
-                    }
-                    CacheType::Lru(c) => {
-                        if let Some(val) = c.get(key)
-                            && !val.is_null()
-                        {
-                            return Ok(val.clone());
-                        }
-                    }
-                }
+            if let Some(cache) = &mut state.cache
+                && let Some(val) = cache.get(key)
+                && !val.is_null()
+            {
+                return Ok(val.clone());
             }
         }
 
@@ -291,14 +261,7 @@ impl SubSettingsStore for TableStore {
             if !matches!(self.cache_strategy, CacheStrategy::None) {
                 let mut state = self.state.write_recovered()?;
                 if let Some(cache) = &mut state.cache {
-                    match cache {
-                        CacheType::Full(c) => {
-                            c.remove(key);
-                        }
-                        CacheType::Lru(c) => {
-                            c.pop(key);
-                        }
-                    }
+                    cache.remove(key);
                 }
             }
             return Err(Error::SubSettingsEntryNotFound(format!(
@@ -327,14 +290,7 @@ impl SubSettingsStore for TableStore {
         if !matches!(self.cache_strategy, CacheStrategy::None) {
             let mut state = self.state.write_recovered()?;
             if let Some(cache) = &mut state.cache {
-                match cache {
-                    CacheType::Full(c) => {
-                        c.insert(key.to_string(), value.clone());
-                    }
-                    CacheType::Lru(c) => {
-                        c.put(key.to_string(), value.clone());
-                    }
-                }
+                cache.insert(key.to_string(), value.clone());
             }
         }
 
@@ -389,17 +345,10 @@ impl SubSettingsStore for TableStore {
         if !matches!(self.cache_strategy, CacheStrategy::None) {
             let mut state = self.state.write_recovered()?;
             if state.cache.is_none() {
-                state.cache = Some(self.create_cache());
+                state.cache = EntryCache::new(self.cache_strategy);
             }
             if let Some(cache) = &mut state.cache {
-                match cache {
-                    CacheType::Full(c) => {
-                        c.insert(key.to_string(), value);
-                    }
-                    CacheType::Lru(c) => {
-                        c.put(key.to_string(), value);
-                    }
-                }
+                cache.insert(key.to_string(), value);
             }
         }
 
@@ -436,14 +385,7 @@ impl SubSettingsStore for TableStore {
         if !matches!(self.cache_strategy, CacheStrategy::None) {
             let mut state = self.state.write_recovered()?;
             if let Some(cache) = &mut state.cache {
-                match cache {
-                    CacheType::Full(c) => {
-                        c.remove(key);
-                    }
-                    CacheType::Lru(c) => {
-                        c.pop(key);
-                    }
-                }
+                cache.remove(key);
             }
         }
 
@@ -465,23 +407,11 @@ impl SubSettingsStore for TableStore {
 
         if !matches!(self.cache_strategy, CacheStrategy::None) {
             let state = self.state.read_recovered()?;
-            if let Some(cache) = &state.cache {
-                match cache {
-                    CacheType::Full(c) => {
-                        if let Some(val) = c.get(key)
-                            && !val.is_null()
-                        {
-                            return Ok(true);
-                        }
-                    }
-                    CacheType::Lru(c) => {
-                        if let Some(val) = c.peek(key)
-                            && !val.is_null()
-                        {
-                            return Ok(true);
-                        }
-                    }
-                }
+            if let Some(cache) = &state.cache
+                && let Some(val) = cache.peek(key)
+                && !val.is_null()
+            {
+                return Ok(true);
             }
         }
 
@@ -627,7 +557,7 @@ impl SubSettingsStore for TableStore {
 
         if matches!(self.cache_strategy, CacheStrategy::Full) {
             let mut state = self.state.write_recovered()?;
-            state.cache = Some(CacheType::Full(result.clone()));
+            state.cache = Some(EntryCache::Full(result.clone()));
         }
 
         Ok(result)

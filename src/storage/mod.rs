@@ -18,7 +18,9 @@ mod sqlite;
 pub(crate) use sqlite::{checkpoint_encrypted, sqlite_entry_id};
 
 use crate::error::{Error, Result};
-use crate::utils::security::{ensure_secure_dir, set_secure_file_permissions};
+use crate::utils::security::{
+    create_private_file, ensure_secure_dir, set_secure_file_permissions, sync_parent_dir,
+};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
 
@@ -177,11 +179,10 @@ pub trait StorageBackend: Clone + Send + Sync {
 
         // Wrap fallible steps so we can clean up the temp file on failure
         let result = (|| -> Result<()> {
-            let mut temp_file =
-                std::fs::File::create(&temp_path).map_err(|e| Error::FileWrite {
-                    path: temp_path.clone(),
-                    source: e,
-                })?;
+            let mut temp_file = create_private_file(&temp_path).map_err(|e| Error::FileWrite {
+                path: temp_path.clone(),
+                source: e,
+            })?;
 
             temp_file
                 .write_all(content.as_bytes())
@@ -241,6 +242,7 @@ pub trait StorageBackend: Clone + Send + Sync {
 
             // Ensure final file has secure permissions (in case rename didn't preserve)
             set_secure_file_permissions(path)?;
+            sync_parent_dir(path);
 
             Ok(())
         })();

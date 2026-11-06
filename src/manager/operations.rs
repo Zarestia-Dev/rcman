@@ -35,9 +35,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         key: &str,
         metadata: &SettingMetadata,
     ) -> Result<(Value, bool)> {
-        if (!metadata.is_secret() || self.config.env_overrides_secrets)
-            && let Some(value) = self.get_env_override(key)
-        {
+        if let Some(value) = self.env_override(key, metadata) {
             return Ok((value, true));
         }
         Ok((self.persisted_value(key, metadata)?, false))
@@ -53,17 +51,30 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             }
             return Ok(metadata.default.clone());
         }
-        let (category, name) = Self::parse_setting_key(key).unwrap_or(("", key));
         self.settings_cache
-            .get_value(category, name, key)?
+            .get_value(key)?
             .ok_or_else(|| Error::SettingNotFound(key.to_owned()))
     }
 
-    /// Check if a setting value is overridden by an environment variable
+    /// The environment override for a setting, if one is set and valid.
     ///
-    /// Returns the parsed value if env var is set and successfully parsed.
-    pub(crate) fn get_env_override(&self, key: &str) -> Option<Value> {
-        self.env_handler.get_env_override(key)
+    /// Overrides pass the same validation as saved values, including pattern and
+    /// reserved-value constraints. An invalid override is ignored with a warning,
+    /// so one bad variable cannot make every settings read fail.
+    pub(crate) fn env_override(&self, key: &str, metadata: &SettingMetadata) -> Option<Value> {
+        if metadata.is_secret() && !self.config.env_overrides_secrets {
+            return None;
+        }
+        let value = self
+            .env_handler
+            .get_env_override(key, &metadata.setting_type)?;
+        match metadata.validate(&value) {
+            Ok(()) => Some(value),
+            Err(reason) => {
+                log::warn!("Ignoring invalid environment override for '{key}': {reason}");
+                None
+            }
+        }
     }
 
     /// Get all setting metadata with current values populated.
@@ -87,10 +98,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             return Err(Error::ConfigLocked);
         }
 
-        let _guard = self
-            .settings_write_lock
-            .read()
-            .map_err(|_| Error::LockPoisoned)?;
+        let _guard = self.read_gate();
         // Ensure cache is populated
         self.ensure_cache_populated_inner()?;
 
@@ -165,10 +173,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             ));
         };
 
-        let _guard = self
-            .settings_write_lock
-            .read()
-            .map_err(|_| Error::LockPoisoned)?;
+        let _guard = self.read_gate();
         // Ensure cache is populated with schema defaults
         self.ensure_cache_populated_inner()?;
 
@@ -195,10 +200,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             return Err(Error::ConfigLocked);
         }
 
-        let _guard = self
-            .settings_write_lock
-            .read()
-            .map_err(|_| Error::LockPoisoned)?;
+        let _guard = self.read_gate();
         self.read_all_data(true)
     }
 
@@ -212,10 +214,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
                 let value = self.persisted_value(key, metadata)?;
                 crate::utils::value::set_path(&mut merged, key, value);
             }
-            if include_env
-                && (!metadata.is_secret() || self.config.env_overrides_secrets)
-                && let Some(value) = self.get_env_override(key)
-            {
+            if include_env && let Some(value) = self.env_override(key, metadata) {
                 crate::utils::value::set_path(&mut merged, key, value);
             }
         }
@@ -371,8 +370,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ///
     /// Returns `Error::SubSettingsNotFound` if the type is not registered, or I/O errors from the handler.
     pub fn list_sub_settings(&self, name: &str) -> Result<Vec<String>> {
-        #[cfg(feature = "backup")]
-        let _operation_guard = crate::backup::transaction::enter(&self.config.config_dir)?;
         let sub = self.sub_settings(name)?;
         sub.list()
     }

@@ -13,6 +13,13 @@ pub enum CacheStrategy {
 }
 
 impl CacheStrategy {
+    /// Capacity for an LRU store; a size of 0 (rejected by [`validate`](Self::validate))
+    /// falls back to 100 entries instead of panicking.
+    pub(crate) fn lru_capacity(size: usize) -> std::num::NonZeroUsize {
+        const FALLBACK: std::num::NonZeroUsize = std::num::NonZeroUsize::new(100).unwrap();
+        std::num::NonZeroUsize::new(size).unwrap_or(FALLBACK)
+    }
+
     /// Validate cache strategy configuration
     ///
     /// # Errors

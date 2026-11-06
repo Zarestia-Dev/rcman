@@ -6,6 +6,7 @@
 //! - `MultiFile`: One file per entity (e.g., `config/remotes/gdrive.json`)
 //! - `SingleFile`: All entities in one file (e.g., `config/backends.json`)
 
+mod entry_cache;
 mod multi_file;
 mod single_file;
 mod store;
@@ -1109,9 +1110,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         self.get_value_inner(name)
     }
 
+    // Callers hold an operation guard and the entry lock.
     fn get_value_inner(&self, name: &str) -> Result<Value> {
-        #[cfg(feature = "backup")]
-        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
@@ -1160,8 +1160,6 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     /// - Deserialization fails
     /// - Store access fails
     pub fn get<T: DeserializeOwned>(&self, name: &str) -> Result<T> {
-        #[cfg(feature = "backup")]
-        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         let value = self.get_value(name)?;
         serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
     }
@@ -1256,8 +1254,20 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         }
 
         let guard = self.operation_lock.write_recovered()?;
+        let deleted = self.delete_inner(name)?;
+        drop(guard);
+
+        if deleted {
+            self.notify_change(name, SubSettingsAction::Deleted);
+        }
+        Ok(())
+    }
+
+    // Caller holds `operation_lock` and has checked the vault. Returns whether
+    // an entry existed.
+    fn delete_inner(&self, name: &str) -> Result<bool> {
         if !self.exists_inner(name)? {
-            return Ok(());
+            return Ok(false);
         }
         let store = self.active_store()?;
         let finish = || Self::commit_entries(&**store, &[(name.to_owned(), None)]);
@@ -1277,10 +1287,47 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         }
         #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
         finish()?;
-        drop(store);
+        Ok(true)
+    }
+
+    /// Atomically read-modify-write one entry.
+    ///
+    /// `change` receives the current value (`None` when the entry does not exist)
+    /// and returns the value to store; returning `None` deletes the entry. The
+    /// read, the closure and the write happen under one lock, so concurrent
+    /// updates of the same entry cannot overwrite each other. Schema validation
+    /// and secret handling apply as for [`set`](Self::set).
+    ///
+    /// The closure runs while the lock is held and must not call back into this
+    /// `SubSettings`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the entry cannot be read (a missing entry is not an
+    /// error), the new value fails validation, or the store write fails.
+    pub fn update<F>(&self, name: &str, change: F) -> Result<()>
+    where
+        F: FnOnce(Option<Value>) -> Option<Value>,
+    {
+        #[cfg(feature = "backup")]
+        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
+        let guard = self.operation_lock.write_recovered()?;
+        let current = match self.get_value_inner(name) {
+            Ok(value) => Some(value),
+            Err(Error::SubSettingsEntryNotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        let action = match change(current) {
+            Some(value) => Some(self.set_inner(name, value)?),
+            None => self
+                .delete_inner(name)?
+                .then_some(SubSettingsAction::Deleted),
+        };
         drop(guard);
 
-        self.notify_change(name, SubSettingsAction::Deleted);
+        if let Some(action) = action {
+            self.notify_change(name, action);
+        }
         Ok(())
     }
 
@@ -1352,9 +1399,8 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         self.exists_inner(name)
     }
 
+    // Callers hold an operation guard and the entry lock.
     fn exists_inner(&self, name: &str) -> Result<bool> {
-        #[cfg(feature = "backup")]
-        let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
         #[cfg(feature = "vault")]
         if self.is_locked() {
             return Err(Error::ConfigLocked);
