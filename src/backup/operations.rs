@@ -43,6 +43,7 @@ fn collect_settings_files<S: StorageBackend, Schema: SettingsSchema>(
     config: &crate::config::SettingsConfig<S, Schema>,
     options: &BackupOptions,
 ) -> Result<Vec<(PathBuf, PathBuf)>> {
+    #[cfg(not(feature = "profiles"))]
     let _ = options;
     let mut files = Vec::new();
 
@@ -234,41 +235,35 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
         let timestamp = now
             .format(&timestamp_format)
             .unwrap_or_else(|_| "unknown".to_string());
+        // The app name and sub-settings names may hold characters a file name
+        // cannot (`alerts/rules`), so every part is sanitized.
+        let app_name = sanitize_filename(&self.manager.config().app_name);
         let filename = if let Some(suffix) = &options.filename_suffix {
             format!(
                 "{}_{}_{}.rcman",
-                self.manager.config().app_name,
+                app_name,
                 timestamp,
                 sanitize_filename(suffix)
             )
         } else {
             match &options.export_type {
-                ExportType::Full => format!(
-                    "{}_{}_full.rcman",
-                    self.manager.config().app_name,
-                    timestamp
-                ),
+                ExportType::Full => format!("{app_name}_{timestamp}_full.rcman"),
                 ExportType::SettingsOnly => {
                     // Try to infer a better suffix than "settings"
                     let suffix =
                         if !options.include_settings && options.include_sub_settings.len() == 1 {
                             // If exporting exactly one sub-setting (e.g. "remotes"), use that as suffix
-                            &options.include_sub_settings[0]
+                            sanitize_filename(&options.include_sub_settings[0])
                         } else {
-                            "settings"
+                            "settings".to_owned()
                         };
 
-                    format!(
-                        "{}_{}_{}.rcman",
-                        self.manager.config().app_name,
-                        timestamp,
-                        suffix
-                    )
+                    format!("{app_name}_{timestamp}_{suffix}.rcman")
                 }
                 ExportType::Single { name, .. } => {
                     format!(
                         "{}_{}_{}.rcman",
-                        self.manager.config().app_name,
+                        app_name,
                         sanitize_filename(name),
                         timestamp
                     )
@@ -329,7 +324,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
                     let sub_export_dir = export_dir.join(settings_type);
 
                     let mut value = sub
-                        .read_entries(&sub.directory())?
+                        .read_entries(&sub.directory()?)?
                         .remove(name)
                         .ok_or_else(|| Error::SubSettingsEntryNotFound(name.clone()))?;
                     let metadata = sub.schema_metadata().unwrap_or_default();
@@ -642,7 +637,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
         if sub.is_single_file() {
             // Single-file mode
-            if let Some(path) = sub.file_path()
+            if let Some(path) = sub.file_path()?
                 && path.exists()
             {
                 let ext = sub.extension();
@@ -650,7 +645,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
 
                 // Process secrets entry-by-entry with sub-settings schema paths.
                 // Single-file structure is typically: { "entry": { ...fields... } }
-                let mut raw_entries = sub.read_entries(&sub.directory())?;
+                let mut raw_entries = sub.read_entries(&sub.directory()?)?;
                 if let Some(selected) = options.include_sub_settings_items.get(sub_type)
                     && !selected.is_empty()
                 {
@@ -693,7 +688,7 @@ impl<'a, S: StorageBackend + 'static, Schema: SettingsSchema> BackupManager<'a, 
             let mut total_size = 0u64;
             let mut items = Vec::new();
 
-            for (name, mut value) in sub.read_entries(&sub.directory())? {
+            for (name, mut value) in sub.read_entries(&sub.directory()?)? {
                 if options
                     .include_sub_settings_items
                     .get(sub_type)

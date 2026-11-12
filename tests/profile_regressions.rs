@@ -109,7 +109,7 @@ fn direct_sub_profile_changes_refresh_all_store_modes() {
         assert_eq!(sub.get_value("one").unwrap()["value"], "work");
         sub.set("two", &json!({"value":"new"})).unwrap();
         assert!(!dir.path().join(&name).join("profiles/work").exists());
-        assert!(sub.directory().ends_with("profiles/renamed"));
+        assert!(sub.directory().unwrap().ends_with("profiles/renamed"));
         profiles.switch("default").unwrap();
         assert_eq!(sub.get_value("one").unwrap()["value"], "original");
     }

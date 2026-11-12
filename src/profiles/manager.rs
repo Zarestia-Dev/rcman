@@ -3,7 +3,7 @@
 //! Handles profile lifecycle: create, switch, delete, rename, duplicate.
 
 use crate::error::{Error, Result};
-use crate::profiles::{DEFAULT_PROFILE, PROFILES_DIR, validate_profile_name};
+use crate::profiles::{DEFAULT_PROFILE, PROFILES_DIR, validate_new_profile_name};
 use crate::utils::sync::RwLockExt;
 
 use log::{debug, info};
@@ -669,7 +669,7 @@ impl<S: StorageBackend> ProfileManager<S> {
         let _operation_guard = crate::backup::transaction::enter(
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
-        validate_profile_name(name)?;
+        validate_new_profile_name(name)?;
         let operation_guard = self.operation_lock.write_recovered()?;
         self.ensure_layout_migrated()?;
         self.ensure_manifest()?;
@@ -872,7 +872,7 @@ impl<S: StorageBackend> ProfileManager<S> {
         let _operation_guard = crate::backup::transaction::enter(
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
-        validate_profile_name(to)?;
+        validate_new_profile_name(to)?;
         let operation_guard = self.operation_lock.write_recovered()?;
         self.ensure_layout_migrated()?;
         self.ensure_manifest()?;
@@ -957,7 +957,7 @@ impl<S: StorageBackend> ProfileManager<S> {
         let _operation_guard = crate::backup::transaction::enter(
             self.profiles_dir.parent().ok_or(Error::NotInitialized)?,
         )?;
-        validate_profile_name(target)?;
+        validate_new_profile_name(target)?;
         let operation_guard = self.operation_lock.write_recovered()?;
         self.ensure_layout_migrated()?;
         self.ensure_manifest()?;

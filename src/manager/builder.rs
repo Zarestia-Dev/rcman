@@ -51,240 +51,73 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     }
 }
 
+/// Forward builder options to [`SettingsConfigBuilder`], so each option is
+/// implemented and documented once.
+macro_rules! forward {
+    ($( $(#[cfg($cfg:meta)])* $name:ident ( $($arg:ident : $ty:ty),* ); )*) => {
+        $(
+            $(#[cfg($cfg)])*
+            #[doc = concat!("See [`SettingsConfigBuilder::", stringify!($name), "`].")]
+            #[must_use]
+            pub fn $name(mut self, $($arg: $ty),*) -> Self {
+                self.config_builder = self.config_builder.$name($($arg),*);
+                self
+            }
+        )*
+    };
+}
+
 impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema> {
-    /// Set the configuration directory path.
-    ///
-    /// If not set, uses the system config directory.
-    #[must_use]
-    pub fn with_config_dir(mut self, path: impl Into<PathBuf>) -> Self {
-        self.config_builder = self.config_builder.with_config_dir(path);
-        self
+    forward! {
+        with_config_dir(path: impl Into<PathBuf>);
+        with_settings_file(filename: impl Into<String>);
+        with_credentials();
+        with_credential_config(config: crate::config::CredentialConfig);
+        #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+        with_encrypted_fallback(
+            path: impl Into<PathBuf>,
+            password_source: crate::credentials::SecretPasswordSource
+        );
+        #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+        with_env_credentials();
+        #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+        with_custom_env_credentials(var_name: impl Into<String>);
+        #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+        with_file_credentials(path: impl Into<PathBuf>);
+        #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+        with_password_credentials(password: impl Into<String>);
+        #[cfg(feature = "vault")]
+        with_vault();
+        #[cfg(feature = "vault")]
+        with_vault_password(password: impl Into<String>);
+        #[cfg(feature = "vault")]
+        with_vault_password_source(source: crate::credentials::SecretPasswordSource);
+        #[cfg(feature = "vault")]
+        with_vault_lock_timeout(timeout: std::time::Duration);
+        #[cfg(feature = "vault")]
+        with_vault_kdf_params(params: crate::vault::Argon2Params);
+        #[cfg(feature = "vault")]
+        with_vault_preset(preset: crate::vault::Argon2Preset);
+        with_env_prefix(prefix: impl Into<String>);
+        env_overrides_secrets(allow: bool);
+        with_env_source(source: std::sync::Arc<dyn crate::config::EnvSource>);
+        #[cfg(feature = "hot-reload")]
+        with_hot_reload();
+        #[cfg(feature = "hot-reload")]
+        with_hot_reload_config(config: crate::config::HotReloadConfig);
+        #[cfg(feature = "backup")]
+        with_external_config(config: crate::backup::ExternalConfig);
+        #[cfg(feature = "profiles")]
+        with_profiles();
     }
 
-    /// Set the settings filename (default: "settings.json").
-    #[must_use]
-    pub fn with_settings_file(mut self, filename: impl Into<String>) -> Self {
-        self.config_builder = self.config_builder.settings_file(filename);
-        self
-    }
-
-    /// Enable credential management for secret settings with default behavior.
-    ///
-    /// When enabled, settings marked as `secret: true` in metadata
-    /// will be stored in the OS keychain instead of the settings file.
-    #[must_use]
-    pub fn with_credentials(mut self) -> Self {
-        self.config_builder = self.config_builder.with_credentials();
-        self
-    }
-
-    /// Extensively configure how credential secrets should be stored, enabling
-    /// advanced scenarios like custom proxy backends or keychain fallbacks.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// use rcman::{SettingsManager, CredentialConfig};
-    ///
-    /// let manager = SettingsManager::builder("my-app", "1.0.0")
-    ///     .with_credential_config(CredentialConfig::WithFallback {
-    ///         fallback_path: "/tmp/secrets.enc.json".into(),
-    ///         encryption_key: [0u8; 32], // Use a derived key
-    ///     })
-    ///     .build()
-    ///     .unwrap();
-    /// ```
-    #[must_use]
-    pub fn with_credential_config(mut self, config: crate::config::CredentialConfig) -> Self {
-        self.config_builder = self.config_builder.with_credential_config(config);
-        self
-    }
-
-    /// Enable credentials with a default environment variable password source (Keychain + Encrypted File fallback).
-    ///
-    /// The environment variable name is automatically derived from the app name
-    /// (e.g., "my-app" -> "`MY_APP_SECRET`").
-    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
-    #[must_use]
-    pub fn with_env_credentials(mut self) -> Self {
-        self.config_builder = self.config_builder.with_env_credentials();
-        self
-    }
-
-    /// Enable credentials with a custom environment variable password source (Keychain + Encrypted File fallback).
-    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
-    #[must_use]
-    pub fn with_custom_env_credentials(mut self, var_name: impl Into<String>) -> Self {
-        self.config_builder = self.config_builder.with_custom_env_credentials(var_name);
-        self
-    }
-
-    /// Enable credentials with file password source (Keychain + Encrypted File fallback).
-    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
-    #[must_use]
-    pub fn with_file_credentials(mut self, path: impl Into<std::path::PathBuf>) -> Self {
-        self.config_builder = self.config_builder.with_file_credentials(path);
-        self
-    }
-
-    /// Enable credentials with provided password string (Keychain + Encrypted File fallback).
-    #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
-    #[must_use]
-    pub fn with_password_credentials(mut self, password: impl Into<String>) -> Self {
-        self.config_builder = self.config_builder.with_password_credentials(password);
-        self
-    }
-
-    /// Enable automatic vault startup handling without selecting a mode.
-    ///
-    /// Existing metadata starts locked unless a password is supplied. Plaintext
-    /// remains usable without a password; orphaned encrypted stores are rejected.
-    /// Use `with_vault_password` to create or unlock the shared vault at startup.
-    #[cfg(feature = "vault")]
-    #[must_use]
-    pub fn with_vault(mut self) -> Self {
-        self.config_builder = self.config_builder.with_vault();
-        self
-    }
-
-    /// Unlock an existing vault, or encrypt all registered settings on first startup.
-    ///
-    /// Manager construction consumes and zeroizes its password buffer, including
-    /// on failure. `manager.config().vault_password` is `None` after construction;
-    /// caller-owned copies are unaffected.
-    #[cfg(feature = "vault")]
-    #[must_use]
-    pub fn with_vault_password(mut self, password: impl Into<String>) -> Self {
-        self.config_builder = self.config_builder.with_vault_password(password);
-        self
-    }
-
-    /// Read a vault startup password from a file, environment variable, or supplied value.
-    ///
-    /// Resolution happens during manager construction; missing or empty sources
-    /// fail construction instead of silently using plaintext. File sources strip
-    /// trailing line endings while preserving spaces in the password. Manager
-    /// construction consumes and zeroizes the resolved password buffer.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # #[cfg(feature = "vault")]
-    /// # fn example() -> rcman::Result<()> {
-    /// let manager = rcman::SettingsManager::builder("my-app", "1.0")
-    ///     .with_vault_password_source(rcman::SecretPasswordSource::file(
-    ///         "/run/secrets/settings-password",
-    ///     ))
-    ///     .build()?;
-    /// assert!(!manager.is_locked());
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[cfg(feature = "vault")]
-    #[must_use]
-    pub fn with_vault_password_source(
-        mut self,
-        source: crate::credentials::SecretPasswordSource,
-    ) -> Self {
-        self.config_builder = self.config_builder.with_vault_password_source(source);
-        self
-    }
-
-    /// Set an auto-lock inactivity timeout for the vault.
-    #[cfg(feature = "vault")]
-    #[must_use]
-    pub fn with_vault_lock_timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.config_builder = self.config_builder.with_vault_lock_timeout(timeout);
-        self
-    }
-
-    /// Configure custom Argon2 KDF tuning parameters for the vault.
-    #[cfg(feature = "vault")]
-    #[must_use]
-    pub fn with_vault_kdf_params(mut self, params: crate::vault::Argon2Params) -> Self {
-        self.config_builder = self.config_builder.with_vault_kdf_params(params);
-        self
-    }
-
-    /// Configure a predefined Argon2 KDF preset for the vault.
-    #[cfg(feature = "vault")]
-    #[must_use]
-    pub fn with_vault_preset(mut self, preset: crate::vault::Argon2Preset) -> Self {
-        self.config_builder = self.config_builder.with_vault_preset(preset);
-        self
-    }
-
-    /// Enable environment variable overrides.
-    ///
-    /// When set, settings can be overridden by environment variables.
-    /// The format is: `{PREFIX}_{CATEGORY}_{KEY}` (all uppercase)
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use rcman::SettingsManager;
-    ///
-    /// let manager = SettingsManager::builder("my-app", "1.0.0")
-    ///     .with_env_prefix("MYAPP")
-    ///     .build()
-    ///     .unwrap();
-    ///
-    /// // Now MYAPP_UI_THEME=dark will override the "ui.theme" setting
-    /// ```
-    #[must_use]
-    pub fn with_env_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.config_builder = self.config_builder.with_env_prefix(prefix);
-        self
-    }
-
-    /// Allow environment variables to override secret settings.
-    ///
-    /// By default, secrets stored in the OS keychain are NOT affected by env vars.
-    /// Enable this for Docker/CI environments where secrets are passed via env.
-    #[must_use]
-    pub fn env_overrides_secrets(mut self, allow: bool) -> Self {
-        self.config_builder = self.config_builder.env_overrides_secrets(allow);
-        self
-    }
-
-    /// Set a migration function for schema changes (lazy migration).
-    ///
-    /// The migrator function is called automatically when loading settings.
-    /// If the function modifies the value, the migrated version is saved back.
-    ///
-    /// Use this to upgrade old data formats to new ones transparently.
+    /// See [`SettingsConfigBuilder::with_migrator`].
     #[must_use]
     pub fn with_migrator<F>(mut self, migrator: F) -> Self
     where
         F: Fn(serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     {
         self.config_builder = self.config_builder.with_migrator(migrator);
-        self
-    }
-
-    /// Enable hot-reload with default watcher configuration.
-    #[cfg(feature = "hot-reload")]
-    #[must_use]
-    pub fn with_hot_reload(mut self) -> Self {
-        self.config_builder = self.config_builder.with_hot_reload();
-        self
-    }
-
-    /// Enable hot-reload with a custom watcher configuration.
-    #[cfg(feature = "hot-reload")]
-    #[must_use]
-    pub fn with_hot_reload_config(mut self, config: crate::config::HotReloadConfig) -> Self {
-        self.config_builder = self.config_builder.with_hot_reload_config(config);
-        self
-    }
-
-    /// Register an external configuration file for backup.
-    ///
-    /// External configs are files managed outside of rcman (like rclone.conf)
-    /// that can be included in backups.
-    #[cfg(feature = "backup")]
-    #[must_use]
-    pub fn with_external_config(mut self, config: crate::backup::ExternalConfig) -> Self {
-        self.config_builder = self.config_builder.with_external_config(config);
         self
     }
 
@@ -369,31 +202,6 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
         self.with_storage_instance(NewS::default())
     }
 
-    /// Enable profiles for main settings.
-    ///
-    /// When enabled, the main settings file is stored per-profile, allowing
-    /// completely different app configurations (e.g., "work" vs "personal").
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use rcman::SettingsManager;
-    ///
-    /// let manager = SettingsManager::builder("my-app", "1.0.0")
-    ///     .with_profiles()  // Enable profiles
-    ///     .build()?;
-    ///
-    /// // Switch the entire app to work profile
-    /// manager.switch_profile("work")?;
-    /// # Ok::<(), rcman::Error>(())
-    /// ```
-    #[cfg(feature = "profiles")]
-    #[must_use]
-    pub fn with_profiles(mut self) -> Self {
-        self.config_builder = self.config_builder.with_profiles();
-        self
-    }
-
     /// Register a sub-settings type for per-entity configuration.
     ///
     /// Sub-settings allow you to manage separate config files for each entity
@@ -430,6 +238,15 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsManagerBuilder<S, Schema
     {
         let config = self.config_builder.build();
         SettingsManager::new_with_sub_settings(config, self.sub_settings)
+    }
+}
+
+impl<Schema: SettingsSchema> SettingsManagerBuilder<crate::storage::JsonStorage, Schema> {
+    /// See [`SettingsConfigBuilder::with_pretty_json`].
+    #[must_use]
+    pub fn with_pretty_json(mut self, pretty: bool) -> Self {
+        self.config_builder = self.config_builder.with_pretty_json(pretty);
+        self
     }
 }
 

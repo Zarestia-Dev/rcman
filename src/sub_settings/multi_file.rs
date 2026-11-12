@@ -107,8 +107,14 @@ impl<S: StorageBackend> MultiFileStore<S> {
         self.storage.write(path, data)
     }
 
-    fn file_path(&self, key: &str) -> PathBuf {
-        self.base_dir.join(format!("{}.{}", key, self.extension))
+    /// The file holding `key`, or `None` when the name cannot be a file name in
+    /// the store directory (it would point elsewhere or is not a valid name).
+    fn file_path(&self, key: &str) -> Option<PathBuf> {
+        usable_entry_name(key).then(|| self.base_dir.join(format!("{}.{}", key, self.extension)))
+    }
+
+    fn not_found(&self, key: &str) -> Error {
+        Error::SubSettingsEntryNotFound(format!("{}/{}", self.name, key))
     }
 
     fn ensure_cache_populated(&self) -> Result<()> {
@@ -208,18 +214,14 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
             }
         }
 
-        let path = self.file_path(key);
-        if !path.exists() {
+        let Some(path) = self.file_path(key).filter(|path| path.exists()) else {
             if let Ok(mut state) = self.state.write_recovered()
                 && let Some(cache) = &mut state.cache
             {
                 cache.remove(key);
             }
-            return Err(Error::SubSettingsEntryNotFound(format!(
-                "{}/{}",
-                self.name, key
-            )));
-        }
+            return Err(self.not_found(key));
+        };
 
         let mut value: Value = self.read_value(&path)?;
 
@@ -252,7 +254,9 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
             return self.remove(key);
         }
 
-        let path = self.file_path(key);
+        let path = self
+            .file_path(key)
+            .ok_or_else(|| Error::InvalidEntryName(key.to_owned()))?;
         #[cfg(feature = "vault")]
         if path.exists() {
             self.read_value(&path)?;
@@ -285,7 +289,10 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
             return Err(Error::ConfigLocked);
         }
 
-        let path = self.file_path(key);
+        // An unusable name cannot have been stored, so there is nothing to remove.
+        let Some(path) = self.file_path(key) else {
+            return Ok(());
+        };
         #[cfg(feature = "vault")]
         if path.exists() {
             self.read_value(&path)?;
@@ -326,7 +333,7 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
             }
         }
 
-        Ok(self.file_path(key).exists())
+        Ok(self.file_path(key).is_some_and(|path| path.exists()))
     }
 
     fn list(&self) -> Result<Vec<String>> {
@@ -393,7 +400,10 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
     #[cfg(feature = "vault")]
     fn rewrite(&self, entries: HashMap<String, Value>) -> Result<()> {
         for (key, value) in entries {
-            self.write_value(&self.file_path(&key), &value)?;
+            let path = self
+                .file_path(&key)
+                .ok_or_else(|| Error::InvalidEntryName(key.clone()))?;
+            self.write_value(&path, &value)?;
         }
         self.invalidate_cache();
         Ok(())
@@ -413,6 +423,19 @@ impl<S: StorageBackend> SubSettingsStore for MultiFileStore<S> {
     fn single_file_path(&self) -> Option<PathBuf> {
         None
     }
+}
+
+/// Whether an entry name can be a file name inside the store directory.
+///
+/// Rejects empty names and names with a path separator or NUL, which would
+/// point at another file (`../settings` is the main settings file); on
+/// Windows also the characters its file names cannot hold. Other names,
+/// including ones with `:` outside Windows, are kept as they are.
+fn usable_entry_name(name: &str) -> bool {
+    let escapes = name.is_empty() || name.contains(['/', '\\', '\0']);
+    #[cfg(windows)]
+    let escapes = escapes || name.contains(['<', '>', ':', '"', '|', '?', '*']);
+    !escapes
 }
 
 #[cfg(test)]

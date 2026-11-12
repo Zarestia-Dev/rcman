@@ -342,7 +342,7 @@ fn failed_restore_rolls_back_vault_files_and_does_not_notify() {
     remotes.set("one", &json!({"host":"old"})).unwrap();
     target.enable_vault("target-password").unwrap();
     let settings_path = target_dir.path().join("settings.json");
-    let remote_path = remotes.file_path().unwrap();
+    let remote_path = remotes.file_path().unwrap().unwrap();
     let before_settings = fs::read(&settings_path).unwrap();
     let before_remotes = fs::read(&remote_path).unwrap();
     let notifications = Arc::new(AtomicUsize::new(0));

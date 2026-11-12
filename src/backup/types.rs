@@ -10,7 +10,8 @@ pub struct ExportCategory {
     /// Unique identifier (e.g., "remotes", "backend", "`rclone_config`")
     pub id: String,
 
-    /// Human-readable name for display
+    /// Display name. rcman uses the id (or an external config's display name);
+    /// localize by `id` for user-facing text.
     pub name: String,
 
     /// Type of category
@@ -35,6 +36,18 @@ pub enum ExportCategoryType {
     SubSettings,
     /// External file/folder (registered separately)
     External,
+}
+
+impl ExportCategoryType {
+    /// The stable name also used in serialized form: `settings`, `sub_settings` or `external`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Settings => "settings",
+            Self::SubSettings => "sub_settings",
+            Self::External => "external",
+        }
+    }
 }
 
 /// Type of backup export
@@ -292,14 +305,26 @@ impl BackupOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct RestoreControl {
     /// Whether to overwrite existing entries
     pub overwrite_existing: bool,
     /// Dry run mode - preview what would be restored without making changes
     pub dry_run: bool,
-    /// Whether to verify the data archive checksum
+    /// Whether to verify the data archive's SHA-256 checksum against the
+    /// manifest (default: `true`). A backup without a checksum is restored
+    /// without the check.
     pub verify_checksum: bool,
+}
+
+impl Default for RestoreControl {
+    fn default() -> Self {
+        Self {
+            overwrite_existing: false,
+            dry_run: false,
+            verify_checksum: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -397,7 +422,7 @@ impl RestoreOptions {
         self
     }
 
-    /// Set whether to verify the backup checksum
+    /// Set whether to verify the backup checksum (on by default)
     #[must_use]
     pub fn verify_checksum(mut self, verify: bool) -> Self {
         self.flags.control.verify_checksum = verify;
@@ -496,7 +521,7 @@ pub enum ImportTarget {
     Handler(ImportHandler),
     /// Read-only export (cannot be restored, e.g., system diagnostics)
     ReadOnly,
-    /// Hand the content back in [`RestoreResult::deferred`] for the caller to apply,
+    /// Hand the content back in [`RestoreResult::deferred`](crate::backup::RestoreResult::deferred) for the caller to apply,
     /// e.g. through an asynchronous API. Nothing is written during the restore.
     Deferred,
 }
@@ -700,7 +725,7 @@ impl ExternalConfig {
         self
     }
 
-    /// Return the restored content in [`RestoreResult::deferred`] instead of writing it
+    /// Return the restored content in [`RestoreResult::deferred`](crate::backup::RestoreResult::deferred) instead of writing it
     #[must_use]
     pub fn import_deferred(mut self) -> Self {
         self.import_target = ImportTarget::Deferred;

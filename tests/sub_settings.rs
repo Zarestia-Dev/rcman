@@ -887,13 +887,7 @@ fn test_sub_settings_secret_requires_credentials_when_present() {
     let remotes = manager.sub_settings("remotes").unwrap();
     let result = remotes.set("secure", &json!({"host": "localhost", "token": "secret"}));
 
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Credentials not enabled")
-    );
+    assert!(matches!(result, Err(rcman::Error::CredentialsDisabled)));
 }
 
 #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
@@ -928,4 +922,46 @@ fn test_exists_recognizes_secret_only_entry_without_file() {
 
     remotes.delete("secure").unwrap();
     assert!(!remotes.exists("secure").unwrap());
+}
+
+#[test]
+fn entry_names_cannot_reach_files_outside_their_store() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let manager = SettingsManager::builder("entry-names", "1")
+        .with_config_dir(temp_dir.path())
+        .with_sub_settings(SubSettingsConfig::new("remotes"))
+        .build()
+        .unwrap();
+    let settings = temp_dir.path().join("settings.json");
+    std::fs::write(&settings, r#"{"ui":{"theme":"dark"}}"#).unwrap();
+    let remotes = manager.sub_settings("remotes").unwrap();
+
+    for name in ["../settings", "a/b", "", "a\\b"] {
+        assert!(
+            matches!(
+                remotes.set(name, &json!({"type": "drive"})),
+                Err(rcman::Error::InvalidEntryName(_))
+            ),
+            "{name:?}"
+        );
+        assert!(
+            remotes.get_value(name).unwrap_err().is_not_found(),
+            "{name:?}"
+        );
+        assert!(!remotes.exists(name).unwrap());
+        remotes.delete(name).unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        r#"{"ui":{"theme":"dark"}}"#
+    );
+    // Dots and colons stay usable outside Windows.
+    for name in ["..", "my.remote"] {
+        remotes.set(name, &json!({"type": "drive"})).unwrap();
+        assert_eq!(remotes.get_value(name).unwrap()["type"], "drive");
+    }
+    #[cfg(not(windows))]
+    remotes
+        .set("work:drive", &json!({"type": "drive"}))
+        .unwrap();
 }

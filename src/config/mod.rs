@@ -11,9 +11,12 @@ mod schema;
 mod types;
 
 pub use schema::{
-    NumberConstraints, SettingConstraints, SettingMetadata, SettingOption, SettingType,
-    SettingsSchema, TextConstraints, meta, opt,
+    ListConstraints, NumberConstraints, ReservedMatchMode, SchemaPart, SettingConstraints,
+    SettingMetadata, SettingOption, SettingType, SettingsSchema, TextConstraints, ValidationError,
+    meta, opt,
 };
+
+pub(crate) use schema::normalize_values;
 
 pub use cache::CacheStrategy;
 pub use docs::{DocsConfig, generate_docs, generate_docs_from_metadata};

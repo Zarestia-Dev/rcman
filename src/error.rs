@@ -62,6 +62,15 @@ pub enum Error {
     #[error("Failed to parse settings: {0}")]
     Parse(String),
 
+    /// A stored value could not be read into the requested Rust type.
+    #[error("Failed to read '{key}' as the requested type: {source}")]
+    Deserialize {
+        /// The setting key, sub-settings entry name, or `*` for the whole settings model.
+        key: String,
+        #[source]
+        source: serde_json::Error,
+    },
+
     // -------------------------------------------------------------------------
     // Settings Errors
     // -------------------------------------------------------------------------
@@ -69,20 +78,17 @@ pub enum Error {
     SettingNotFound(String),
 
     #[error("Invalid setting value for {key}: {reason}")]
-    InvalidSettingValue { key: String, reason: String },
+    InvalidSettingValue {
+        key: String,
+        reason: crate::config::ValidationError,
+    },
+
+    /// A setting key is not in `category.name` form.
+    #[error("Invalid setting key '{0}': expected 'category.name'")]
+    InvalidKey(String),
 
     #[error("Invalid setting metadata for {key}: {reason}")]
     InvalidSettingMetadata { key: String, reason: String },
-
-    #[error("Settings schema not registered")]
-    SchemaNotRegistered,
-
-    #[error("Type mismatch for {key}: expected {expected}, got {actual}")]
-    TypeMismatch {
-        key: String,
-        expected: String,
-        actual: String,
-    },
 
     // -------------------------------------------------------------------------
     // Sub-Settings Errors
@@ -92,6 +98,11 @@ pub enum Error {
 
     #[error("Sub-settings entry '{0}' not found")]
     SubSettingsEntryNotFound(String),
+
+    /// A multi-file sub-settings entry name cannot be a file name in its store
+    /// directory: an empty name, or one with a path separator.
+    #[error("Invalid sub-settings entry name '{0}'")]
+    InvalidEntryName(String),
 
     // -------------------------------------------------------------------------
     // Backup Errors
@@ -110,9 +121,6 @@ pub enum Error {
 
     #[error("Invalid backup password")]
     InvalidPassword,
-
-    #[error("Version mismatch: expected {expected}, found {found}")]
-    VersionMismatch { expected: String, found: String },
 
     // -------------------------------------------------------------------------
     // Archive Errors (backup feature)
@@ -146,6 +154,12 @@ pub enum Error {
     /// stored data, so callers can degrade instead of aborting startup.
     #[error("Credential password source is not set: {0}")]
     CredentialSourceMissing(String),
+
+    /// A secret setting received a non-default value, but the manager has no
+    /// credential storage (enable it with `with_credentials()` and the
+    /// `keychain` or `encrypted-file` feature).
+    #[error("Secret settings need credential storage, which is not enabled")]
+    CredentialsDisabled,
 
     /// A credential backend could not be accessed, so no result about this key is available.
     #[error("Credential backend unavailable: {0}")]
@@ -210,8 +224,9 @@ pub enum Error {
         rollback_errors: Vec<String>,
     },
 
-    #[error("Lock error: {0}")]
-    LockError(String),
+    /// A backup, restore or vault operation holds these settings; retry after it finishes.
+    #[error("Another settings operation is in progress; retry after it finishes")]
+    Busy,
 
     // -------------------------------------------------------------------------
     // Vault Errors (vault feature)
@@ -259,13 +274,17 @@ pub enum Error {
 }
 
 impl Error {
-    /// Check if this is a "not found" type error
+    /// Check if this is a "not found" type error, including a file read that
+    /// failed because the file does not exist
     #[must_use]
     pub fn is_not_found(&self) -> bool {
-        matches!(
-            self,
-            Error::PathNotFound(_) | Error::SettingNotFound(_) | Error::SubSettingsEntryNotFound(_)
-        )
+        match self {
+            Error::PathNotFound(_)
+            | Error::SettingNotFound(_)
+            | Error::SubSettingsEntryNotFound(_) => true,
+            Error::FileRead { source, .. } => source.kind() == std::io::ErrorKind::NotFound,
+            _ => false,
+        }
     }
 
     /// Check if a credential password source (env var) was not provided
@@ -285,7 +304,6 @@ impl Error {
                 | Error::InvalidBackup(_)
                 | Error::PasswordRequired
                 | Error::InvalidPassword
-                | Error::VersionMismatch { .. }
                 | Error::Archive(_)
                 | Error::Zip(_)
         )
@@ -314,6 +332,18 @@ impl Error {
     #[must_use]
     pub fn is_locked(&self) -> bool {
         matches!(self, Error::ConfigLocked)
+    }
+}
+
+/// Treat a missing file as absent and keep every other error.
+pub(crate) fn optional<T>(result: Result<T>) -> Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(Error::PathNotFound(_)) => Ok(None),
+        Err(Error::FileRead { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(error) => Err(error),
     }
 }
 

@@ -140,6 +140,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             .take()
             .map(crate::credentials::SecretPasswordSource::resolve_vault)
             .transpose()?;
+        // Compute schema metadata once for cache defaults and credential
+        // ownership, and reject a broken schema before touching any file.
+        let metadata = Arc::new(Schema::get_metadata());
+        Self::check_schema(&metadata)?;
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&config.config_dir)?;
         // Ensure config directory exists with secure permissions
@@ -178,8 +182,6 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             config.profiles_enabled,
             &config.profile_migrator,
         )?;
-        // Compute schema metadata once for cache defaults and credential ownership.
-        let metadata = Arc::new(Schema::get_metadata());
         #[cfg(feature = "profiles")]
         let profile_manager = profile_manager.map(|profiles| {
             let profiles = profiles.with_owner(
@@ -242,6 +244,26 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
         Ok(manager)
     }
+    /// Reject a schema the manager cannot serve: keys with an empty segment
+    /// (`""`, `"ui."`, `"a..b"`), inconsistent constraints, and defaults that
+    /// break their own constraints.
+    ///
+    /// Keys without a category (`"theme"`) are allowed: `get_all`, `save_all`
+    /// and `update` serve them, while the key-based calls need `category.name`.
+    fn check_schema(metadata: &IndexMap<String, SettingMetadata>) -> Result<()> {
+        for (key, setting) in metadata {
+            let invalid = |reason: String| crate::Error::InvalidSettingMetadata {
+                key: key.clone(),
+                reason,
+            };
+            if key.split('.').any(str::is_empty) {
+                return Err(invalid("keys must not have empty segments".into()));
+            }
+            setting.validate_schema().map_err(invalid)?;
+        }
+        Ok(())
+    }
+
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
     fn initialize_credentials(
         config: &SettingsConfig<S, Schema>,

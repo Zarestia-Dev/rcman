@@ -7,7 +7,7 @@
 //!
 //! # Features
 //!
-//! - **Native Type Binding**: Automatically translates `String`, `PathBuf`, integers, floats, `bool`, and `Vec<T>` into their corresponding `rcman::SettingType`.
+//! - **Native Type Binding**: Automatically translates `String`, `PathBuf`, integers, floats, `bool`, and `Vec<T>` into their corresponding `rcman::SettingType`. Integer fields only accept whole numbers, and `Option<T>` fields default to `null`.
 //! - **Rich IDE `IntelliSense` Cards**: Generates clean Markdown documentation cards for `rust-analyzer` showing type, range, constraints, security, and custom metadata.
 //! - **Compile-Time `const` Keys**: Generates uppercase `pub const` key constants directly on derived types (e.g. `ServerSettings::PORT = "network.port"`).
 //! - **Tagged-Union `enum` Support**: Merges variant sub-schemas and generates discriminant selector metadata on enums annotated with `#[serde(tag = "...")]`.
@@ -15,7 +15,7 @@
 //! - **Dynamic UI Metadata**: Every unknown attribute literal (e.g., `label = "Server"`) is automatically injected into the schema as customizable metadata.
 //! - **`#[cfg]` Forwarding**: Safely obeys macro feature flags attached to struct fields.
 //! - **Typed Accessors**: Generates snapshot accessors on the schema struct and a `<SchemaName>ManagerAccessors` trait for typed manager access.
-//! - **Strongly-Typed `validate(&self)`**: Generates zero-overhead native validation checking numeric ranges, regex patterns, allowed dropdown options, and nested schemas directly on Rust structs.
+//! - **`validate(&self)`**: Checks a struct against the same metadata constraints the manager enforces when saving.
 //!
 //! # Usage
 //!
@@ -76,6 +76,8 @@
 //! | `max` | Number | Sets a numeric maximum constraint (must be `>= min`) | `#[setting(max = 100.0)]` |
 //! | `step` | Number | Defines valid increment stepping | `#[setting(step = 5.0)]` |
 //! | `pattern` | Text | Enforces standard Regex validation string | `#[setting(pattern = "^[a-z]+$")]` |
+//! | `min_length` / `max_length` | Text | Limits the number of characters | `#[setting(min_length = 1, max_length = 64)]` |
+//! | `min_items` / `max_items` | List | Limits the number of items | `#[setting(max_items = 10)]` |
 //! | `options` | Text/Num | Enforces strict dropdown alternatives mappings | `#[setting(options(("val", "Label")))]` |
 //!
 //! ## Dynamic Metadata
@@ -160,12 +162,36 @@ fn derive_struct_settings_schema(
     let derived = build_metadata_and_accessors(fields, container_attrs)?;
 
     let manager_trait_name = format_ident!("{}ManagerAccessors", name);
+    let manager_trait_doc = format!(
+        "Typed manager reads and writes for [`{name}`].\n\n\
+         Implemented for managers whose schema is `{name}` or nests it directly. The methods \
+         use the `category.field` keys of `{name}`, so a nesting field should be named like \
+         that category; otherwise they return `Error::SettingNotFound`."
+    );
     let metadata_entries = derived.metadata_entries;
+    let relative_entries = derived.relative_entries;
     let snapshot_methods = derived.snapshot_methods;
     let manager_trait_methods = derived.manager_trait_methods;
     let manager_impl_methods = derived.manager_impl_methods;
     let const_keys = derived.const_keys;
     let validation_stmts = derived.validation_stmts;
+    let metadata_binding = derived
+        .has_leaf_fields
+        .then(|| quote! { let metadata = <Self as rcman::SettingsSchema>::get_metadata(); });
+    let schema_parts: Vec<_> = derived
+        .nested_types
+        .iter()
+        .map(|(ty, conditions)| {
+            // One impl per type: gated on any nesting field's condition, or
+            // ungated when one of those fields is unconditional.
+            let gate = conditions
+                .iter()
+                .cloned()
+                .collect::<Option<Vec<_>>>()
+                .map(|conditions| quote! { #[cfg(any(#(#conditions),*))] });
+            quote! { #gate impl rcman::SchemaPart<#ty> for #name {} }
+        })
+        .collect();
 
     Ok(quote! {
         impl rcman::SettingsSchema for #name {
@@ -176,7 +202,15 @@ fn derive_struct_settings_schema(
                 map
             }
 
+            fn field_metadata() -> rcman::IndexMap<String, rcman::SettingMetadata> {
+                let defaults = <#name as Default>::default();
+                let mut map = rcman::IndexMap::new();
+                #(#relative_entries)*
+                map
+            }
+
             fn validate(&self) -> rcman::Result<()> {
+                #metadata_binding
                 #(#validation_stmts)*
                 Ok(())
             }
@@ -186,19 +220,27 @@ fn derive_struct_settings_schema(
             #(#const_keys)*
             #(#snapshot_methods)*
 
-            /// Validates this settings instance against compile-time schema constraints.
+            /// Validates this settings instance against its schema constraints.
             pub fn validate(&self) -> rcman::Result<()> {
                 <Self as rcman::SettingsSchema>::validate(self)
             }
         }
 
+        #[doc = #manager_trait_doc]
         pub trait #manager_trait_name {
             #(#manager_trait_methods)*
         }
 
-        impl<S: rcman::StorageBackend + 'static> #manager_trait_name for rcman::SettingsManager<S, #name> {
+        impl<S: rcman::StorageBackend + 'static, Schema> #manager_trait_name
+            for rcman::SettingsManager<S, Schema>
+        where
+            Schema: rcman::SettingsSchema + rcman::SchemaPart<#name>,
+        {
             #(#manager_impl_methods)*
         }
+
+        impl rcman::SchemaPart<#name> for #name {}
+        #(#schema_parts)*
     })
 }
 
@@ -354,7 +396,7 @@ fn derive_enum_settings_schema(
         impl #name {
             #(#const_variants)*
 
-            /// Validates this settings instance against compile-time schema constraints.
+            /// Validates the active variant against its schema constraints.
             pub fn validate(&self) -> rcman::Result<()> {
                 <Self as rcman::SettingsSchema>::validate(self)
             }
@@ -364,11 +406,17 @@ fn derive_enum_settings_schema(
 
 struct StructDerivedComponents {
     metadata_entries: Vec<proc_macro2::TokenStream>,
+    relative_entries: Vec<proc_macro2::TokenStream>,
     snapshot_methods: Vec<proc_macro2::TokenStream>,
     manager_trait_methods: Vec<proc_macro2::TokenStream>,
     manager_impl_methods: Vec<proc_macro2::TokenStream>,
     const_keys: Vec<proc_macro2::TokenStream>,
     validation_stmts: Vec<proc_macro2::TokenStream>,
+    /// Whether any field is validated against `get_metadata()` (not a nested schema).
+    has_leaf_fields: bool,
+    /// Distinct types of directly nested (not flattened) schema fields, with
+    /// the `#[cfg]` condition of each field nesting them (`None`: always).
+    nested_types: Vec<(syn::Type, Vec<Option<proc_macro2::TokenStream>>)>,
 }
 
 fn extract_field_docs(attrs: &[Attribute]) -> Vec<String> {
@@ -424,6 +472,18 @@ fn generate_setting_doc_comment(
 
     if let Some(pattern) = &attrs.pattern {
         lines.push(format!("- **Pattern**: `{pattern}`"));
+    }
+    match (attrs.min_length, attrs.max_length) {
+        (Some(min), Some(max)) => lines.push(format!("- **Length**: `{min}` .. `{max}`")),
+        (Some(min), None) => lines.push(format!("- **Min length**: `{min}`")),
+        (None, Some(max)) => lines.push(format!("- **Max length**: `{max}`")),
+        (None, None) => {}
+    }
+    match (attrs.min_items, attrs.max_items) {
+        (Some(min), Some(max)) => lines.push(format!("- **Items**: `{min}` .. `{max}`")),
+        (Some(min), None) => lines.push(format!("- **Min items**: `{min}`")),
+        (None, Some(max)) => lines.push(format!("- **Max items**: `{max}`")),
+        (None, None) => {}
     }
 
     if !attrs.options.is_empty() {
@@ -496,12 +556,13 @@ struct SingleFieldComponents {
     const_decl: Option<proc_macro2::TokenStream>,
     const_target: Option<(Vec<Attribute>, syn::Ident)>,
     metadata_entry: proc_macro2::TokenStream,
+    relative_entry: proc_macro2::TokenStream,
     accessor_methods: Option<(
         proc_macro2::TokenStream,
         proc_macro2::TokenStream,
         proc_macro2::TokenStream,
     )>,
-    validation_stmt: Option<proc_macro2::TokenStream>,
+    validation_stmt: proc_macro2::TokenStream,
 }
 
 fn process_single_struct_field(
@@ -529,17 +590,17 @@ fn process_single_struct_field(
         (None, None)
     };
 
-    let raw_entry = process_field(field, &attrs, container_attrs, &cfg_attrs)?;
-    let metadata_entry = if cfg_attrs.is_empty() {
-        raw_entry
-    } else {
+    let (full_entry, relative_entry) = process_field(field, &attrs, container_attrs)?;
+    let with_cfg = |entry: proc_macro2::TokenStream| {
         quote! {
             #(#cfg_attrs)*
             {
-                #raw_entry
+                #entry
             }
         }
     };
+    let metadata_entry = with_cfg(full_entry);
+    let relative_entry = with_cfg(relative_entry);
 
     let accessor_methods = generate_accessor_methods(
         field,
@@ -549,12 +610,13 @@ fn process_single_struct_field(
         used_method_names,
     )?;
 
-    let validation_stmt = generate_field_validation(field, &attrs, &cfg_attrs);
+    let validation_stmt = generate_field_validation(field, &attrs, container_attrs, &cfg_attrs);
 
     Ok(Some(SingleFieldComponents {
         const_decl,
         const_target,
         metadata_entry,
+        relative_entry,
         accessor_methods,
         validation_stmt,
     }))
@@ -565,16 +627,28 @@ fn build_metadata_and_accessors(
     container_attrs: &ContainerAttrs,
 ) -> Result<StructDerivedComponents, syn::Error> {
     let mut metadata_entries = Vec::new();
+    let mut relative_entries = Vec::new();
     let mut snapshot_methods = Vec::new();
     let mut manager_trait_methods = Vec::new();
     let mut manager_impl_methods = Vec::new();
     let mut const_keys = Vec::new();
     let mut const_key_refs = Vec::new();
     let mut validation_stmts = Vec::new();
+    let mut nested_types: Vec<(syn::Type, Vec<Option<proc_macro2::TokenStream>>)> = Vec::new();
     let mut used_method_names = std::collections::HashMap::<String, proc_macro2::Span>::new();
     let mut errors = None::<syn::Error>;
 
     for field in fields {
+        if let Some((condition, ty)) = nested_schema_type(field) {
+            let id = quote!(#ty).to_string();
+            match nested_types
+                .iter_mut()
+                .find(|(known, _)| quote!(#known).to_string() == id)
+            {
+                Some((_, conditions)) => conditions.push(condition),
+                None => nested_types.push((ty, vec![condition])),
+            }
+        }
         match process_single_struct_field(field, container_attrs, &mut used_method_names) {
             Ok(Some(comp)) => {
                 if let (Some(decl), Some(target)) = (comp.const_decl, comp.const_target) {
@@ -582,14 +656,13 @@ fn build_metadata_and_accessors(
                     const_key_refs.push(target);
                 }
                 metadata_entries.push(comp.metadata_entry);
+                relative_entries.push(comp.relative_entry);
                 if let Some((snap, mgr_trait, mgr_impl)) = comp.accessor_methods {
                     snapshot_methods.push(snap);
                     manager_trait_methods.push(mgr_trait);
                     manager_impl_methods.push(mgr_impl);
                 }
-                if let Some(stmt) = comp.validation_stmt {
-                    validation_stmts.push(stmt);
-                }
+                validation_stmts.push(comp.validation_stmt);
             }
             Ok(None) => {}
             Err(e) => {
@@ -625,167 +698,121 @@ fn build_metadata_and_accessors(
 
     Ok(StructDerivedComponents {
         metadata_entries,
+        relative_entries,
         snapshot_methods,
         manager_trait_methods,
         manager_impl_methods,
         const_keys,
         validation_stmts,
+        has_leaf_fields: fields.iter().any(is_leaf_field),
+        nested_types,
     })
 }
 
-fn generate_number_checks(
-    attrs: &FieldAttrs,
-    const_ident: &syn::Ident,
-    inner_ty: &syn::Type,
-) -> Vec<proc_macro2::TokenStream> {
-    let mut checks = Vec::new();
-    if let Some(min) = attrs.min {
-        let min_lit = proc_macro2::Literal::f64_unsuffixed(min);
-        checks.push(quote! {
-            if val < (#min_lit as #inner_ty) {
-                return Err(rcman::Error::InvalidSettingValue {
-                    key: Self::#const_ident.to_string(),
-                    reason: format!("Value ({}) must be at least {}", val, #min_lit),
-                });
+/// Whether a field is validated against its own metadata entry: not skipped,
+/// nested or flattened.
+fn is_leaf_field(field: &Field) -> bool {
+    parse_field_attrs(&field.attrs).is_ok_and(|attrs| {
+        !attrs.skip
+            && match attrs.nesting {
+                Nesting::Flatten | Nesting::Nested => false,
+                Nesting::Object => true,
+                Nesting::Auto => !is_nested_struct(&field.ty),
             }
-        });
-    }
-    if let Some(max) = attrs.max {
-        let max_lit = proc_macro2::Literal::f64_unsuffixed(max);
-        checks.push(quote! {
-            if val > (#max_lit as #inner_ty) {
-                return Err(rcman::Error::InvalidSettingValue {
-                    key: Self::#const_ident.to_string(),
-                    reason: format!("Value ({}) must be at most {}", val, #max_lit),
-                });
-            }
-        });
-    }
-    checks
+    })
 }
 
-fn generate_text_checks(
-    attrs: &FieldAttrs,
-    const_ident: &syn::Ident,
-) -> Vec<proc_macro2::TokenStream> {
-    let mut checks = Vec::new();
-    if let Some(pattern) = &attrs.pattern {
-        checks.push(quote! {
-            let re = rcman::regex::Regex::new(#pattern)
-                .map_err(|e| rcman::Error::Config(format!("Invalid regex pattern: {e}")))?;
-            if !re.is_match(text.as_str()) {
-                return Err(rcman::Error::InvalidSettingValue {
-                    key: Self::#const_ident.to_string(),
-                    reason: format!("Value does not match pattern: {}", #pattern),
-                });
-            }
-        });
+/// The schema type of a directly nested field (`T` for `T` or `Option<T>`)
+/// with the field's `#[cfg]` condition as `all(...)` (`None` when it has no
+/// `#[cfg]`), or `None` for leaf, skipped and flattened fields.
+fn nested_schema_type(field: &Field) -> Option<(Option<proc_macro2::TokenStream>, syn::Type)> {
+    let attrs = parse_field_attrs(&field.attrs).ok()?;
+    let nested = match attrs.nesting {
+        Nesting::Nested => true,
+        Nesting::Auto => is_nested_struct(&field.ty),
+        Nesting::Flatten | Nesting::Object => false,
+    };
+    if attrs.skip || !nested {
+        return None;
     }
-    if !attrs.options.is_empty() {
-        let allowed_values: Vec<&str> = attrs.options.iter().map(|(v, _)| v.as_str()).collect();
-        checks.push(quote! {
-            const ALLOWED_OPTIONS: &[&str] = &[#(#allowed_values),*];
-            if !ALLOWED_OPTIONS.contains(&text.as_str()) {
-                return Err(rcman::Error::InvalidSettingValue {
-                    key: Self::#const_ident.to_string(),
-                    reason: "Value must be one of the available options".to_string(),
-                });
-            }
-        });
-    }
-    checks
+    let predicates: Vec<_> = field
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .filter_map(|attr| match &attr.meta {
+            Meta::List(list) => Some(list.tokens.clone()),
+            _ => None,
+        })
+        .collect();
+    let condition = (!predicates.is_empty()).then(|| quote! { all(#(#predicates),*) });
+    Some((
+        condition,
+        extract_inner_type_from_option(&field.ty)
+            .unwrap_or(&field.ty)
+            .clone(),
+    ))
 }
 
+/// Validate one field with the runtime rules the manager applies on save.
+///
+/// A struct with a `category` serializes without that level, so each field is
+/// checked against its own metadata entry instead of by path in the whole value.
 fn generate_field_validation(
     field: &Field,
     attrs: &FieldAttrs,
+    container_attrs: &ContainerAttrs,
     cfg_attrs: &[Attribute],
-) -> Option<proc_macro2::TokenStream> {
-    let field_name = field.ident.as_ref()?;
-    let const_ident = format_ident!("{}", field_name.to_string().to_ascii_uppercase());
-    let field_type = &field.ty;
-
-    // Check if structural / nested struct
+) -> proc_macro2::TokenStream {
+    let Some(field_name) = &field.ident else {
+        return quote! {};
+    };
     let is_structural = match attrs.nesting {
         Nesting::Flatten | Nesting::Nested => true,
         Nesting::Object => false,
-        Nesting::Auto => is_nested_struct(field_type),
+        Nesting::Auto => is_nested_struct(&field.ty),
     };
-
-    if is_structural {
-        let is_opt = extract_inner_type_from_option(field_type).is_some();
-        let check = if is_opt {
+    let check = if is_structural {
+        if extract_inner_type_from_option(&field.ty).is_some() {
             quote! {
-                if let Some(ref nested) = self.#field_name {
+                if let Some(nested) = &self.#field_name {
                     rcman::SettingsSchema::validate(nested)?;
                 }
             }
         } else {
-            quote! {
-                rcman::SettingsSchema::validate(&self.#field_name)?;
-            }
+            quote! { rcman::SettingsSchema::validate(&self.#field_name)?; }
+        }
+    } else {
+        let category = resolve_field_category(attrs, container_attrs);
+        let key_name = attrs
+            .rename
+            .clone()
+            .unwrap_or_else(|| field_name.to_string());
+        let full_key = if category.is_empty() {
+            key_name
+        } else {
+            format!("{category}.{key_name}")
         };
-
-        return Some(quote! {
-            #(#cfg_attrs)*
-            {
-                #check
-            }
-        });
-    }
-
-    let is_opt = extract_inner_type_from_option(field_type).is_some();
-    let inner_ty = extract_inner_type_from_option(field_type).unwrap_or(field_type);
-    let type_info = classify_type(inner_ty);
-
-    let checks = match type_info {
-        TypeInfo::Number => generate_number_checks(attrs, &const_ident, inner_ty),
-        TypeInfo::Text => generate_text_checks(attrs, &const_ident),
-        _ => Vec::new(),
-    };
-
-    if checks.is_empty() {
-        return None;
-    }
-
-    let validation_block = match type_info {
-        TypeInfo::Number => {
-            if is_opt {
-                quote! {
-                    if let Some(val) = self.#field_name {
-                        #(#checks)*
-                    }
-                }
-            } else {
-                quote! {
-                    let val = self.#field_name;
-                    #(#checks)*
+        quote! {
+            if let Some(setting) = metadata.get(#full_key) {
+                let value = rcman::serde_json::to_value(&self.#field_name)?;
+                // The default is always valid, as when saving.
+                if !rcman::utils::value::same_value(&value, &setting.default) {
+                    setting
+                        .validate(&value)
+                        .map_err(|reason| rcman::Error::InvalidSettingValue {
+                            key: #full_key.to_string(),
+                            reason,
+                        })?;
                 }
             }
         }
-        TypeInfo::Text => {
-            if is_opt {
-                quote! {
-                    if let Some(ref text) = self.#field_name {
-                        #(#checks)*
-                    }
-                }
-            } else {
-                quote! {
-                    let text = &self.#field_name;
-                    #(#checks)*
-                }
-            }
-        }
-        _ => quote! {},
     };
-
-    Some(quote! {
+    quote! {
         #(#cfg_attrs)*
         {
-            #validation_block
+            #check
         }
-    })
+    }
 }
 
 fn generate_accessor_methods(
@@ -898,7 +925,7 @@ fn generate_accessor_methods(
 
         #(#cfg_attrs)*
         fn #setter_name(&self, value: #field_type) -> rcman::Result<()> {
-            self.save_setting(#category, #key_name, &rcman::serde_json::json!(value))
+            self.set(#full_key, &value)
         }
     };
 
@@ -951,12 +978,13 @@ fn sanitize_ident_component(value: &str) -> String {
     output
 }
 
+/// Generate the metadata insert for one field, keyed twice: by the full
+/// `category.name` key, and by the field's path inside this struct's value.
 fn process_field(
     field: &Field,
     attrs: &FieldAttrs,
     container_attrs: &ContainerAttrs,
-    _cfg_attrs: &[Attribute],
-) -> Result<proc_macro2::TokenStream, syn::Error> {
+) -> Result<(proc_macro2::TokenStream, proc_macro2::TokenStream), syn::Error> {
     let Some(field_name) = &field.ident else {
         return Err(syn::Error::new_spanned(
             field,
@@ -973,13 +1001,24 @@ fn process_field(
         Nesting::Auto => is_nested_struct(field_type),
     };
 
+    let category_str = resolve_field_category(attrs, container_attrs);
+    let final_field_name = attrs
+        .rename
+        .clone()
+        .unwrap_or_else(|| field_name.to_string());
+
     if is_structural {
-        let prefix = if attrs.nesting == Nesting::Flatten {
-            None
+        // A nested struct sits under its (serialized) field name; a flattened
+        // one shares this struct's level, and so this struct's category.
+        let (full_prefix, relative_prefix) = if attrs.nesting == Nesting::Flatten {
+            ((!category_str.is_empty()).then_some(category_str), None)
         } else {
-            Some(field_name.to_string())
+            (Some(final_field_name.clone()), Some(final_field_name))
         };
-        return Ok(generate_nested_field_constructor(field_type, prefix));
+        return Ok((
+            generate_nested_field_constructor(field_type, full_prefix),
+            generate_nested_field_constructor(field_type, relative_prefix),
+        ));
     }
 
     let inner_ty = extract_inner_type_from_option(field_type).unwrap_or(field_type);
@@ -992,12 +1031,6 @@ fn process_field(
 
     validate_field_type_constraints(field, type_info, attrs)?;
 
-    let category_str = resolve_field_category(attrs, container_attrs);
-    let final_field_name = attrs
-        .rename
-        .clone()
-        .unwrap_or_else(|| field_name.to_string());
-
     let key = if category_str.is_empty() {
         final_field_name.clone()
     } else {
@@ -1007,40 +1040,66 @@ fn process_field(
     let constructor = generate_field_constructor(field_name, field_type, type_info, attrs);
     let modifiers = generate_field_modifiers(attrs);
 
-    Ok(quote! {
-        map.insert(
-            #key.to_string(),
-            { #constructor } #(#modifiers)*
-        );
-    })
+    let insert = |key: &str| {
+        quote! {
+            map.insert(
+                #key.to_string(),
+                { #constructor } #(#modifiers)*
+            );
+        }
+    };
+    Ok((insert(&key), insert(&final_field_name)))
 }
 
 fn generate_nested_field_constructor(
     field_type: &syn::Type,
     prefix: Option<String>,
 ) -> proc_macro2::TokenStream {
-    if let Some(p) = prefix {
-        quote! {
-            // Merge nested struct's metadata with prefix
-            // Keys from nested struct are "category.field_name", we extract just "field_name"
-            for (key, meta) in <#field_type as rcman::SettingsSchema>::get_metadata() {
-                // Extract just the field name (part after last dot)
-                let field_only = key.rsplit('.').next().unwrap_or(&key);
-                let prefixed_key = format!("{}.{}", #p, field_only);
-                // Note: Category is structural (in key), not stored in metadata
-                map.insert(prefixed_key, meta);
-            }
-        }
-    } else {
-        quote! {
-            // Merge nested struct's metadata without prefix (flatten)
-            for (key, meta) in <#field_type as rcman::SettingsSchema>::get_metadata() {
-                // Extract just the field name
-                let field_only = key.rsplit('.').next().unwrap_or(&key);
-                map.insert(field_only.to_string(), meta);
-            }
+    let key = prefix.map_or_else(
+        || quote! { key },
+        |prefix| quote! { format!("{}.{}", #prefix, key) },
+    );
+    quote! {
+        for (key, meta) in <#field_type as rcman::SettingsSchema>::field_metadata() {
+            map.insert(#key, meta);
         }
     }
+}
+
+/// Check `min_length`/`max_length` (text) and `min_items`/`max_items` (lists).
+fn validate_count_constraints(
+    field: &Field,
+    type_info: TypeInfo,
+    attrs: &FieldAttrs,
+) -> Result<(), syn::Error> {
+    for (name, min, max) in [
+        ("length", attrs.min_length, attrs.max_length),
+        ("items", attrs.min_items, attrs.max_items),
+    ] {
+        if let (Some(min), Some(max)) = (min, max)
+            && min > max
+        {
+            return Err(syn::Error::new_spanned(
+                field,
+                format!("`min_{name}` ({min}) cannot be greater than `max_{name}` ({max})"),
+            ));
+        }
+    }
+    let has_length = attrs.min_length.is_some() || attrs.max_length.is_some();
+    if has_length && !matches!(type_info, TypeInfo::Text | TypeInfo::Path) {
+        return Err(syn::Error::new_spanned(
+            field,
+            "`min_length/max_length` are only valid for text settings",
+        ));
+    }
+    let has_items = attrs.min_items.is_some() || attrs.max_items.is_some();
+    if has_items && !matches!(type_info, TypeInfo::List) {
+        return Err(syn::Error::new_spanned(
+            field,
+            "`min_items/max_items` are only valid for list settings",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_field_type_constraints(
@@ -1066,6 +1125,8 @@ fn validate_field_type_constraints(
             format!("`step` must be positive, got {step}"),
         ));
     }
+
+    validate_count_constraints(field, type_info, attrs)?;
 
     match type_info {
         TypeInfo::Number => {
@@ -1198,6 +1259,18 @@ fn generate_field_modifiers(attrs: &FieldAttrs) -> Vec<proc_macro2::TokenStream>
     if let Some(pattern) = &attrs.pattern {
         modifiers.push(quote! { .pattern(#pattern) });
     }
+    if let Some(length) = attrs.min_length {
+        modifiers.push(quote! { .min_length(#length) });
+    }
+    if let Some(length) = attrs.max_length {
+        modifiers.push(quote! { .max_length(#length) });
+    }
+    if let Some(count) = attrs.min_items {
+        modifiers.push(quote! { .min_items(#count) });
+    }
+    if let Some(count) = attrs.max_items {
+        modifiers.push(quote! { .max_items(#count) });
+    }
     if attrs.secret {
         modifiers.push(quote! { .secret() });
     }
@@ -1287,6 +1360,14 @@ fn parse_single_field_attr(meta: Meta, result: &mut FieldAttrs) -> Result<(), sy
                 result.step = parse_number_constraint(parse_lit_expr(value, "step")?, "step")?;
             } else if nv.path.is_ident("pattern") {
                 result.pattern = Some(parse_lit_str(value, "pattern")?);
+            } else if nv.path.is_ident("min_length") {
+                result.min_length = Some(parse_count(value, "min_length")?);
+            } else if nv.path.is_ident("max_length") {
+                result.max_length = Some(parse_count(value, "max_length")?);
+            } else if nv.path.is_ident("min_items") {
+                result.min_items = Some(parse_count(value, "min_items")?);
+            } else if nv.path.is_ident("max_items") {
+                result.max_items = Some(parse_count(value, "max_items")?);
             } else if nv.path.is_ident("rename") {
                 result.rename = Some(parse_lit_str(value, "rename")?);
             } else {
@@ -1319,6 +1400,18 @@ fn parse_lit_str(expr: &syn::Expr, name: &str) -> Result<String, syn::Error> {
     Err(syn::Error::new_spanned(
         expr,
         format!("#[setting({name})] must be a string literal"),
+    ))
+}
+
+fn parse_count(expr: &syn::Expr, name: &str) -> Result<usize, syn::Error> {
+    if let syn::Expr::Lit(lit) = expr
+        && let Lit::Int(count) = &lit.lit
+    {
+        return count.base10_parse();
+    }
+    Err(syn::Error::new_spanned(
+        expr,
+        format!("#[setting({name})] must be a non-negative integer literal"),
     ))
 }
 
@@ -1357,6 +1450,10 @@ struct FieldAttrs {
     max: Option<f64>,
     step: Option<f64>,
     pattern: Option<String>,
+    min_length: Option<usize>,
+    max_length: Option<usize>,
+    min_items: Option<usize>,
+    max_items: Option<usize>,
     options: Vec<(String, String)>, // (value, label) pairs for select type
     reserved: Vec<String>,
     secret: bool,
@@ -1726,75 +1823,65 @@ fn is_nested_struct(ty: &Type) -> bool {
 }
 
 /// Generate the appropriate `SettingMetadata` constructor based on type
+///
+/// The metadata default is the field's serialized default, so a setting read on
+/// its own and the same field read through the whole struct always agree:
+/// integers stay integers and `Option` fields default to `null`.
 fn generate_setting_type(
     field_name: &syn::Ident,
     ty: &Type,
     type_info: TypeInfo,
 ) -> proc_macro2::TokenStream {
-    let is_option = extract_inner_type_from_option(ty).is_some();
+    let inner_ty = extract_inner_type_from_option(ty);
+    let is_option = inner_ty.is_some();
+    let is_integer = get_last_path_segment_ident(inner_ty.unwrap_or(ty)).is_some_and(|ident| {
+        matches!(
+            ident.to_string().as_str(),
+            "i8" | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+        )
+    });
 
-    let mut base = match type_info {
-        TypeInfo::Toggle => {
-            if is_option {
-                quote! { rcman::SettingMetadata::toggle(defaults.#field_name.unwrap_or_default()) }
-            } else {
-                quote! { rcman::SettingMetadata::toggle(defaults.#field_name) }
-            }
-        }
-        TypeInfo::Text => {
-            if is_option {
-                quote! { rcman::SettingMetadata::text(defaults.#field_name.clone().unwrap_or_default()) }
-            } else {
-                quote! { rcman::SettingMetadata::text(defaults.#field_name.clone()) }
-            }
-        }
+    let base = match type_info {
+        TypeInfo::Toggle => quote! { rcman::SettingMetadata::toggle(false) },
+        TypeInfo::Text => quote! { rcman::SettingMetadata::text("") },
         TypeInfo::Path => {
-            if is_option {
-                quote! {
-                    rcman::SettingMetadata::text(
-                        defaults.#field_name.as_ref()
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .unwrap_or_default()
-                    )
-                    .meta_str("input_type", "path")
-                }
-            } else {
-                quote! {
-                    rcman::SettingMetadata::text(
-                        defaults.#field_name.to_string_lossy().into_owned()
-                    )
-                    .meta_str("input_type", "path")
-                }
-            }
+            quote! { rcman::SettingMetadata::text("").meta_str("input_type", "path") }
         }
-        TypeInfo::Number => {
-            if is_option {
-                quote! { rcman::SettingMetadata::number(defaults.#field_name.unwrap_or_default() as f64) }
-            } else {
-                quote! { rcman::SettingMetadata::number(defaults.#field_name as f64) }
-            }
-        }
-        TypeInfo::List => {
-            quote! {
-                rcman::SettingMetadata::list(
-                    &(defaults.#field_name
-                        .iter()
-                        .map(|it| it.to_string())
-                        .collect::<Vec<String>>())[..]
-                )
-            }
-        }
+        TypeInfo::Number if is_integer => quote! { rcman::SettingMetadata::integer(0_u8) },
+        TypeInfo::Number => quote! { rcman::SettingMetadata::number(0.0) },
+        TypeInfo::List => quote! { rcman::SettingMetadata::list(&[]) },
         TypeInfo::Object => {
-            quote! { rcman::SettingMetadata::object(rcman::serde_json::json!(&defaults.#field_name)) }
+            quote! { rcman::SettingMetadata::object(rcman::serde_json::Value::Null) }
         }
         TypeInfo::Unknown => {
             unreachable!("Unknown types are rejected in process_field")
         }
     };
+    let nullable = is_option.then(|| quote! { .nullable(true) });
+    // `serde_json` rejects a non-UTF-8 path, so paths are converted lossily.
+    let default = match (type_info, is_option) {
+        (TypeInfo::Path, false) => quote! { defaults.#field_name.to_string_lossy() },
+        (TypeInfo::Path, true) => quote! {
+            defaults.#field_name.as_ref().map(|path| path.to_string_lossy())
+        },
+        _ => quote! { &defaults.#field_name },
+    };
 
-    if is_option {
-        base.extend(quote! { .nullable(true) });
+    quote! {
+        {
+            let mut meta = #base #nullable;
+            meta.default = rcman::serde_json::json!(#default);
+            meta
+        }
     }
-
-    base
 }

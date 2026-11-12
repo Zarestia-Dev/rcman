@@ -93,7 +93,7 @@ fn acquire(resources: Vec<Resource>, exclusive: bool) -> Result<Operation> {
         // Reads within this thread's exclusive operation are needed by restore.
         // Reentrant exclusive operations would invalidate the current snapshot.
         if overlaps && (exclusive || (claim.exclusive && claim.thread != thread)) {
-            return Err(busy());
+            return Err(Error::Busy);
         }
     }
     let claim = Arc::new(Claim {
@@ -134,10 +134,6 @@ pub(super) fn exclusive(
     acquire(resources, true)
 }
 
-fn busy() -> Error {
-    Error::Config("Another settings operation is in progress; retry after it finishes".into())
-}
-
 type Undo = Box<dyn FnOnce() -> Result<()>>;
 struct Journal {
     scope: Arc<Claim>,
@@ -154,7 +150,7 @@ impl<'a> Transaction<'a> {
         JOURNAL.with(|journal| {
             let mut journal = journal.borrow_mut();
             if journal.is_some() {
-                return Err(busy());
+                return Err(Error::Busy);
             }
             *journal = Some(Journal {
                 scope: Arc::clone(&operation.claim),
@@ -556,6 +552,40 @@ mod tests {
                 .join()
                 .unwrap();
         });
+    }
+
+    #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
+    #[test]
+    fn a_store_during_a_restore_clears_the_stale_fallback_copy() {
+        use crate::{CredentialBackend, CredentialManager, MemoryBackend};
+
+        let dir = tempfile::tempdir().unwrap();
+        let service = dir.path().to_string_lossy().into_owned();
+        let primary = Arc::new(MemoryBackend::new());
+        let fallback = Arc::new(MemoryBackend::new());
+        let manager = CredentialManager::with_backends(&service, primary.clone(), fallback.clone());
+        let key = format!("{service}:token");
+        // Left behind while the keychain was unavailable.
+        fallback.store(&key, "stale").unwrap();
+
+        let operation = exclusive(dir.path(), Some(&service)).unwrap();
+        let transaction = Transaction::begin(&operation).unwrap();
+        manager.store("token", "restored").unwrap();
+        assert!(transaction.finish(Ok(())).is_ok());
+        drop(operation);
+        assert_eq!(manager.get("token").unwrap().as_deref(), Some("restored"));
+
+        // A rollback brings the fallback copy back with the primary value.
+        let operation = exclusive(dir.path(), Some(&service)).unwrap();
+        let transaction = Transaction::begin(&operation).unwrap();
+        manager.store("token", "discarded").unwrap();
+        assert!(
+            transaction
+                .finish(Err(Error::RestoreFailed("injected".into())))
+                .is_err()
+        );
+        assert_eq!(primary.get(&key).unwrap().as_deref(), Some("restored"));
+        assert_eq!(fallback.get(&key).unwrap(), None);
     }
 
     #[cfg(any(feature = "keychain", feature = "encrypted-file"))]

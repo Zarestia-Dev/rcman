@@ -110,10 +110,8 @@ fn main() {
     // =========================================================================
     println!("🔒 Step 5: Wrong password detection\n");
 
-    let wrong_backend =
-        EncryptedFileBackend::with_password(credentials_path.clone(), "wrong_password").unwrap();
-
-    match wrong_backend.get("api_key") {
+    // The password is checked when an existing file is opened.
+    match EncryptedFileBackend::with_password(credentials_path.clone(), "wrong_password") {
         Ok(_) => println!("   ❌ This shouldn't happen!"),
         Err(e) => println!("   ✅ Correctly rejected wrong password: {e}"),
     }

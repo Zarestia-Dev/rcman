@@ -65,7 +65,7 @@ impl SettingsCache {
                     return Ok(merged.clone());
                 }
             } else {
-                return Err(Error::Config("Cache not populated".into()));
+                return Err(Error::NotInitialized);
             }
         }
 
@@ -74,7 +74,7 @@ impl SettingsCache {
         let cached = guard
             .as_mut()
             .map(|(_, cached)| cached)
-            .ok_or_else(|| Error::Config("Cache not populated".into()))?;
+            .ok_or(Error::NotInitialized)?;
 
         // Double-check: another thread may have filled it while we waited
         if let Some(ref merged) = cached.merged {
@@ -107,6 +107,7 @@ impl SettingsCache {
         }
         let mut guard = self.state.write_recovered()?;
         if !matches(&guard) {
+            // Drop the stale entry first, so a failing factory leaves no cache.
             *guard = None;
             *guard = Some((path.to_path_buf(), factory()?));
         }

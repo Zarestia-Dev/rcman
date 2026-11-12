@@ -126,14 +126,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             ));
         }
         let path = config.config_dir.join(&config.settings_file);
-        match storage.read::<Value>(&path) {
-            Ok(value) if value.get("__rcman_vault__").is_some() => {
-                return Err(Error::VaultNotFound);
-            }
-            Ok(_) => {}
-            Err(Error::FileRead { source, .. })
-                if source.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+        if crate::error::optional(storage.read::<Value>(&path))?
+            .is_some_and(|value| value.get("__rcman_vault__").is_some())
+        {
+            return Err(Error::VaultNotFound);
         }
         Ok(())
     }
@@ -437,12 +433,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
 
     fn validate_registered_vault(&self) -> Result<()> {
         for path in self.vault_settings_paths()? {
-            match self.read_settings_from_disk(&path) {
-                Ok(_) => {}
-                Err(Error::FileRead { source, .. })
-                    if source.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
+            crate::error::optional(self.read_settings_from_disk(&path))?;
         }
         for sub in self.sub_settings.read_recovered()?.values() {
             for directory in sub.vault_directories()? {
@@ -459,16 +450,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
     ) -> Result<VaultMigrationSnapshot<S>> {
         let mut settings = Vec::new();
         for path in self.vault_settings_paths()? {
-            match self.read_settings_from_disk(&path) {
-                Ok(mut value) => {
-                    if apply_migrations && let Some(migrator) = &self.config.migrator {
-                        value = migrator(value);
-                    }
-                    settings.push((path, value));
+            if let Some(mut value) = crate::error::optional(self.read_settings_from_disk(&path))? {
+                if apply_migrations && let Some(migrator) = &self.config.migrator {
+                    value = migrator(value);
                 }
-                Err(Error::FileRead { source, .. })
-                    if source.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
+                settings.push((path, value));
             }
         }
         let mut sub_settings_data = Vec::new();

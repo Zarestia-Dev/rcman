@@ -128,6 +128,10 @@ name = "derive_macro"
 required-features = ["derive"]
 
 [[test]]
+name = "schema_regressions"
+required-features = ["derive"]
+
+[[test]]
 name = "profiles"
 required-features = ["profiles"]
 

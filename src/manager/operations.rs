@@ -14,16 +14,13 @@ use serde_json::Value;
 use std::sync::Arc;
 
 impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Schema> {
+    /// Split `category.name` into its category and the rest of the key.
+    ///
+    /// The name may itself contain dots (`net.proxy.host`) for settings nested
+    /// deeper in the model; both parts must be non-empty.
     pub(crate) fn parse_setting_key(key: &str) -> Option<(&str, &str)> {
-        let mut parts = key.split('.');
-        let category = parts.next()?;
-        let setting = parts.next()?;
-
-        if parts.next().is_some() {
-            return None;
-        }
-
-        Some((category, setting))
+        key.split_once('.')
+            .filter(|(category, name)| !category.is_empty() && !name.is_empty())
     }
 
     /// Helper to get a setting value, checking keyring if it's a secret (when feature is enabled).
@@ -65,9 +62,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         if metadata.is_secret() && !self.config.env_overrides_secrets {
             return None;
         }
-        let value = self
+        let mut value = self
             .env_handler
             .get_env_override(key, &metadata.setting_type)?;
+        metadata.normalize(&mut value);
         match metadata.validate(&value) {
             Ok(()) => Some(value),
             Err(reason) => {
@@ -142,7 +140,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         T: serde::de::DeserializeOwned,
     {
         let value = self.get_value(key)?;
-        serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
+        serde_json::from_value(value).map_err(|source| Error::Deserialize {
+            key: key.to_owned(),
+            source,
+        })
     }
 
     /// Get raw JSON value for a setting key.
@@ -167,11 +168,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
             return Err(Error::ConfigLocked);
         }
 
-        let Some((category, setting_name)) = Self::parse_setting_key(key) else {
-            return Err(Error::Config(
-                "Key must be in format 'category.setting'".into(),
-            ));
-        };
+        if Self::parse_setting_key(key).is_none() {
+            return Err(Error::InvalidKey(key.to_owned()));
+        }
 
         let _guard = self.read_gate();
         // Ensure cache is populated with schema defaults
@@ -181,7 +180,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let setting_metadata = self
             .schema_metadata
             .get(key)
-            .ok_or_else(|| Error::SettingNotFound(format!("{category}.{setting_name}")))?;
+            .ok_or_else(|| Error::SettingNotFound(key.to_owned()))?;
 
         // Use the helper that handles both secrets and regular settings.
         Ok(self.get_value_with_secret_support(key, setting_metadata)?.0)
@@ -208,7 +207,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         self.ensure_cache_populated_inner()?;
         let mut merged = self
             .settings_cache
-            .get_or_compute_merged(Self::merge_with_defaults)?;
+            .get_or_compute_merged(|stored| self.merge_with_defaults(stored))?;
         for (key, metadata) in self.schema_metadata.iter() {
             if metadata.is_secret() {
                 let value = self.persisted_value(key, metadata)?;
@@ -230,19 +229,25 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         let merged = self.get_all_data()?;
 
         // Deserialize to concrete type
-        serde_json::from_value(merged).map_err(|e| Error::Parse(e.to_string()))
+        serde_json::from_value(merged).map_err(|source| Error::Deserialize {
+            key: "*".to_owned(),
+            source,
+        })
     }
 
-    /// Internal helper to merge stored settings with schema defaults.
-    pub(crate) fn merge_with_defaults(stored: &Value) -> Result<Value> {
-        let default = Schema::default();
-        let mut merged = serde_json::to_value(&default)?;
-
-        // Merge stored on top of defaults only if stored is an object
+    /// Merge stored settings over the defaults.
+    ///
+    /// The schema metadata defaults win over `Schema::default()`, so every read
+    /// path agrees on a setting's default; the struct's `Default` only fills
+    /// fields the schema does not describe.
+    fn merge_with_defaults(&self, stored: &Value) -> Result<Value> {
+        let mut merged = serde_json::to_value(Schema::default())?;
+        for (key, metadata) in self.schema_metadata.iter() {
+            crate::utils::value::set_path(&mut merged, key, metadata.default.clone());
+        }
         if stored.is_object() {
             crate::utils::value::deep_merge(&mut merged, stored);
         }
-
         Ok(merged)
     }
 
@@ -421,10 +426,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> SettingsManager<S, Sch
         // Main settings
         categories.push(ExportCategory {
             id: "settings".to_string(),
-            name: "Application Settings".to_string(),
+            name: "settings".to_string(),
             category_type: ExportCategoryType::Settings,
             optional: false,
-            description: Some("Main application settings".to_string()),
+            description: None,
         });
 
         // Sub-settings

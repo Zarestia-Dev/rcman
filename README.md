@@ -143,11 +143,29 @@ Define settings using the clean builder API:
 use rcman::{settings, SettingsSchema, SettingMetadata, opt, IndexMap};
 use serde::{Deserialize, Serialize};
 
+// The struct mirrors the keys: "ui.dark_mode" is `ui.dark_mode`.
 #[derive(Default, Serialize, Deserialize)]
 struct AppSettings {
+    ui: Ui,
+    api: Api,
+    network: Network,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct Ui {
     dark_mode: bool,
     language: String,
-    api_key: String,
+    font_size: u32,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct Api {
+    key: String,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct Network {
+    allowed_ips: Vec<String>,
 }
 
 impl SettingsSchema for AppSettings {
@@ -167,8 +185,8 @@ impl SettingsSchema for AppSettings {
             ])
                 .meta_str("label", "Language"),
 
-            // Number with range
-            "ui.font_size" => SettingMetadata::number(14.0)
+            // Whole number with range (`number()` for fractional values)
+            "ui.font_size" => SettingMetadata::integer(14_u32)
                 .meta_str("label", "Font Size")
                 .min(8.0).max(32.0).step(1.0),
 
@@ -179,7 +197,7 @@ impl SettingsSchema for AppSettings {
                 .secret(),
 
             // List of strings
-            "network.allowed_ips" => SettingMetadata::list(vec!["127.0.0.1".to_string()])
+            "network.allowed_ips" => SettingMetadata::list(&["127.0.0.1".to_string()])
                 .meta_str("label", "Allowed IPs")
                 .meta_str("description", "IP addresses allowed to connect")
                 .meta_str("category", "network"),
@@ -192,11 +210,12 @@ impl SettingsSchema for AppSettings {
 
 | Constructor                | Description                  | Validates                  |
 | -------------------------- | ---------------------------- | -------------------------- |
-| `text(default)`            | Text input                   | Pattern (via `.pattern()`) |
-| `number(default)`          | Number input                 | Min/max/step               |
+| `text(default)`            | Text input                   | Pattern, `min_length`/`max_length` |
+| `number(default)`          | Number input (fractions)     | Min/max                    |
+| `integer(default)`         | Whole-number input           | Whole number, min/max      |
 | `toggle(default)`          | Boolean toggle               | Type (boolean)             |
 | `select(default, options)` | Dropdown with options        | Valid option               |
-| `list(default)`            | List of strings              | Type (array)               |
+| `list(default)`            | List of strings              | Type (array), `min_items`/`max_items`, reserved values |
 | `object(default)`          | Untyped JSON object (`serde_json::Value`) | -             |
 | `info(default)`            | Read-only display (any type) | -                          |
 
@@ -238,7 +257,7 @@ struct GeneralSettings {
     tray_enabled: bool,
 
     /// TCP port for incoming connections.
-    #[setting(label = "Port", min = 1024, max = 65535, default = 8080)]
+    #[setting(label = "Port", min = 1024, max = 65535)]
     port: u16,
 
     /// Application display theme.
@@ -261,7 +280,7 @@ manager.update(|s| {
 })?;
 
 // 3. Snapshot accessors generated on the struct
-let mut snapshot = manager.get_all::<GeneralSettings>()?;
+let mut snapshot = manager.get_all()?;
 let _ = snapshot.general_theme();
 snapshot.set_general_theme("dark".to_string());
 
@@ -380,7 +399,7 @@ remotes.delete("onedrive")?;
 Enable hot reload when you want external file edits to refresh manager state.
 
 ```toml
-rcman = { version = "0.1", features = ["hot-reload"] }
+rcman = { version = "0.2", features = ["hot-reload"] }
 ```
 
 ```rust,no_run
@@ -412,9 +431,8 @@ Notes:
 
 - The watcher is OS-triggered by default (`HotReloadBackend::Auto`), with optional polling mode.
 - Debounce prevents reload storms for bursty writes.
-- Current scope watches only the main settings file.
-- Sub-settings (single-file or multi-file categories) are intentionally not watched by hot reload.
-- Sub-settings are expected to be updated through manager APIs for large/dynamic config groups.
+- The active main settings file and every registered sub-settings store are watched; profile switches are followed.
+- A sub-settings change drops that store's cache and emits `HotReloadEvent::SubSettingsChanged { name }`.
 
 Optional schema validation (same metadata model as main settings):
 
@@ -835,7 +853,7 @@ not rolled back. Use `.dry_run(true)` to preview selected items, and inspect
 
 During a managed backup snapshot or restore transaction, conflicting managed calls
 on overlapping configuration directories or the same credential namespace return
-`Error::Config` immediately. Retry after the operation finishes. Unrelated managers
+`Error::Busy` immediately. Retry after the operation finishes. Unrelated managers
 can continue working. Nested backup/restore on the same resources is rejected.
 Direct backend access, other processes, and vault auto-lock are outside this
 coordination, so callers must coordinate independent writers.
@@ -852,14 +870,15 @@ When you save a setting that equals its default, rcman **removes it from storage
 This keeps files minimal and allows changing defaults in code to auto-apply to users.
 
 ```rust
-# Save non-default value (stored)
-manager.save_setting("ui", "theme", &json!("dark"))?;
+// Save non-default value (stored). `set` takes the full key and any
+// `Serialize` value; `save_setting("ui", "theme", &json!("dark"))` is equivalent.
+manager.set("ui.theme", "dark")?;
 
 // Save default value (removed from storage)
-manager.save_setting("ui", "theme", &json!("light"))?;  // "light" is default
+manager.set("ui.theme", "light")?;  // "light" is default
 
-// Or use reset_setting() to explicitly reset
-manager.reset_setting("ui", "theme")?;
+// Or use reset() / reset_setting() to explicitly reset
+manager.reset("ui.theme")?;
 ```
 
 ---
@@ -933,7 +952,7 @@ Callback emission rules:
 
 - `save_setting(...)`: emits only when the effective value actually changes.
 - `reset_setting(...)`: same behavior as `save_setting(...)` (no event for no-op reset).
-- `reset_all()`: emits one callback per key that changed to default.
+- `reset_all()`: emits one callback per key that changed to default, and returns the same changes as `Vec<SettingChange>` (as does `save_all()`).
 - `switch_profile(...)` (with `profiles`): emits callbacks for keys whose effective values differ between profiles.
 
 This makes callback streams deterministic and avoids noise for no-op operations.
@@ -1313,12 +1332,18 @@ let config = SettingsConfig::builder("my-app", "1.0")
 All operations return typed errors:
 
 ```rust
-use rcman::{Error, Result};
+use rcman::{Error, ValidationError};
 
-match manager.save_setting("ui", "theme", &json!("dark")) {
+match manager.set("ui.font_size", &40) {
     Ok(()) => println!("Saved!"),
-    Err(Error::InvalidSettingValue { reason, .. }) => println!("Invalid: {}", reason),
-    Err(e) => println!("Error: {}", e),
+    // `reason` is a `ValidationError`: match it to show a localized message.
+    Err(Error::InvalidSettingValue { reason: ValidationError::AboveMax { max }, .. }) => {
+        println!("At most {max}")
+    }
+    Err(Error::InvalidSettingValue { reason, .. }) => println!("Invalid: {reason}"),
+    // A backup or restore is running; retry afterwards.
+    Err(Error::Busy) => println!("Busy"),
+    Err(e) => println!("Error: {e}"),
 }
 ```
 

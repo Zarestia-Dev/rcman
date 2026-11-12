@@ -24,6 +24,7 @@ pub use self::core::SettingsManager;
 pub use self::events::EventManager;
 #[cfg(feature = "hot-reload")]
 pub use self::hot_reload::{HotReloadEvent, HotReloadRuntime};
+pub use self::io::SettingChange;
 
 // Builder Module
 mod builder;

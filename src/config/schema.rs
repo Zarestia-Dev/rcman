@@ -86,7 +86,7 @@
 //! ```rust,no_run
 //! use rcman::{SettingMetadata, opt};
 //!
-//! // ✅ Correct - options required at construction
+//! // Options are required at construction
 //! let setting = SettingMetadata::select("default", vec![
 //!     opt("opt1", "Option 1"),
 //!     opt("opt2", "Option 2"),
@@ -107,10 +107,10 @@
 //!     .min(0.0)
 //!     .max(100.0);
 //!
-//! // ✅ Valid: min <= max
+//! // Valid: min <= max
 //! assert!(setting.validate_schema().is_ok());
 //!
-//! // ❌ Invalid: min > max
+//! // Invalid: min > max
 //! let invalid = SettingMetadata::number(50.0)
 //!     .min(100.0)
 //!     .max(0.0);
@@ -159,7 +159,6 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::borrow::Cow;
-use std::collections::HashMap;
 
 // =============================================================================
 // Well-known Metadata Keys
@@ -221,12 +220,19 @@ pub enum SettingType {
 /// Constraints for Number type settings
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct NumberConstraints {
+    /// Smallest accepted value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min: Option<f64>,
+    /// Largest accepted value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
+    /// Increment for UI controls such as sliders and spinners. It is a hint and
+    /// is not enforced; use [`SettingMetadata::integer`] to require whole numbers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step: Option<f64>,
+    /// Accept only whole numbers, so the value deserializes into an integer field.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub integer: bool,
 }
 
 /// Constraints for Text type settings
@@ -235,10 +241,16 @@ pub struct TextConstraints {
     /// Regex pattern for validation
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern: Option<Cow<'static, str>>,
+    /// Fewest characters accepted, counted as Unicode scalar values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    /// Most characters accepted, counted as Unicode scalar values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
 }
 
 /// Match mode for list reservations
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ReservedMatchMode {
     /// Exact string match only
@@ -261,7 +273,127 @@ pub struct ListConstraints {
     /// How to match reserved values
     #[serde(skip_serializing_if = "Option::is_none")]
     pub match_mode: Option<ReservedMatchMode>,
+    /// Fewest items accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_items: Option<usize>,
+    /// Most items accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<usize>,
 }
+
+/// Why a value failed a setting's constraints.
+///
+/// `Display` gives an English message. Match on the variant to show a
+/// localized message instead; the variants carry the limits they report.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum ValidationError {
+    /// `null` was given for a setting that is not nullable.
+    NotNullable,
+    /// A toggle received something other than a boolean.
+    NotBoolean,
+    /// A number setting received something other than a number.
+    NotNumber,
+    /// An integer setting received a number with a fractional part.
+    NotInteger,
+    /// The number is smaller than the setting's minimum.
+    BelowMin {
+        /// The minimum.
+        min: f64,
+    },
+    /// The number is larger than the setting's maximum.
+    AboveMax {
+        /// The maximum.
+        max: f64,
+    },
+    /// A text setting received something other than a string.
+    NotString,
+    /// The text has fewer characters than allowed.
+    TooShort {
+        /// The fewest characters allowed.
+        min: usize,
+    },
+    /// The text has more characters than allowed.
+    TooLong {
+        /// The most characters allowed.
+        max: usize,
+    },
+    /// The text does not match the setting's pattern.
+    PatternMismatch {
+        /// The pattern the text had to match.
+        pattern: String,
+    },
+    /// The setting's own pattern is not a valid regular expression.
+    InvalidPattern(String),
+    /// A select setting received a value that is not one of its options.
+    NotAnOption,
+    /// A list setting received something other than an array.
+    NotArray,
+    /// The list has fewer items than allowed.
+    TooFewItems {
+        /// The fewest items allowed.
+        min: usize,
+    },
+    /// The list has more items than allowed.
+    TooManyItems {
+        /// The most items allowed.
+        max: usize,
+    },
+    /// A list item uses a reserved value.
+    Reserved {
+        /// The rejected item.
+        value: String,
+        /// The reserved entry it matched.
+        reserved: String,
+        /// How the item was matched.
+        mode: ReservedMatchMode,
+    },
+    /// A sub-settings entry has a field its schema does not declare.
+    UnknownField,
+    /// A validator registered with [`EventManager::add_validator`](crate::EventManager::add_validator) rejected the value.
+    Custom(String),
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotNullable => f.write_str("Value cannot be null for non-optional setting"),
+            Self::NotBoolean => f.write_str("Value must be a boolean"),
+            Self::NotNumber => f.write_str("Value must be a number"),
+            Self::NotInteger => f.write_str("Value must be a whole number"),
+            Self::BelowMin { min } => write!(f, "Value must be at least {min}"),
+            Self::AboveMax { max } => write!(f, "Value must be at most {max}"),
+            Self::NotString => f.write_str("Value must be a string"),
+            Self::TooShort { min } => write!(f, "Value must have at least {min} characters"),
+            Self::TooLong { max } => write!(f, "Value must have at most {max} characters"),
+            Self::PatternMismatch { pattern } => {
+                write!(f, "Value does not match pattern: {pattern}")
+            }
+            Self::InvalidPattern(error) => write!(f, "Invalid regex pattern: {error}"),
+            Self::NotAnOption => f.write_str("Value must be one of the available options"),
+            Self::NotArray => f.write_str("Value must be an array"),
+            Self::TooFewItems { min } => write!(f, "List must have at least {min} items"),
+            Self::TooManyItems { max } => write!(f, "List must have at most {max} items"),
+            Self::Reserved {
+                value,
+                reserved,
+                mode,
+            } => match mode {
+                ReservedMatchMode::Exact => write!(f, "Value '{value}' is a reserved value"),
+                ReservedMatchMode::PrefixEquals | ReservedMatchMode::PrefixSpace => {
+                    write!(f, "Value '{value}' matches reserved prefix '{reserved}'")
+                }
+                ReservedMatchMode::CliFlag => {
+                    write!(f, "Value '{value}' matches reserved flag '{reserved}'")
+                }
+            },
+            Self::UnknownField => f.write_str("Field is not defined in sub-settings schema"),
+            Self::Custom(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for ValidationError {}
 
 /// Type-specific constraints
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -333,9 +465,9 @@ pub struct SettingMetadata {
     #[serde(flatten)]
     pub constraints: SettingConstraints,
 
-    /// Developer-defined custom metadata (fully dynamic)
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub metadata: HashMap<String, Value>,
+    /// Developer-defined custom metadata, kept in insertion order.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub metadata: IndexMap<String, Value>,
 }
 
 impl Default for SettingMetadata {
@@ -346,13 +478,13 @@ impl Default for SettingMetadata {
             value: None,
             nullable: false,
             constraints: SettingConstraints::default(),
-            metadata: HashMap::new(),
+            metadata: IndexMap::new(),
         }
     }
 }
 
 // Public metadata is mutable; key by pattern text, not by metadata identity.
-fn compiled_pattern(pattern: &str) -> Result<std::sync::Arc<regex::Regex>, String> {
+fn compiled_pattern(pattern: &str) -> Result<std::sync::Arc<regex::Regex>, ValidationError> {
     use std::sync::{Arc, LazyLock, Mutex};
     static CACHE: LazyLock<Mutex<lru::LruCache<String, Arc<regex::Regex>>>> = LazyLock::new(|| {
         Mutex::new(lru::LruCache::new(
@@ -367,8 +499,9 @@ fn compiled_pattern(pattern: &str) -> Result<std::sync::Arc<regex::Regex>, Strin
     {
         return Ok(regex);
     }
-    let regex =
-        Arc::new(regex::Regex::new(pattern).map_err(|e| format!("Invalid regex pattern: {e}"))?);
+    let regex = Arc::new(
+        regex::Regex::new(pattern).map_err(|e| ValidationError::InvalidPattern(e.to_string()))?,
+    );
     CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -390,11 +523,45 @@ impl SettingMetadata {
         }
     }
 
-    /// Create a number input setting
+    /// Create a number input setting that accepts fractions.
+    ///
+    /// For a field of an integer type use [`Self::integer`]: a fractional value
+    /// saved here would no longer deserialize into that field.
     pub fn number(default: impl Into<f64>) -> Self {
         Self {
             setting_type: SettingType::Number,
             default: json!(default.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a number input setting that accepts only whole numbers.
+    ///
+    /// The default keeps its integer form (`5`, not `5.0`), so reading it into
+    /// an integer field succeeds, and values with a fractional part are rejected.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rcman::SettingMetadata;
+    /// use serde_json::json;
+    ///
+    /// let port = SettingMetadata::integer(8080_u16).min(1.0).max(65535.0);
+    /// assert_eq!(port.default, json!(8080));
+    /// assert!(port.validate(&json!(443)).is_ok());
+    /// assert!(port.validate(&json!(443.5)).is_err());
+    /// ```
+    pub fn integer(default: impl Into<serde_json::Number>) -> Self {
+        Self {
+            setting_type: SettingType::Number,
+            default: Value::Number(default.into()),
+            constraints: SettingConstraints {
+                number: NumberConstraints {
+                    integer: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -412,10 +579,11 @@ impl SettingMetadata {
     /// Create a select/dropdown setting
     ///
     /// **Options are required** - you must provide them at construction time.
-    pub fn select(default: impl Into<String>, options: Vec<SettingOption>) -> Self {
+    /// Values are usually strings, but any JSON value works, such as a number.
+    pub fn select(default: impl Into<Value>, options: Vec<SettingOption>) -> Self {
         Self {
             setting_type: SettingType::Select,
-            default: Value::String(default.into()),
+            default: default.into(),
             constraints: SettingConstraints {
                 options: Some(options),
                 ..Default::default()
@@ -547,9 +715,37 @@ impl SettingMetadata {
         self
     }
 
+    /// Set the fewest characters a Text value may have
+    #[must_use]
+    pub fn min_length(mut self, length: usize) -> Self {
+        self.constraints.text.min_length = Some(length);
+        self
+    }
+
+    /// Set the most characters a Text value may have
+    #[must_use]
+    pub fn max_length(mut self, length: usize) -> Self {
+        self.constraints.text.max_length = Some(length);
+        self
+    }
+
     // =========================================================================
     // List constraint setters (builder pattern)
     // =========================================================================
+
+    /// Set the fewest items a List value may have
+    #[must_use]
+    pub fn min_items(mut self, count: usize) -> Self {
+        self.constraints.list.min_items = Some(count);
+        self
+    }
+
+    /// Set the most items a List value may have
+    #[must_use]
+    pub fn max_items(mut self, count: usize) -> Self {
+        self.constraints.list.max_items = Some(count);
+        self
+    }
 
     /// Set reserved values for List type
     #[must_use]
@@ -600,25 +796,49 @@ impl SettingMetadata {
     // Validation
     // =========================================================================
 
+    /// Write a whole number given as a float (`14.0`) as an integer (`14`) for
+    /// an integer setting, so it deserializes into the integer field. Clients
+    /// such as Python's `json` send whole numbers that way. Other values are
+    /// left unchanged.
+    pub fn normalize(&self, value: &mut Value) {
+        if !self.constraints.number.integer || !value.is_f64() {
+            return;
+        }
+        let Some(number) = value.as_f64().filter(|number| number.fract() == 0.0) else {
+            return;
+        };
+        // Values outside the integer range stay floats, as without normalizing.
+        let digits = format!("{number:.0}");
+        if let Ok(unsigned) = digits.parse::<u64>() {
+            *value = Value::from(unsigned);
+        } else if let Ok(signed) = digits.parse::<i64>() {
+            *value = Value::from(signed);
+        }
+    }
+
     /// Validate a value against this setting's constraints
     ///
-    /// Checks:
-    /// - Number range (min/max)
-    /// - Regex pattern for text
-    /// - Valid option for select type
-    /// - Type compatibility
+    /// Checks the value's type, number range and whole-number constraint, text
+    /// pattern and length, select options, list length and reserved list items.
     ///
     /// # Errors
-    /// Returns an error message if validation fails (type mismatch, out of range, invalid pattern, etc.)
-    pub fn validate(&self, value: &Value) -> Result<(), String> {
+    ///
+    /// Returns the first constraint the value breaks.
+    pub fn validate(&self, value: &Value) -> Result<(), ValidationError> {
         if value.is_null() {
             if self.nullable {
                 return Ok(());
             }
-            return Err("Value cannot be null for non-optional setting".to_string());
+            return Err(ValidationError::NotNullable);
         }
         match self.setting_type {
-            SettingType::Toggle => Self::validate_toggle(value),
+            SettingType::Toggle => {
+                if value.is_boolean() {
+                    Ok(())
+                } else {
+                    Err(ValidationError::NotBoolean)
+                }
+            }
             SettingType::Number => self.validate_number(value),
             SettingType::Text => self.validate_text(value),
             SettingType::Select => self.validate_select(value),
@@ -627,75 +847,77 @@ impl SettingMetadata {
         }
     }
 
-    fn validate_toggle(value: &Value) -> Result<(), String> {
-        if !value.is_boolean() {
-            return Err("Value must be a boolean".to_string());
+    fn validate_number(&self, value: &Value) -> Result<(), ValidationError> {
+        let num = value.as_f64().ok_or(ValidationError::NotNumber)?;
+        let constraints = &self.constraints.number;
+        if constraints.integer && !(value.is_i64() || value.is_u64() || num.fract() == 0.0) {
+            return Err(ValidationError::NotInteger);
         }
-        Ok(())
-    }
-
-    fn validate_number(&self, value: &Value) -> Result<(), String> {
-        let num = value
-            .as_f64()
-            .ok_or_else(|| "Value must be a number".to_string())?;
-
-        if let Some(min) = self.constraints.number.min
+        if let Some(min) = constraints.min
             && num < min
         {
-            return Err(format!("Value must be at least {min}"));
+            return Err(ValidationError::BelowMin { min });
         }
-        if let Some(max) = self.constraints.number.max
+        if let Some(max) = constraints.max
             && num > max
         {
-            return Err(format!("Value must be at most {max}"));
+            return Err(ValidationError::AboveMax { max });
         }
         Ok(())
     }
 
-    fn validate_text(&self, value: &Value) -> Result<(), String> {
-        let text = value
-            .as_str()
-            .ok_or_else(|| "Value must be a string".to_string())?;
-
-        if let Some(ref pattern) = self.constraints.text.pattern {
-            let re = compiled_pattern(pattern)?;
-            if !re.is_match(text) {
-                return Err(format!("Value does not match pattern: {pattern}"));
+    fn validate_text(&self, value: &Value) -> Result<(), ValidationError> {
+        let text = value.as_str().ok_or(ValidationError::NotString)?;
+        let constraints = &self.constraints.text;
+        if constraints.min_length.is_some() || constraints.max_length.is_some() {
+            let length = text.chars().count();
+            if let Some(min) = constraints.min_length
+                && length < min
+            {
+                return Err(ValidationError::TooShort { min });
+            }
+            if let Some(max) = constraints.max_length
+                && length > max
+            {
+                return Err(ValidationError::TooLong { max });
             }
         }
-        Ok(())
-    }
-
-    fn validate_select(&self, value: &Value) -> Result<(), String> {
-        if let Some(ref options) = self.constraints.options {
-            let is_valid = options.iter().any(|opt| opt.value == *value);
-            if !is_valid {
-                return Err("Value must be one of the available options".to_string());
-            }
+        if let Some(ref pattern) = constraints.pattern
+            && !compiled_pattern(pattern)?.is_match(text)
+        {
+            return Err(ValidationError::PatternMismatch {
+                pattern: pattern.to_string(),
+            });
         }
         Ok(())
     }
 
-    fn validate_list(&self, value: &Value) -> Result<(), String> {
-        if !value.is_array() {
-            return Err("Value must be an array".to_string());
+    fn validate_select(&self, value: &Value) -> Result<(), ValidationError> {
+        if let Some(ref options) = self.constraints.options
+            && !options.iter().any(|opt| opt.value == *value)
+        {
+            return Err(ValidationError::NotAnOption);
         }
+        Ok(())
+    }
 
-        // Check reserved values
-        if let Some(reserved) = &self.constraints.list.reserved {
-            let mode = self
-                .constraints
-                .list
-                .match_mode
-                .as_ref()
-                .unwrap_or(&ReservedMatchMode::Exact);
-
-            if let Some(arr) = value.as_array() {
-                for item in arr {
-                    if let Some(s) = item.as_str() {
-                        Self::check_reserved_item(s, reserved, mode)?;
-                    }
-                }
+    fn validate_list(&self, value: &Value) -> Result<(), ValidationError> {
+        let items = value.as_array().ok_or(ValidationError::NotArray)?;
+        let constraints = &self.constraints.list;
+        if let Some(min) = constraints.min_items
+            && items.len() < min
+        {
+            return Err(ValidationError::TooFewItems { min });
+        }
+        if let Some(max) = constraints.max_items
+            && items.len() > max
+        {
+            return Err(ValidationError::TooManyItems { max });
+        }
+        if let Some(reserved) = &constraints.reserved {
+            let mode = constraints.match_mode.unwrap_or_default();
+            for item in items.iter().filter_map(Value::as_str) {
+                Self::check_reserved_item(item, reserved, mode)?;
             }
         }
         Ok(())
@@ -704,34 +926,27 @@ impl SettingMetadata {
     fn check_reserved_item(
         item: &str,
         reserved: &[Cow<'static, str>],
-        mode: &ReservedMatchMode,
-    ) -> Result<(), String> {
+        mode: ReservedMatchMode,
+    ) -> Result<(), ValidationError> {
+        let followed_by = |r: &str, separator: char| {
+            item.strip_prefix(r)
+                .is_some_and(|rest| rest.starts_with(separator))
+        };
         for r in reserved {
-            let r_str = r.as_ref();
-            match mode {
-                ReservedMatchMode::Exact => {
-                    if item == r_str {
-                        return Err(format!("Value '{item}' is a reserved value"));
-                    }
-                }
-                ReservedMatchMode::PrefixEquals => {
-                    if item == r_str || item.starts_with(&format!("{r_str}=")) {
-                        return Err(format!("Value '{item}' matches reserved prefix '{r_str}'"));
-                    }
-                }
-                ReservedMatchMode::PrefixSpace => {
-                    if item == r_str || item.starts_with(&format!("{r_str} ")) {
-                        return Err(format!("Value '{item}' matches reserved prefix '{r_str}'"));
-                    }
-                }
-                ReservedMatchMode::CliFlag => {
-                    if item == r_str
-                        || item.starts_with(&format!("{r_str}="))
-                        || item.starts_with(&format!("{r_str} "))
-                    {
-                        return Err(format!("Value '{item}' matches reserved flag '{r_str}'"));
-                    }
-                }
+            let r = r.as_ref();
+            let matched = item == r
+                || match mode {
+                    ReservedMatchMode::Exact => false,
+                    ReservedMatchMode::PrefixEquals => followed_by(r, '='),
+                    ReservedMatchMode::PrefixSpace => followed_by(r, ' '),
+                    ReservedMatchMode::CliFlag => followed_by(r, '=') || followed_by(r, ' '),
+                };
+            if matched {
+                return Err(ValidationError::Reserved {
+                    value: item.to_owned(),
+                    reserved: r.to_owned(),
+                    mode,
+                });
             }
         }
         Ok(())
@@ -744,7 +959,8 @@ impl SettingMetadata {
     /// - Number range has min <= max
     /// - Step is positive
     /// - Pattern is valid regex
-    /// - Default value satisfies constraints
+    /// - Default value satisfies constraints (an empty text default counts as
+    ///   unset and is not checked against the pattern or length)
     ///
     /// # Errors
     /// Returns an error if schema is inconsistent (min > max, invalid regex, empty pattern, etc.)
@@ -761,6 +977,25 @@ impl SettingMetadata {
             return Err(format!("min ({min}) cannot be greater than max ({max})"));
         }
 
+        if let (Some(min), Some(max)) = (
+            self.constraints.text.min_length,
+            self.constraints.text.max_length,
+        ) && min > max
+        {
+            return Err(format!(
+                "min_length ({min}) cannot be greater than max_length ({max})"
+            ));
+        }
+        if let (Some(min), Some(max)) = (
+            self.constraints.list.min_items,
+            self.constraints.list.max_items,
+        ) && min > max
+        {
+            return Err(format!(
+                "min_items ({min}) cannot be greater than max_items ({max})"
+            ));
+        }
+
         // Check step is positive
         if let Some(step) = self.constraints.number.step
             && step <= 0.0
@@ -770,7 +1005,7 @@ impl SettingMetadata {
 
         // Check pattern is valid regex
         if let Some(ref pattern) = self.constraints.text.pattern {
-            compiled_pattern(pattern)?;
+            compiled_pattern(pattern).map_err(|error| error.to_string())?;
 
             // Pattern should not be empty
             if pattern.is_empty() {
@@ -778,11 +1013,24 @@ impl SettingMetadata {
             }
         }
 
-        // Validate default value against constraints
-        self.validate(&self.default)
-            .map_err(|e| format!("Default value is invalid: {e}"))?;
+        // Validate the default against the constraints. An empty text default
+        // means "not set yet", so it need not match the pattern or length.
+        let unset_text = self.setting_type == SettingType::Text && self.default == "";
+        if !unset_text {
+            self.validate(&self.default)
+                .map_err(|e| format!("Default value is invalid: {e}"))?;
+        }
 
         Ok(())
+    }
+}
+
+/// [`SettingMetadata::normalize`] every setting of `metadata` found in `value`.
+pub(crate) fn normalize_values(metadata: &IndexMap<String, SettingMetadata>, value: &mut Value) {
+    for (key, setting) in metadata {
+        if let Some(field) = crate::utils::value::get_path_mut(value, key) {
+            setting.normalize(field);
+        }
     }
 }
 
@@ -803,11 +1051,10 @@ pub struct SettingOption {
 }
 
 impl SettingOption {
-    /// Create a simple string option
-    pub fn new(value: impl Into<String>, label: impl Into<Cow<'static, str>>) -> Self {
-        let value_str = value.into();
+    /// Create an option; the value is usually a string but may be any JSON value
+    pub fn new(value: impl Into<Value>, label: impl Into<Cow<'static, str>>) -> Self {
         Self {
-            value: Value::String(value_str),
+            value: value.into(),
             label: label.into(),
             description: None,
         }
@@ -815,13 +1062,12 @@ impl SettingOption {
 
     /// Create an option with description
     pub fn with_description(
-        value: impl Into<String>,
+        value: impl Into<Value>,
         label: impl Into<Cow<'static, str>>,
         description: impl Into<Cow<'static, str>>,
     ) -> Self {
-        let value_str = value.into();
         Self {
-            value: Value::String(value_str),
+            value: value.into(),
             label: label.into(),
             description: Some(description.into()),
         }
@@ -841,6 +1087,24 @@ pub trait SettingsSchema: Default + Serialize + for<'de> Deserialize<'de> {
     ///
     /// The key format should be "`category.setting_name`" (e.g., "general.language")
     fn get_metadata() -> IndexMap<String, SettingMetadata>;
+
+    /// Metadata keyed by each field's path inside this type's own serialized
+    /// value, without the category prefix.
+    ///
+    /// The derive macro uses this to place a nested schema under its field
+    /// name at any depth. The default drops the first segment (the category)
+    /// of each key, which fits hand-written schemas keyed `category.name`.
+    #[doc(hidden)]
+    #[must_use]
+    fn field_metadata() -> IndexMap<String, SettingMetadata> {
+        Self::get_metadata()
+            .into_iter()
+            .map(|(key, meta)| match key.split_once('.') {
+                Some((_, rest)) => (rest.to_owned(), meta),
+                None => (key, meta),
+            })
+            .collect()
+    }
 
     /// Get list of categories in display order
     #[must_use]
@@ -873,7 +1137,9 @@ pub trait SettingsSchema: Default + Serialize + for<'de> Deserialize<'de> {
             let field_val =
                 crate::utils::value::get_path(&value, full_key).unwrap_or(&setting_meta.default);
 
-            if let Err(reason) = setting_meta.validate(field_val) {
+            if !crate::utils::value::same_value(field_val, &setting_meta.default)
+                && let Err(reason) = setting_meta.validate(field_val)
+            {
                 return Err(crate::Error::InvalidSettingValue {
                     key: full_key.clone(),
                     reason,
@@ -883,6 +1149,14 @@ pub trait SettingsSchema: Default + Serialize + for<'de> Deserialize<'de> {
         Ok(())
     }
 }
+
+/// Marks `Self` as a settings model that contains the schema `T`, either as
+/// itself or as a directly nested field.
+///
+/// The derive macro implements it so a schema's typed manager accessors are
+/// available on managers whose model contains that schema.
+#[doc(hidden)]
+pub trait SchemaPart<T> {}
 
 // Default implementation for () to allow DynamicManager (no schema)
 impl SettingsSchema for () {
@@ -906,7 +1180,7 @@ impl SettingsSchema for () {
 /// use rcman::opt;
 /// let options = vec![opt("light", "Light Mode"), opt("dark", "Dark Mode")];
 /// ```
-pub fn opt(value: impl Into<String>, label: impl Into<Cow<'static, str>>) -> SettingOption {
+pub fn opt(value: impl Into<Value>, label: impl Into<Cow<'static, str>>) -> SettingOption {
     SettingOption::new(value, label)
 }
 
@@ -1030,7 +1304,7 @@ mod tests {
         let result = setting.validate(&Value::from("not-an-email"));
         assert!(result.is_err());
         assert_eq!(
-            result.unwrap_err(),
+            result.unwrap_err().to_string(),
             r"Value does not match pattern: ^[\w.-]+@[\w.-]+\.\w+$"
         );
     }
@@ -1200,6 +1474,9 @@ mod tests {
 
         // Check error message
         let err = meta.validate(&json!(["--rc-serve=true"])).unwrap_err();
-        assert!(err.contains("Value '--rc-serve=true' matches reserved flag '--rc-serve'"));
+        assert_eq!(
+            err.to_string(),
+            "Value '--rc-serve=true' matches reserved flag '--rc-serve'"
+        );
     }
 }

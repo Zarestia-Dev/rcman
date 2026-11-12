@@ -24,7 +24,7 @@
 //! including access through other manager instances or directory aliases. Unrelated
 //! managers remain available. Nested backup/restore on the same resources is
 //! rejected. Conflicting calls fail immediately with
-//! `Error::Config` and can be retried; resource claims never wait across
+//! `Error::Busy` and can be retried; resource claims never wait across
 //! application callbacks. Direct storage/backend access, external
 //! processes, and vault auto-lock remain outside this coordination; callers must
 //! quiesce independent writers. External imports run after managed commit and

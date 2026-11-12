@@ -548,7 +548,7 @@ fn test_struct_validation_success() {
         retries: Some(3),
     };
 
-    assert!(s.validate().is_ok());
+    s.validate().unwrap();
 
     let root = RootValidationSettings {
         nested: s,
@@ -571,7 +571,7 @@ fn test_struct_validation_number_min_violation() {
     match err {
         rcman::Error::InvalidSettingValue { key, reason } => {
             assert_eq!(key, ValidationSettings::PORT);
-            assert!(reason.contains("at least 10"));
+            assert_eq!(reason, rcman::ValidationError::BelowMin { min: 10.0 });
         }
         other => panic!("Unexpected error: {other:?}"),
     }
@@ -590,7 +590,7 @@ fn test_struct_validation_number_max_violation() {
     match err {
         rcman::Error::InvalidSettingValue { key, reason } => {
             assert_eq!(key, ValidationSettings::PORT);
-            assert!(reason.contains("at most 100"));
+            assert_eq!(reason, rcman::ValidationError::AboveMax { max: 100.0 });
         }
         other => panic!("Unexpected error: {other:?}"),
     }
@@ -609,7 +609,10 @@ fn test_struct_validation_pattern_violation() {
     match err {
         rcman::Error::InvalidSettingValue { key, reason } => {
             assert_eq!(key, ValidationSettings::USERNAME);
-            assert!(reason.contains("does not match pattern"));
+            assert!(matches!(
+                reason,
+                rcman::ValidationError::PatternMismatch { .. }
+            ));
         }
         other => panic!("Unexpected error: {other:?}"),
     }
@@ -628,7 +631,7 @@ fn test_struct_validation_options_violation() {
     match err {
         rcman::Error::InvalidSettingValue { key, reason } => {
             assert_eq!(key, ValidationSettings::THEME);
-            assert!(reason.contains("one of the available options"));
+            assert_eq!(reason, rcman::ValidationError::NotAnOption);
         }
         other => panic!("Unexpected error: {other:?}"),
     }

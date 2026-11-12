@@ -54,8 +54,7 @@ fn test_hot_reload_applies_external_file_change() {
                 HotReloadEvent::ReloadFailed { reason, .. } => {
                     panic!("reload failed unexpectedly: {reason}");
                 }
-                #[cfg(feature = "vault")]
-                HotReloadEvent::SkippedLocked { .. } => {}
+                _ => {}
             }
         }
     }
@@ -138,8 +137,7 @@ fn test_hot_reload_rapid_consecutive_changes_apply_latest_value() {
                 HotReloadEvent::ReloadFailed { reason, .. } => {
                     panic!("reload failed unexpectedly: {reason}");
                 }
-                #[cfg(feature = "vault")]
-                HotReloadEvent::SkippedLocked { .. } => {}
+                _ => {}
             }
         }
     }
@@ -148,4 +146,83 @@ fn test_hot_reload_rapid_consecutive_changes_apply_latest_value() {
     assert!(latest_applied, "latest rapid edit was not applied");
 
     runtime.stop();
+}
+
+#[test]
+fn test_hot_reload_drops_sub_settings_cache_on_external_change() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = Arc::new(
+        rcman::SettingsManager::builder("hot-reload-subs", "1")
+            .with_config_dir(directory.path())
+            .with_sub_settings(rcman::SubSettingsConfig::new("remotes"))
+            .with_sub_settings(rcman::SubSettingsConfig::singlefile("backends"))
+            .build()
+            .unwrap(),
+    );
+    let remotes = manager.sub_settings("remotes").unwrap();
+    let backends = manager.sub_settings("backends").unwrap();
+    remotes
+        .set("drive", &serde_json::json!({"type": "drive"}))
+        .unwrap();
+    backends
+        .set("main", &serde_json::json!({"port": 1}))
+        .unwrap();
+    // Fill both caches before the files change behind the manager's back.
+    assert_eq!(remotes.get_value("drive").unwrap()["type"], "drive");
+    assert_eq!(backends.get_value("main").unwrap()["port"], 1);
+
+    let (event_tx, event_rx) = mpsc::channel::<HotReloadEvent>();
+    let config = HotReloadConfig {
+        debounce_ms: 75,
+        poll_interval_ms: 50,
+        backend: HotReloadBackend::Poll,
+    };
+    let mut runtime = HotReloadRuntime::start(Arc::clone(&manager), config, move |event| {
+        let _ = event_tx.send(event);
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(250));
+
+    // Polling compares modification times; move them clearly forward so the
+    // change is seen even when it lands in the same timestamp tick.
+    let later = std::time::SystemTime::now() + Duration::from_secs(5);
+    let rewrite = |path: &std::path::Path, content: &str| {
+        std::fs::write(path, content).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+    };
+    rewrite(
+        &remotes.directory().unwrap().join("drive.json"),
+        r#"{"type":"s3"}"#,
+    );
+    rewrite(
+        &backends.file_path().unwrap().unwrap(),
+        r#"{"main":{"port":2}}"#,
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut changed = std::collections::BTreeSet::new();
+    while Instant::now() < deadline && changed.len() < 2 {
+        if let Ok(event) = event_rx.recv_timeout(Duration::from_millis(150)) {
+            match event {
+                HotReloadEvent::SubSettingsChanged { name } => {
+                    changed.insert(name);
+                }
+                HotReloadEvent::WatchError { reason } => panic!("watch error: {reason}"),
+                _ => {}
+            }
+        }
+    }
+    runtime.stop();
+
+    assert_eq!(
+        changed.into_iter().collect::<Vec<_>>(),
+        ["backends", "remotes"]
+    );
+    assert_eq!(remotes.get_value("drive").unwrap()["type"], "s3");
+    assert_eq!(backends.get_value("main").unwrap()["port"], 2);
 }

@@ -224,7 +224,7 @@
 //! ## Hot Reload (Feature-Gated)
 //!
 //! Enable with:
-//! `rcman = { version = "0.1", features = ["hot-reload"] }`
+//! `rcman = { version = "0.2", features = ["hot-reload"] }`
 //!
 //! ```rust,no_run
 //! #[cfg(feature = "hot-reload")]
@@ -253,9 +253,9 @@
 //! }
 //! ```
 //!
-//! Scope note:
-//! - Hot reload currently watches only the active main settings file.
-//! - Sub-settings (single-file and multi-file categories) are not watched.
+//! The runtime watches the active main settings file and the active files of
+//! every registered sub-settings store. A sub-settings change drops that
+//! store's cache and emits `HotReloadEvent::SubSettingsChanged`.
 
 // =============================================================================
 // INTERNAL MODULES (private implementation details)
@@ -289,10 +289,13 @@ mod credentials;
 // Core Types (always available)
 // -----------------------------------------------------------------------------
 
+#[doc(hidden)]
+pub use config::SchemaPart;
 pub use config::{
-    CredentialConfig, DefaultEnvSource, EnvSource, NumberConstraints, SettingConstraints,
-    SettingMetadata, SettingOption, SettingType, SettingsConfig, SettingsConfigBuilder,
-    SettingsSchema, TextConstraints, meta, opt,
+    CredentialConfig, DefaultEnvSource, EnvSource, ListConstraints, NumberConstraints,
+    ReservedMatchMode, SettingConstraints, SettingMetadata, SettingOption, SettingType,
+    SettingsConfig, SettingsConfigBuilder, SettingsSchema, TextConstraints, ValidationError, meta,
+    opt,
 };
 /// Insertion-ordered map used for setting metadata; keeps schema order deterministic.
 pub use indexmap::IndexMap;
@@ -316,7 +319,7 @@ pub use regex;
 pub use manager::EventManager;
 
 /// Main settings manager and builder.
-pub use manager::{SettingsManager, SettingsManagerBuilder};
+pub use manager::{SettingChange, SettingsManager, SettingsManagerBuilder};
 
 #[cfg(feature = "hot-reload")]
 pub use manager::{HotReloadEvent, HotReloadRuntime};
@@ -375,7 +378,7 @@ pub use backup::{
 #[cfg(feature = "profiles")]
 pub use profiles::{
     DEFAULT_PROFILE, PROFILES_DIR, ProfileEvent, ProfileManager, ProfileManifest, ProfileMigrator,
-    migrate, validate_profile_name,
+    migrate, validate_new_profile_name, validate_profile_name,
 };
 
 // -----------------------------------------------------------------------------
@@ -471,9 +474,9 @@ pub use rcman_derive::SettingsSchema as DeriveSettingsSchema;
 pub mod prelude {
     // Core types users need for basic usage
     pub use super::{
-        Error, NumberConstraints, Result, SettingConstraints, SettingMetadata, SettingOption,
-        SettingType, SettingsConfig, SettingsManager, SettingsSchema, SubSettingsConfig,
-        TextConstraints, opt,
+        Error, ListConstraints, NumberConstraints, ReservedMatchMode, Result, SettingConstraints,
+        SettingMetadata, SettingOption, SettingType, SettingsConfig, SettingsManager,
+        SettingsSchema, SubSettingsConfig, TextConstraints, ValidationError, opt,
     };
 
     // Storage

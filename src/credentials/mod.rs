@@ -265,6 +265,20 @@ impl CredentialManager {
         }
     }
 
+    /// A manager with explicit primary and fallback backends, for tests of
+    /// the fallback paths.
+    #[cfg(all(test, feature = "backup"))]
+    pub(crate) fn with_backends(
+        service_name: impl Into<String>,
+        primary: Arc<dyn CredentialBackend>,
+        fallback: Arc<dyn CredentialBackend>,
+    ) -> Self {
+        Self {
+            fallback: Some(fallback),
+            ..Self::with_backend(service_name, primary)
+        }
+    }
+
     /// Create a clone of this manager with a profile context
     ///
     /// This causes all operations to be namespaced under the profile.
@@ -361,6 +375,11 @@ impl CredentialManager {
         #[cfg(feature = "backup")]
         if crate::backup::transaction::active(&self.service_name) {
             self.primary.store(&full_key, value)?;
+            // Reads try the fallback first, so a stale copy there would win;
+            // it was captured above, so a rollback restores it.
+            if let Some(fallback) = &self.fallback {
+                fallback.remove(&full_key)?;
+            }
             return self
                 .memory
                 .store(&full_key, MemoryEntry::Cached(value.to_owned()));

@@ -224,7 +224,11 @@ impl Default for SettingsConfig {
 }
 
 impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfig<S, Schema> {
-    /// Get the full path to the main settings file
+    /// The main settings file in `config_dir`.
+    ///
+    /// With profiles enabled each profile has its own file; use
+    /// [`SettingsManager::settings_path`](crate::SettingsManager::settings_path)
+    /// for the file the manager currently reads and writes.
     pub fn settings_path(&self) -> PathBuf {
         self.config_dir.join(&self.settings_file)
     }
@@ -303,6 +307,15 @@ struct VaultConfig {
 /// ```
 #[derive(Clone)]
 pub struct SettingsConfigBuilder<S: StorageBackend = JsonStorage, Schema: SettingsSchema = ()> {
+    options: BuilderOptions,
+    storage: S,
+    _schema: PhantomData<Schema>,
+}
+
+/// Builder settings that do not depend on the storage or schema type, so
+/// [`SettingsConfigBuilder::with_schema`] and `with_storage_instance` move them as one value.
+#[derive(Clone)]
+struct BuilderOptions {
     config_dir: Option<PathBuf>,
     settings_file: Option<String>,
     app_name: String,
@@ -313,9 +326,7 @@ pub struct SettingsConfigBuilder<S: StorageBackend = JsonStorage, Schema: Settin
     migrator: Option<std::sync::Arc<dyn Fn(serde_json::Value) -> serde_json::Value + Send + Sync>>,
     #[cfg(feature = "profiles")]
     profile_migrator: Option<crate::profiles::ProfileMigrator>,
-
     env_source: Option<std::sync::Arc<dyn EnvSource>>,
-
     #[cfg(feature = "profiles")]
     profiles_enabled: bool,
     #[cfg(feature = "hot-reload")]
@@ -325,9 +336,6 @@ pub struct SettingsConfigBuilder<S: StorageBackend = JsonStorage, Schema: Settin
     credential_config: CredentialConfig,
     env_overrides_secrets: bool,
     resolve_env_credentials: bool,
-
-    storage: S,
-    _schema: PhantomData<Schema>,
 }
 
 impl<S: StorageBackend, Schema: SettingsSchema> std::fmt::Debug
@@ -336,27 +344,33 @@ impl<S: StorageBackend, Schema: SettingsSchema> std::fmt::Debug
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = f.debug_struct("SettingsConfigBuilder");
         debug
-            .field("config_dir", &self.config_dir)
-            .field("settings_file", &self.settings_file)
-            .field("app_name", &self.app_name)
-            .field("app_version", &self.app_version)
-            .field("credential_config", &self.credential_config)
-            .field("env_prefix", &self.env_prefix)
-            .field("env_overrides_secrets", &self.env_overrides_secrets)
-            .field("resolve_env_credentials", &self.resolve_env_credentials);
+            .field("config_dir", &self.options.config_dir)
+            .field("settings_file", &self.options.settings_file)
+            .field("app_name", &self.options.app_name)
+            .field("app_version", &self.options.app_version)
+            .field("credential_config", &self.options.credential_config)
+            .field("env_prefix", &self.options.env_prefix)
+            .field("env_overrides_secrets", &self.options.env_overrides_secrets)
+            .field(
+                "resolve_env_credentials",
+                &self.options.resolve_env_credentials,
+            );
 
         #[cfg(feature = "backup")]
-        debug.field("external_configs", &self.external_configs);
+        debug.field("external_configs", &self.options.external_configs);
 
         #[cfg(feature = "profiles")]
-        debug.field("profiles_enabled", &self.profiles_enabled);
+        debug.field("profiles_enabled", &self.options.profiles_enabled);
         #[cfg(feature = "profiles")]
-        debug.field("profile_migrator", &self.profile_migrator);
+        debug.field("profile_migrator", &self.options.profile_migrator);
 
         #[cfg(feature = "vault")]
-        debug.field("vault_kdf_params", &self.vault.kdf_params);
+        debug.field("vault_kdf_params", &self.options.vault.kdf_params);
 
-        debug.field("migrator", &self.migrator.as_ref().map(|_| "Some(Fn)"));
+        debug.field(
+            "migrator",
+            &self.options.migrator.as_ref().map(|_| "Some(Fn)"),
+        );
         debug.finish_non_exhaustive()
     }
 }
@@ -365,26 +379,28 @@ impl SettingsConfigBuilder {
     /// Create a new builder with required app name and version
     pub fn new(app_name: impl Into<String>, app_version: impl Into<String>) -> Self {
         Self {
-            config_dir: None,
-            settings_file: None,
-            app_name: app_name.into(),
-            app_version: app_version.into(),
-            env_prefix: None,
-            #[cfg(feature = "backup")]
-            external_configs: Vec::new(),
-            migrator: None,
-            #[cfg(feature = "profiles")]
-            profile_migrator: None,
-            env_source: None,
-            #[cfg(feature = "profiles")]
-            profiles_enabled: false,
-            #[cfg(feature = "hot-reload")]
-            hot_reload: None,
-            #[cfg(feature = "vault")]
-            vault: VaultConfig::default(),
-            credential_config: CredentialConfig::Disabled,
-            env_overrides_secrets: false,
-            resolve_env_credentials: false,
+            options: BuilderOptions {
+                config_dir: None,
+                settings_file: None,
+                app_name: app_name.into(),
+                app_version: app_version.into(),
+                env_prefix: None,
+                #[cfg(feature = "backup")]
+                external_configs: Vec::new(),
+                migrator: None,
+                #[cfg(feature = "profiles")]
+                profile_migrator: None,
+                env_source: None,
+                #[cfg(feature = "profiles")]
+                profiles_enabled: false,
+                #[cfg(feature = "hot-reload")]
+                hot_reload: None,
+                #[cfg(feature = "vault")]
+                vault: VaultConfig::default(),
+                credential_config: CredentialConfig::Disabled,
+                env_overrides_secrets: false,
+                resolve_env_credentials: false,
+            },
             storage: JsonStorage::new(),
             _schema: PhantomData,
         }
@@ -428,14 +444,14 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         } else {
             path
         };
-        self.config_dir = Some(expanded);
+        self.options.config_dir = Some(expanded);
         self
     }
 
     /// Set the settings filename (default: "settings.{ext}")
     #[must_use]
-    pub fn settings_file(mut self, filename: impl Into<String>) -> Self {
-        self.settings_file = Some(filename.into());
+    pub fn with_settings_file(mut self, filename: impl Into<String>) -> Self {
+        self.options.settings_file = Some(filename.into());
         self
     }
 
@@ -445,27 +461,30 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// will be stored in the primary OS keychain instead of the settings file.
     #[must_use]
     pub fn with_credentials(mut self) -> Self {
-        self.credential_config = CredentialConfig::Default;
+        self.options.credential_config = CredentialConfig::Default;
         self
     }
 
-    /// Extensively configure how credential secrets should be stored, enabling
-    /// advanced scenarios like custom proxy backends or keychain fallbacks.
+    /// Choose how secret settings are stored: a custom [`CredentialBackend`],
+    /// or the keychain with an encrypted-file fallback.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// use rcman::{SettingsConfig, CredentialConfig, SecretPasswordSource};
+    /// ```rust
+    /// # #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+    /// # {
+    /// use rcman::{CredentialConfig, SecretPasswordSource, SettingsConfig};
     ///
     /// let config = SettingsConfig::builder("my-app", "1.0.0")
     ///     .with_credential_config(CredentialConfig::WithFallback {
-    ///         fallback_path: "/tmp/secrets.enc.json".into(),
+    ///         fallback_path: Some("/tmp/secrets.enc".into()),
     ///         password: SecretPasswordSource::Environment("APP_KEY".into()),
     ///     })
     ///     .build();
+    /// # }
     /// ```
     #[must_use]
     pub fn with_credential_config(mut self, config: CredentialConfig) -> Self {
-        self.credential_config = config;
+        self.options.credential_config = config;
         self
     }
 
@@ -479,7 +498,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         path: impl Into<std::path::PathBuf>,
         password_source: crate::credentials::SecretPasswordSource,
     ) -> Self {
-        self.credential_config = CredentialConfig::WithFallback {
+        self.options.credential_config = CredentialConfig::WithFallback {
             fallback_path: Some(path.into()),
             password: password_source,
         };
@@ -493,7 +512,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
     #[must_use]
     pub fn with_env_credentials(mut self) -> Self {
-        self.resolve_env_credentials = true;
+        self.options.resolve_env_credentials = true;
         self
     }
 
@@ -503,7 +522,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
     #[must_use]
     pub fn with_custom_env_credentials(mut self, var_name: impl Into<String>) -> Self {
-        self.credential_config = CredentialConfig::WithFallback {
+        self.options.credential_config = CredentialConfig::WithFallback {
             fallback_path: None,
             password: crate::credentials::SecretPasswordSource::Environment(var_name.into()),
         };
@@ -516,7 +535,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
     #[must_use]
     pub fn with_file_credentials(mut self, path: impl Into<std::path::PathBuf>) -> Self {
-        self.credential_config = CredentialConfig::WithFallback {
+        self.options.credential_config = CredentialConfig::WithFallback {
             fallback_path: None,
             password: crate::credentials::SecretPasswordSource::File(path.into()),
         };
@@ -529,7 +548,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
     #[must_use]
     pub fn with_password_credentials(mut self, password: impl Into<String>) -> Self {
-        self.credential_config = CredentialConfig::WithFallback {
+        self.options.credential_config = CredentialConfig::WithFallback {
             fallback_path: None,
             password: crate::credentials::SecretPasswordSource::Provided(password.into()),
         };
@@ -544,7 +563,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault(mut self) -> Self {
-        self.vault.requested = true;
+        self.options.vault.requested = true;
         self
     }
 
@@ -556,8 +575,9 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault_password(mut self, password: impl Into<String>) -> Self {
-        self.vault.requested = true;
-        self.vault.password = Some(crate::credentials::SecretPasswordSource::provided(password));
+        self.options.vault.requested = true;
+        self.options.vault.password =
+            Some(crate::credentials::SecretPasswordSource::provided(password));
         self
     }
 
@@ -588,8 +608,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         mut self,
         source: crate::credentials::SecretPasswordSource,
     ) -> Self {
-        self.vault.requested = true;
-        self.vault.password = Some(source);
+        self.options.vault.requested = true;
+        self.options.vault.password = Some(source);
         self
     }
 
@@ -597,8 +617,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault_lock_timeout(mut self, timeout: std::time::Duration) -> Self {
-        self.vault.requested = true;
-        self.vault.lock_timeout = Some(timeout);
+        self.options.vault.requested = true;
+        self.options.vault.lock_timeout = Some(timeout);
         self
     }
 
@@ -606,8 +626,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "vault")]
     #[must_use]
     pub fn with_vault_kdf_params(mut self, params: crate::vault::Argon2Params) -> Self {
-        self.vault.requested = true;
-        self.vault.kdf_params = Some(params);
+        self.options.vault.requested = true;
+        self.options.vault.kdf_params = Some(params);
         self
     }
 
@@ -636,7 +656,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "backup")]
     #[must_use]
     pub fn with_external_config(mut self, config: ExternalConfig) -> Self {
-        self.external_configs.push(config);
+        self.options.external_configs.push(config);
         self
     }
 
@@ -657,7 +677,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// ```
     #[must_use]
     pub fn with_env_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.env_prefix = Some(prefix.into());
+        self.options.env_prefix = Some(prefix.into());
         self
     }
 
@@ -677,7 +697,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// ```
     #[must_use]
     pub fn env_overrides_secrets(mut self, allow: bool) -> Self {
-        self.env_overrides_secrets = allow;
+        self.options.env_overrides_secrets = allow;
         self
     }
 
@@ -686,7 +706,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// Useful for testing or injecting env vars procedurally.
     #[must_use]
     pub fn with_env_source(mut self, source: std::sync::Arc<dyn EnvSource>) -> Self {
-        self.env_source = Some(source);
+        self.options.env_source = Some(source);
         self
     }
 
@@ -722,7 +742,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     where
         F: Fn(serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     {
-        self.migrator = Some(std::sync::Arc::new(migrator));
+        self.options.migrator = Some(std::sync::Arc::new(migrator));
         self
     }
 
@@ -730,7 +750,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "hot-reload")]
     #[must_use]
     pub fn with_hot_reload(mut self) -> Self {
-        self.hot_reload = Some(HotReloadConfig::default());
+        self.options.hot_reload = Some(HotReloadConfig::default());
         self
     }
 
@@ -738,7 +758,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "hot-reload")]
     #[must_use]
     pub fn with_hot_reload_config(mut self, config: HotReloadConfig) -> Self {
-        self.hot_reload = Some(config);
+        self.options.hot_reload = Some(config);
         self
     }
 
@@ -762,7 +782,7 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     #[cfg(feature = "profiles")]
     #[must_use]
     pub fn with_profiles(mut self) -> Self {
-        self.profiles_enabled = true;
+        self.options.profiles_enabled = true;
         self
     }
 
@@ -799,53 +819,9 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// ```
     #[must_use]
     pub fn with_schema<NewSchema: SettingsSchema>(self) -> SettingsConfigBuilder<S, NewSchema> {
-        let Self {
-            config_dir,
-            settings_file,
-            app_name,
-            app_version,
-            env_prefix,
-            #[cfg(feature = "backup")]
-            external_configs,
-            migrator,
-            #[cfg(feature = "profiles")]
-            profile_migrator,
-            env_source,
-            #[cfg(feature = "profiles")]
-            profiles_enabled,
-            #[cfg(feature = "hot-reload")]
-            hot_reload,
-            #[cfg(feature = "vault")]
-            vault,
-            credential_config,
-            env_overrides_secrets,
-            resolve_env_credentials,
-            storage,
-            ..
-        } = self;
-
         SettingsConfigBuilder {
-            config_dir,
-            settings_file,
-            app_name,
-            app_version,
-            env_prefix,
-            #[cfg(feature = "backup")]
-            external_configs,
-            migrator,
-            #[cfg(feature = "profiles")]
-            profile_migrator,
-            env_source,
-            #[cfg(feature = "profiles")]
-            profiles_enabled,
-            #[cfg(feature = "hot-reload")]
-            hot_reload,
-            #[cfg(feature = "vault")]
-            vault,
-            credential_config,
-            env_overrides_secrets,
-            resolve_env_credentials,
-            storage,
+            options: self.options,
+            storage: self.storage,
             _schema: PhantomData,
         }
     }
@@ -869,51 +845,8 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         self,
         storage: NewS,
     ) -> SettingsConfigBuilder<NewS, Schema> {
-        let Self {
-            config_dir,
-            settings_file,
-            app_name,
-            app_version,
-            env_prefix,
-            #[cfg(feature = "backup")]
-            external_configs,
-            migrator,
-            #[cfg(feature = "profiles")]
-            profile_migrator,
-            env_source,
-            #[cfg(feature = "profiles")]
-            profiles_enabled,
-            #[cfg(feature = "hot-reload")]
-            hot_reload,
-            #[cfg(feature = "vault")]
-            vault,
-            credential_config,
-            env_overrides_secrets,
-            resolve_env_credentials,
-            ..
-        } = self;
-
         SettingsConfigBuilder {
-            config_dir,
-            settings_file,
-            app_name,
-            app_version,
-            env_prefix,
-            #[cfg(feature = "backup")]
-            external_configs,
-            migrator,
-            #[cfg(feature = "profiles")]
-            profile_migrator,
-            env_source,
-            #[cfg(feature = "profiles")]
-            profiles_enabled,
-            #[cfg(feature = "hot-reload")]
-            hot_reload,
-            #[cfg(feature = "vault")]
-            vault,
-            credential_config,
-            env_overrides_secrets,
-            resolve_env_credentials,
+            options: self.options,
             storage,
             _schema: PhantomData,
         }
@@ -944,81 +877,31 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
     /// If `config_dir` is not set, uses the system config directory for the app.
     #[must_use]
     pub fn build(self) -> SettingsConfig<S, Schema> {
-        let config_dir = self.config_dir.unwrap_or_else(|| {
+        let options = self.options;
+        let config_dir = options.config_dir.unwrap_or_else(|| {
             // Use system config dir if available, otherwise current dir
-            dirs::config_dir().map_or_else(|| PathBuf::from("."), |d| d.join(&self.app_name))
+            dirs::config_dir().map_or_else(|| PathBuf::from("."), |d| d.join(&options.app_name))
         });
 
         let storage = self.storage;
 
-        let settings_file = self
+        let settings_file = options
             .settings_file
             .unwrap_or_else(|| format!("settings.{}", storage.extension()));
 
         #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
-        let mut credential_config = self.credential_config;
+        let mut credential_config = options.credential_config;
         #[cfg(not(all(feature = "keychain", feature = "encrypted-file")))]
-        let credential_config = self.credential_config;
+        let credential_config = options.credential_config;
 
-        let env_source = self
+        let env_source = options
             .env_source
             .unwrap_or_else(|| std::sync::Arc::new(DefaultEnvSource));
 
         #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
         {
-            if self.resolve_env_credentials {
-                let base_name = self.app_name.to_uppercase().replace(['-', '.'], "_");
-                let secret_var = format!("{base_name}_SECRET");
-                let path_var = format!("{base_name}_SECRET_PATH");
-                let secret_file_var = format!("{base_name}_SECRET_FILE");
-
-                let secret_env_is_set = env_source.var(&secret_var).is_ok_and(|v| !v.is_empty());
-
-                // If secret-file variable is set, use it as password file source.
-                if let Ok(secret_file) = env_source.var(&secret_file_var)
-                    && !secret_file.is_empty()
-                {
-                    credential_config = CredentialConfig::WithFallback {
-                        fallback_path: None,
-                        password: crate::credentials::SecretPasswordSource::File(
-                            std::path::PathBuf::from(secret_file),
-                        ),
-                    };
-                } else if let Ok(path) = env_source.var(&path_var)
-                    && !path.is_empty()
-                {
-                    let path_buf = std::path::PathBuf::from(path);
-
-                    if secret_env_is_set {
-                        credential_config = CredentialConfig::WithFallback {
-                            fallback_path: Some(path_buf),
-                            password: crate::credentials::SecretPasswordSource::Environment(
-                                secret_var,
-                            ),
-                        };
-                    } else if path_buf.is_file() {
-                        // Container convenience: if *_SECRET_PATH points to an existing file and
-                        // *_SECRET is not set, treat it as password file source.
-                        credential_config = CredentialConfig::WithFallback {
-                            fallback_path: None,
-                            password: crate::credentials::SecretPasswordSource::File(path_buf),
-                        };
-                    } else {
-                        // Keep legacy behavior when path doesn't exist yet: use it as fallback file path.
-                        credential_config = CredentialConfig::WithFallback {
-                            fallback_path: Some(path_buf),
-                            password: crate::credentials::SecretPasswordSource::Environment(
-                                secret_var,
-                            ),
-                        };
-                    }
-                } else {
-                    // Default behavior: use smart derived secret var and default path
-                    credential_config = CredentialConfig::WithFallback {
-                        fallback_path: None,
-                        password: crate::credentials::SecretPasswordSource::Environment(secret_var),
-                    };
-                }
+            if options.resolve_env_credentials {
+                credential_config = env_credential_config(&options.app_name, &*env_source);
             }
 
             Self::set_default_credential_path(&mut credential_config, &config_dir);
@@ -1027,31 +910,31 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         SettingsConfig {
             config_dir,
             settings_file,
-            app_name: self.app_name,
-            app_version: self.app_version,
+            app_name: options.app_name,
+            app_version: options.app_version,
             storage,
             credential_config,
-            env_prefix: self.env_prefix,
-            env_overrides_secrets: self.env_overrides_secrets,
+            env_prefix: options.env_prefix,
+            env_overrides_secrets: options.env_overrides_secrets,
             #[cfg(feature = "backup")]
-            external_configs: self.external_configs,
-            migrator: self.migrator,
+            external_configs: options.external_configs,
+            migrator: options.migrator,
             #[cfg(feature = "profiles")]
-            profiles_enabled: self.profiles_enabled,
+            profiles_enabled: options.profiles_enabled,
             #[cfg(feature = "profiles")]
-            profile_migrator: self.profile_migrator.unwrap_or_default(),
+            profile_migrator: options.profile_migrator.unwrap_or_default(),
             _schema: PhantomData,
             env_source,
             #[cfg(feature = "hot-reload")]
-            hot_reload: self.hot_reload,
+            hot_reload: options.hot_reload,
             #[cfg(feature = "vault")]
-            vault_requested: self.vault.requested,
+            vault_requested: options.vault.requested,
             #[cfg(feature = "vault")]
-            vault_password: self.vault.password,
+            vault_password: options.vault.password,
             #[cfg(feature = "vault")]
-            vault_lock_timeout: self.vault.lock_timeout,
+            vault_lock_timeout: options.vault.lock_timeout,
             #[cfg(feature = "vault")]
-            vault_kdf_params: self.vault.kdf_params,
+            vault_kdf_params: options.vault.kdf_params,
         }
     }
     #[cfg(all(feature = "keychain", feature = "encrypted-file"))]
@@ -1061,6 +944,52 @@ impl<S: StorageBackend, Schema: SettingsSchema> SettingsConfigBuilder<S, Schema>
         {
             *fallback_path = Some(config_dir.join("secrets.enc"));
         }
+    }
+}
+
+/// Resolve [`SettingsConfigBuilder::with_env_credentials`] from the environment.
+///
+/// The variables are named after the app (uppercased, `-` and `.` become `_`),
+/// so `my-app` reads `MY_APP_SECRET`, `MY_APP_SECRET_FILE` and `MY_APP_SECRET_PATH`:
+///
+/// | Set                                                   | Password                  | Fallback file  |
+/// |-------------------------------------------------------|---------------------------|----------------|
+/// | `_SECRET_FILE`                                        | read from that file       | default        |
+/// | `_SECRET_PATH` naming an existing file, no `_SECRET`  | read from that file       | default        |
+/// | `_SECRET_PATH` otherwise                              | `_SECRET`                 | `_SECRET_PATH` |
+/// | none of them                                          | `_SECRET`                 | default        |
+///
+/// An unset `_SECRET` is not an error: credentials then use the keychain, or
+/// volatile memory when it is unavailable.
+#[cfg(all(feature = "keychain", feature = "encrypted-file"))]
+fn env_credential_config(app_name: &str, env: &dyn EnvSource) -> CredentialConfig {
+    use crate::credentials::SecretPasswordSource;
+    let base_name = app_name.to_uppercase().replace(['-', '.'], "_");
+    let secret_var = format!("{base_name}_SECRET");
+    let set = |name: String| env.var(&name).ok().filter(|value| !value.is_empty());
+
+    if let Some(file) = set(format!("{base_name}_SECRET_FILE")) {
+        return CredentialConfig::WithFallback {
+            fallback_path: None,
+            password: SecretPasswordSource::File(PathBuf::from(file)),
+        };
+    }
+    let Some(path) = set(format!("{base_name}_SECRET_PATH")).map(PathBuf::from) else {
+        return CredentialConfig::WithFallback {
+            fallback_path: None,
+            password: SecretPasswordSource::Environment(secret_var),
+        };
+    };
+    // Container convenience: a secret file mounted at `_SECRET_PATH`.
+    if set(secret_var.clone()).is_none() && path.is_file() {
+        return CredentialConfig::WithFallback {
+            fallback_path: None,
+            password: SecretPasswordSource::File(path),
+        };
+    }
+    CredentialConfig::WithFallback {
+        fallback_path: Some(path),
+        password: SecretPasswordSource::Environment(secret_var),
     }
 }
 
@@ -1093,7 +1022,7 @@ mod tests {
     fn test_builder_with_options() {
         let config = SettingsConfig::builder("my-app", "2.0.0")
             .with_config_dir("/tmp/my-app")
-            .settings_file("config.json")
+            .with_settings_file("config.json")
             .build();
 
         assert_eq!(config.config_dir, PathBuf::from("/tmp/my-app"));

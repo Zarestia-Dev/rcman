@@ -41,6 +41,41 @@ pub fn strip_nulls(value: &mut Value) {
     }
 }
 
+/// Compare two values, treating numbers as equal when their values are equal.
+///
+/// `serde_json` keeps `1` and `1.0` apart, but a UI that sends `1` for a
+/// setting stored as `1.0` means the same value; arrays and objects are
+/// compared element by element with the same rule.
+#[must_use]
+pub fn same_value(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => {
+            left == right
+                || matches!((left.as_f64(), right.as_f64()), (Some(l), Some(r)) if l.total_cmp(&r).is_eq())
+        }
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len() && left.iter().zip(right).all(|(l, r)| same_value(l, r))
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .all(|(key, l)| right.get(key).is_some_and(|r| same_value(l, r)))
+        }
+        _ => left == right,
+    }
+}
+
+/// Remove top-level keys whose value is an empty object.
+///
+/// Removing the last setting of a category leaves `{"category": {}}`; the
+/// settings file keeps only categories that still hold values.
+pub fn prune_empty_objects(value: &mut Value) {
+    if let Some(object) = value.as_object_mut() {
+        object.retain(|_, value| !value.as_object().is_some_and(serde_json::Map::is_empty));
+    }
+}
+
 /// Retrieve a value from a JSON tree using a dot-separated path (e.g., "parent.child.key").
 ///
 /// Returns `None` if the path doesn't exist.
@@ -52,6 +87,18 @@ pub fn get_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     let mut current = value;
     for segment in path.split('.') {
         current = current.as_object()?.get(segment)?;
+    }
+    Some(current)
+}
+
+/// Mutable variant of [`get_path`].
+pub fn get_path_mut<'a>(value: &'a mut Value, path: &str) -> Option<&'a mut Value> {
+    if path.is_empty() {
+        return Some(value);
+    }
+    let mut current = value;
+    for segment in path.split('.') {
+        current = current.as_object_mut()?.get_mut(segment)?;
     }
     Some(current)
 }

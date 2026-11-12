@@ -13,9 +13,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `BackupOptions::includes_secrets()` reports whether the policy and password allow secrets in the export.
 - `SubSettingsManifestEntry::items()` and `profile_names()` list a manifest entry's items and profiles in a stable order.
 - `SubSettings::update()` reads, changes and writes one entry under a single lock; returning `None` deletes it. Unlike `set_field()`, keys that contain dots stay literal, and concurrent updates cannot overwrite each other.
+- `SettingsManager::set(key, &value)` and `reset(key)` take the full key (`"ui.theme"`) and any `Serialize` value. `save_setting` and `reset_setting` remain as the category/name forms.
+- `SettingMetadata::integer()` creates a whole-number setting; the derive macro uses it for integer fields.
+- Text settings accept `min_length`/`max_length` and list settings `min_items`/`max_items` (builder methods and derive attributes).
+- `ValidationError` describes why a value was rejected, so applications can show localized messages; `Display` keeps the previous English text.
+- `Error::Busy` (a backup, restore or vault operation is running), `Error::InvalidKey`, `Error::Deserialize { key, source }` and `Error::CredentialsDisabled`.
+- `SettingChange`; `save_all()` and `reset_all()` return the settings they changed.
+- Hot reload watches the active files of registered sub-settings stores and emits `HotReloadEvent::SubSettingsChanged { name }`.
+- `SettingsManager::settings_path()` (the active profile's file) is public. `ExportCategoryType::as_str()`.
+- `ReservedMatchMode` and `ListConstraints` are exported; `match_mode()` could not be called before.
+- The manager builder gains `with_env_source`, `with_pretty_json` and `with_encrypted_fallback`.
+- `validate_new_profile_name()` checks a name for a new profile: on top of `validate_profile_name()` it applies the Windows file-name rules on every OS (no `< > : " | ? *`, no trailing dot or space, no `CON`/`NUL`/`COM1`…), so profiles and their backups move between systems. `create`, `rename` and `duplicate` use it; existing profiles keep working.
+- `SettingMetadata::normalize()`: a whole number sent as a float (`14.0`) is stored as an integer for integer settings, on save, in sub-settings, on restore and for environment overrides.
+- `Error::InvalidEntryName`.
 
 ### Changed
 
+- **Breaking:** `SettingMetadata::validate()` returns `ValidationError`, and `Error::InvalidSettingValue::reason` is a `ValidationError` instead of a `String`.
+- **Breaking:** `save_all()` and `reset_all()` return `Vec<SettingChange>` instead of `()`.
+- **Breaking:** `SubSettings::directory()` and `file_path()` return `Result`; they returned an empty path when the active profile could not be resolved, which made backups read the current directory.
+- **Breaking:** `SettingsConfigBuilder::settings_file()` is renamed `with_settings_file()`, matching the manager builder.
+- **Breaking:** `SettingMetadata::metadata` is an `IndexMap`, so custom metadata keeps its declaration order.
+- **Breaking:** `HotReloadEvent` is `#[non_exhaustive]`.
+- **Breaking:** derived `Option<T>` fields default to `null` (`None`) instead of `""`/`0`/`false`. Code that clears a secret by writing `""` should write `null`; a missing secret now reads back as `None`.
+- **Breaking:** the unused `SchemaNotRegistered`, `TypeMismatch`, `LockError` and `VersionMismatch` error variants are removed. "Another settings operation is in progress" is now `Error::Busy` instead of `Error::Config`.
+- The manager rejects a schema at startup when a key has an empty segment (`"ui."`), a constraint is inconsistent, or a default breaks its own constraints. An empty text default is treated as unset.
+- `get_all()` uses the schema metadata defaults, so it agrees with `get()` when `Schema::default()` gives a different value.
+- `select()`, `opt()` and `SettingOption::new()` accept any JSON value, such as numbers.
+- `get_export_categories()` no longer returns English text: the main settings category is named `settings` without a description, like sub-settings. Localize by `id`.
+- The derived `validate()` applies the same rules as saving, through the runtime metadata, instead of a separate copy (which recompiled regular expressions on every call).
+- A derived schema's `<Name>ManagerAccessors` are available on managers whose schema nests it, not only on a manager of that exact type.
+- With the vault, saving reads the settings file once instead of twice.
+- Saving a setting's default is always accepted (it removes the stored value), so `reset_setting()` works for an unset default such as `""` with a pattern; restore and both `validate()`s follow the same rule.
+- Numbers are compared by value, so `1` and `1.0` are the same setting value: no spurious change event, and the default is removed from the file.
+- On Windows, `validate_profile_name()` also rejects names the file system cannot hold.
+- Multi-file sub-settings reject entry names that are empty or contain a path separator (and, on Windows, `< > : " | ? *`); reads of such names report not found.
+- Restoring sub-settings without overwrite reads the destination once instead of once per entry.
+- Restore verifies the backup's SHA-256 checksum by default (`RestoreOptions::verify_checksum(false)` turns it off). Backups without a checksum are restored without the check.
 - Environment variable overrides are validated like saved values (type, range, pattern, options, reserved values). An invalid override is ignored with a warning instead of making `get_all()` fail or bypassing a constraint. Text settings take the variable verbatim, so `12345` stays a string.
 - A panic while the manager's internal gate is held (for example in a migrator) no longer makes every later call fail with `LockPoisoned`; the gate guards no in-memory state.
 - With the `backup` feature, sub-settings reads take one operation guard instead of up to three.
@@ -27,6 +61,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Integer fields of a derived schema defaulted to a float (`14.0`), so `get::<u32>()` and the generated accessors failed on a fresh install, and a fractional value such as `12.5` was accepted and then made every `get_all()` fail. Integer settings now keep integer defaults and reject fractional values.
+- Derived `Option<T>` fields defaulted to `0`/`""`/`false` instead of `None`, and `Vec<T>` defaults were converted to strings.
+- `get_value()` rejected keys with more than two segments that `save_setting()` accepted; the derive macro now keys nested structs by their serialized path (including `serde(rename)`) at any depth.
+- A nullable setting saved as `null` over a non-null default reverted to the default after a restart.
+- `Error::is_not_found()` now covers a file read that failed because the file does not exist.
+- A secret stored during a restore (main settings secrets are rehydrated this way) went only to the keychain and left an older copy in the encrypted-file fallback, which reads check first, so the old value was returned.
+- A multi-file sub-settings entry named `../settings` overwrote the main settings file.
+- Exporting a single sub-settings type whose name contains `/` (`alerts/rules`) failed with "Invalid backup filename".
 - Keys nested more than two levels deep (`net.proxy.host`) were compared against a literal top-level key, so saving an unchanged value was reported as a change and rewritten. They are now read by path, like they are written.
 
 ## [0.2.7] - 2026-10-29

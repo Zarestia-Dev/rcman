@@ -878,7 +878,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
             entry = Value::Object(serde_json::Map::new());
         }
 
-        let new_value = serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
+        let new_value = serde_json::to_value(value)?;
         crate::utils::value::set_path(&mut entry, field_path, new_value);
 
         let action = self.set_inner(name, entry)?;
@@ -904,14 +904,16 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
                 if !allowed_roots.contains(key.as_str()) {
                     return Err(Error::InvalidSettingValue {
                         key: format!("{}.{}.{}", self.config.name, entry_name, key),
-                        reason: "Field is not defined in sub-settings schema".to_string(),
+                        reason: crate::config::ValidationError::UnknownField,
                     });
                 }
             }
         }
 
         for (path, metadata) in schema.iter() {
+            // A field holding its default is valid, as for main settings.
             if let Some(field_value) = crate::utils::value::get_path(value, path)
+                && !crate::utils::value::same_value(field_value, &metadata.default)
                 && let Err(reason) = metadata.validate(field_value)
             {
                 return Err(Error::InvalidSettingValue {
@@ -975,7 +977,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
                 if let Some(secret) = crate::utils::value::remove_path(value, path) {
                     if self.credential_manager.is_none() {
                         if secret != metadata.default {
-                            return Err(Error::Credential("Credentials not enabled".into()));
+                            return Err(Error::CredentialsDisabled);
                         }
                         continue;
                     }
@@ -1161,7 +1163,10 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     /// - Store access fails
     pub fn get<T: DeserializeOwned>(&self, name: &str) -> Result<T> {
         let value = self.get_value(name)?;
-        serde_json::from_value(value).map_err(|e| Error::Parse(e.to_string()))
+        serde_json::from_value(value).map_err(|source| Error::Deserialize {
+            key: name.to_owned(),
+            source,
+        })
     }
 
     /// Serialize and set a value in the store.
@@ -1184,7 +1189,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
     pub fn set<T: Serialize + Sync>(&self, name: &str, value: &T) -> Result<()> {
         #[cfg(feature = "backup")]
         let _operation_guard = crate::backup::transaction::enter(&self.root_dir)?;
-        let json_value = serde_json::to_value(value).map_err(|e| Error::Parse(e.to_string()))?;
+        let json_value = serde_json::to_value(value)?;
         let guard = self.operation_lock.write_recovered()?;
         let action = self.set_inner(name, json_value)?;
         drop(guard);
@@ -1197,6 +1202,9 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         if self.is_locked() {
             return Err(Error::ConfigLocked);
         }
+        if let Some(schema) = &self.config.schema {
+            crate::config::normalize_values(schema, &mut json_value);
+        }
         self.validate_against_schema(name, &json_value)?;
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         let changes = self.extract_secret_changes(name, &mut json_value)?;
@@ -1206,9 +1214,7 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
                 if let Some(secret) = crate::utils::value::remove_path(&mut json_value, path)
                     && secret != metadata.default
                 {
-                    return Err(Error::Credential(
-                        "Secret storage requires keychain or encrypted-file".into(),
-                    ));
+                    return Err(Error::CredentialsDisabled);
                 }
             }
         }
@@ -1419,15 +1425,24 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         Ok(false)
     }
 
-    // Legacy support methods that might need to remain or be refactored differently
-    pub fn directory(&self) -> PathBuf {
-        self.active_store()
-            .map(|s| s.base_path())
-            .unwrap_or_default()
+    /// The directory holding the active profile's entries (or the store's
+    /// directory without profiles).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the active profile cannot be resolved.
+    pub fn directory(&self) -> Result<PathBuf> {
+        Ok(self.active_store()?.base_path())
     }
 
-    pub fn file_path(&self) -> Option<PathBuf> {
-        self.active_store().ok().and_then(|s| s.single_file_path())
+    /// The file holding every entry for a single-file store, or `None` for
+    /// multi-file and table stores.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the active profile cannot be resolved.
+    pub fn file_path(&self) -> Result<Option<PathBuf>> {
+        Ok(self.active_store()?.single_file_path())
     }
 }
 

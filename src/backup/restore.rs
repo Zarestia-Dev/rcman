@@ -373,7 +373,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         }
         self.validate_secret_destination(value, self.manager.manager.schema_metadata())?;
         for (key, metadata) in self.manager.manager.schema_metadata() {
-            if let Some(value) = crate::utils::value::get_path(value, key) {
+            // A setting holding its default is valid, as when saving.
+            if let Some(value) = crate::utils::value::get_path(value, key)
+                && !crate::utils::value::same_value(value, &metadata.default)
+            {
                 metadata
                     .validate(value)
                     .map_err(|reason| Error::InvalidSettingValue {
@@ -502,9 +505,10 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 source_dir
             };
             // Try to load settings from backup (agnostic of extension)
-            if let Some((value, _ext)) =
+            if let Some((mut value, _ext)) =
                 load_settings_agnostic(&source_dir, "settings", self.manager.manager.storage())?
             {
+                crate::config::normalize_values(self.manager.manager.schema_metadata(), &mut value);
                 self.validate_main_settings(&value)?;
                 let settings_dest = self.manager.manager.settings_path()?;
                 let dest_filename = settings_dest
@@ -625,11 +629,15 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                 let dest_settings = target_profile_path.join(target_settings_file);
                 let restore_id = format!("profiles/{target_profile_name}/{target_settings_file}");
 
-                if let Some((value, _ext)) = load_settings_agnostic(
+                if let Some((mut value, _ext)) = load_settings_agnostic(
                     &src_profile_path,
                     "settings",
                     self.manager.manager.storage(),
                 )? {
+                    crate::config::normalize_values(
+                        self.manager.manager.schema_metadata(),
+                        &mut value,
+                    );
                     self.validate_main_settings(&value)?;
 
                     if dest_settings.exists() && !self.options.flags.control.overwrite_existing {
@@ -734,7 +742,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             let Some(secret) = crate::utils::value::get_path(value, key).cloned() else {
                 continue;
             };
-            if secret == metadata.default {
+            if crate::utils::value::same_value(&secret, &metadata.default) {
                 creds.remove_with_profile(key, profile)?;
                 creds.remove_tracked_secret(key, profile)?;
             } else {
@@ -824,6 +832,14 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             }
         }
 
+        // Read the destination once; restored entries come from the backup, so
+        // they never conflict with each other.
+        let existing = if self.options.flags.control.overwrite_existing {
+            std::collections::HashMap::new()
+        } else {
+            sub_ctx.sub.read_entries(&sub_ctx.sub.directory()?)?
+        };
+
         // Process the collected entries
         for (entry_name, value) in entries_to_restore {
             // Filter by items if specified
@@ -834,12 +850,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
             let entry_id = format!("{}/{}", sub_ctx.sub_type, entry_name);
 
             // Check if exists
-            if !self.options.flags.control.overwrite_existing
-                && sub_ctx
-                    .sub
-                    .read_entries(&sub_ctx.sub.directory())?
-                    .contains_key(&entry_name)
-            {
+            if existing.contains_key(&entry_name) {
                 result.add_skipped(entry_id, RestoreSkipReason::ExistsConflict);
                 continue;
             }
@@ -1032,6 +1043,9 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
         #[cfg(not(any(feature = "keychain", feature = "encrypted-file")))]
         let _ = profile;
         validate_backup_value(value)?;
+        if let Some(schema) = sub.schema_metadata() {
+            crate::config::normalize_values(&schema, value);
+        }
         self.validate_sub_entry(sub, name, value)?;
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
         if !self.options.flags.control.dry_run {
@@ -1049,6 +1063,11 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
     ) -> Result<()> {
         // Restore items from this profile to active flat root
         {
+            let existing = if self.options.flags.control.overwrite_existing {
+                std::collections::HashMap::new()
+            } else {
+                sub_ctx.sub.read_entries(&sub_ctx.sub.directory()?)?
+            };
             let entries = crate::error::read_dir(src_profile_path)?;
             let ext = sub_ctx.sub.extension();
             for entry in entries {
@@ -1090,12 +1109,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                                 self.validate_sub_entry(sub_ctx.sub, &k, &v)?;
                                 let item_id = format!("{}/{k}", sub_ctx.sub_type);
 
-                                if sub_ctx
-                                    .sub
-                                    .read_entries(&sub_ctx.sub.directory())?
-                                    .contains_key(&k)
-                                    && !self.options.flags.control.overwrite_existing
-                                {
+                                if existing.contains_key(&k) {
                                     result.add_skipped(item_id, RestoreSkipReason::ExistsConflict);
                                 } else if self.options.flags.control.dry_run {
                                     result.restored.push(item_id.clone());
@@ -1113,12 +1127,7 @@ impl<S: StorageBackend + 'static, Schema: SettingsSchema> RestoreContext<'_, S, 
                     self.validate_sub_entry(sub_ctx.sub, &stem, &value)?;
                     let entry_id = format!("{}/{stem}", sub_ctx.sub_type);
 
-                    if sub_ctx
-                        .sub
-                        .read_entries(&sub_ctx.sub.directory())?
-                        .contains_key(&stem)
-                        && !self.options.flags.control.overwrite_existing
-                    {
+                    if existing.contains_key(&stem) {
                         result.add_skipped(entry_id, RestoreSkipReason::ExistsConflict);
                     } else if self.options.flags.control.dry_run {
                         result.restored.push(entry_id.clone());
@@ -1442,7 +1451,7 @@ pub struct RestorePendingItem {
     pub reason: RestorePendingReason,
 }
 
-/// External content handed back to the caller by an [`ImportTarget::Deferred`] target.
+/// External content handed back to the caller by an [`ImportTarget::Deferred`](crate::backup::ImportTarget::Deferred) target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeferredImport {
     /// External config id.
@@ -1465,7 +1474,7 @@ pub struct RestoreResult {
     /// External configs that need manual handling
     pub external_pending: Vec<String>,
 
-    /// Content of [`ImportTarget::Deferred`] configs for the caller to apply.
+    /// Content of [`ImportTarget::Deferred`](crate::backup::ImportTarget::Deferred) configs for the caller to apply.
     /// Empty for a dry run.
     pub deferred: Vec<DeferredImport>,
 
