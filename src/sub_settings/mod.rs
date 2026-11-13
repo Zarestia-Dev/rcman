@@ -1413,16 +1413,12 @@ impl<S: StorageBackend + Clone + 'static> SubSettings<S> {
         }
 
         let store = self.active_store()?;
-        if store.exists(name)? {
-            return Ok(true);
-        }
+        let found = store.exists(name)?;
 
         #[cfg(any(feature = "keychain", feature = "encrypted-file"))]
-        if self.has_stored_secret_for_entry(name)? {
-            return Ok(true);
-        }
+        let found = found || self.has_stored_secret_for_entry(name)?;
 
-        Ok(false)
+        Ok(found)
     }
 
     /// The directory holding the active profile's entries (or the store's
